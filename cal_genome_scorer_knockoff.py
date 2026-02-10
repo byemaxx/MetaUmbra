@@ -972,10 +972,10 @@ class GenomeScoreCalculator:
         for i, (_, r) in enumerate(top.iterrows(), 1):
             qv = r.get("fdr_presence", np.nan)
             print(
-                f"{i}. {r['genome_id']} | U={int(r['unique_peptide_count'])}, "
-                f"M={int(r['matched_peptide_count'])}, "
-                f"WE={float(r['weighted_evidence']):.2f}, "
-                f"WE_shared={float(r.get('weighted_evidence_shared', 0.0)):.2f}, "
+                f"{i}. {r['genome_id']} | Unique_peptides={int(r['unique_peptide_count'])}, "
+                f"Matched_peptides={int(r['matched_peptide_count'])}, "
+                f"Weighted_evidence={float(r['weighted_evidence']):.2f}, "
+                f"Weighted_evidence_shared={float(r.get('weighted_evidence_shared', 0.0)):.2f}, "
                 f"FDR={qv if pd.notna(qv) else 'NA'}"
             )
 
