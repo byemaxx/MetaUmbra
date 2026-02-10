@@ -972,11 +972,12 @@ class GenomeScoreCalculator:
         for i, (_, r) in enumerate(top.iterrows(), 1):
             qv = r.get("fdr_presence", np.nan)
             print(
-                f"{i}. {r['genome_id']} | Unique_peptides={int(r['unique_peptide_count'])}, "
-                f"Matched_peptides={int(r['matched_peptide_count'])}, "
-                f"Weighted_evidence={float(r['weighted_evidence']):.2f}, "
-                f"Weighted_evidence_shared={float(r.get('weighted_evidence_shared', 0.0)):.2f}, "
-                f"FDR={qv if pd.notna(qv) else 'NA'}"
+                f"{i}. {r['genome_id']} | Unique_Pep={int(r['unique_peptide_count'])}, "
+                f"Matched_Pep={int(r['matched_peptide_count'])}, "
+                # f"w(p)={float(r['weighted_evidence']):.2f}, "
+                # f"w(p)_shared={float(r.get('weighted_evidence_shared', 0.0)):.2f}, "
+                f"FDR={qv if pd.notna(qv) else 'NA'}, "
+                f"Coverage={float(r.get('cumulative_coverage_percent', 0.0)):.1f}%"
             )
 
 
@@ -1074,7 +1075,7 @@ if __name__ == "__main__":
         exclude_genome_ids=exclude_genome_ids,
         all_matched_peptides=None,
         save_matched_peptides_cache=True,
-        matched_peptides_cache_path=None,
+        matched_peptides_cache_path=pickle_path,
     )
 
     print(f"\nDone. Elapsed: {time.time() - t0:.1f}s")
