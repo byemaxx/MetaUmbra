@@ -976,7 +976,7 @@ class GenomeScoreCalculator:
                 f"M={int(r['matched_peptide_count'])}, "
                 f"WE={float(r['weighted_evidence']):.2f}, "
                 f"WE_shared={float(r.get('weighted_evidence_shared', 0.0)):.2f}, "
-                f"q={qv if pd.notna(qv) else 'NA'}"
+                f"FDR={qv if pd.notna(qv) else 'NA'}"
             )
 
 
