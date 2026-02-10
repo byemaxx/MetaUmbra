@@ -16,11 +16,11 @@
 #    - For each genome, sample from these pools according to that genome's shared-stratum counts to get
 #      an empirical null for weighted_evidence_shared, yielding p_shared_knock.
 #    - Unique evidence p-value upper bound (conservative): p_unique_upper = (peptide_fdr_cutoff) ** U.
-#    - Combine with Fisher (2 p-values) => p_exist_knock; BH => q_exist_knock (per-genome existence q-value).
+#    - Combine with Fisher (2 p-values) => p_presence; BH => fdr_presence (per-genome existence q-value).
 #
 # Outputs:
 # - genome_score: unified rank score (lexicographic; unique dominates).
-# - q_exist_knock: recommended per-genome existence q-value.
+# - fdr_presence: recommended per-genome existence q-value.
 
 import os
 import time
@@ -121,7 +121,7 @@ class GenomeScoreCalculator:
 
         # Optional: 2-stage Monte Carlo (speed/accuracy tradeoff)
         # Stage 1: run all TARGET genomes with K=self.knockoff_mc_iterations (fast screen).
-        # Stage 2: recompute ONLY for genomes whose stage-1 p_exist_knock is in given ranges, using a larger K.
+        # Stage 2: recompute ONLY for genomes whose stage-1 p_presence is in given ranges, using a larger K.
         # If knockoff_stage2_mc_iterations is None, 2-stage refinement is disabled.
         self.knockoff_stage2_mc_iterations: Optional[int] = None
         self.knockoff_stage2_p_exist_ranges: List[Tuple[float, float]] = [(0.005, 0.02), (0.02, 0.08)]
@@ -553,8 +553,8 @@ class GenomeScoreCalculator:
         out = df_scored.copy()
         out["p_shared_knock"] = np.nan
         out["p_unique_upper"] = np.nan
-        out["p_exist_knock"] = np.nan
-        out["q_exist_knock"] = np.nan
+        out["p_presence"] = np.nan
+        out["fdr_presence"] = np.nan
 
         if not self.knockoff_enabled:
             return out
@@ -607,7 +607,7 @@ class GenomeScoreCalculator:
 
             out.at[idx, "p_shared_knock"] = p_shared
             out.at[idx, "p_unique_upper"] = p_unique_upper
-            out.at[idx, "p_exist_knock"] = p_existence
+            out.at[idx, "p_presence"] = p_existence
 
         # -----------------
         # Stage 2 (refine near-threshold genomes)
@@ -629,7 +629,7 @@ class GenomeScoreCalculator:
             if ranges:
                 # Only consider genomes we actually computed in stage-1 (i.e., those in target_df)
                 stage1_idx = target_df.index.to_numpy()
-                p_stage1 = out.loc[stage1_idx, "p_exist_knock"].to_numpy(dtype=float)
+                p_stage1 = out.loc[stage1_idx, "p_presence"].to_numpy(dtype=float)
                 cand_mask = np.asarray([_in_any_range(x) for x in p_stage1], dtype=bool)
                 cand_idx = stage1_idx[cand_mask]
 
@@ -651,19 +651,19 @@ class GenomeScoreCalculator:
 
                         out.at[idx, "p_shared_knock"] = p_shared
                         out.at[idx, "p_unique_upper"] = p_unique_upper
-                        out.at[idx, "p_exist_knock"] = p_existence
+                        out.at[idx, "p_presence"] = p_existence
 
-        remaining_idx = out.index[target_mask & out["p_exist_knock"].isna()]
+        remaining_idx = out.index[target_mask & out["p_presence"].isna()]
         if len(remaining_idx) > 0:
             out.loc[remaining_idx, "p_shared_knock"] = 1.0
             out.loc[remaining_idx, "p_unique_upper"] = 1.0
-            out.loc[remaining_idx, "p_exist_knock"] = 1.0
+            out.loc[remaining_idx, "p_presence"] = 1.0
 
-        all_p = out.loc[target_mask, "p_exist_knock"].to_numpy(dtype=float)
-        out.loc[target_mask, "q_exist_knock"] = self._bh_qvalues(all_p)
+        all_p = out.loc[target_mask, "p_presence"].to_numpy(dtype=float)
+        out.loc[target_mask, "fdr_presence"] = self._bh_qvalues(all_p)
 
-        out["keep_q01"] = (out["q_exist_knock"] <= 0.01) & (out["_genomes_with_any_match"])
-        out["keep_q05"] = (out["q_exist_knock"] <= 0.05) & (out["_genomes_with_any_match"])
+        out["pass_fdr_0p01"] = (out["fdr_presence"] <= 0.01) & (out["_genomes_with_any_match"])
+        out["pass_fdr_0p05"] = (out["fdr_presence"] <= 0.05) & (out["_genomes_with_any_match"])
 
         return out
 
@@ -765,7 +765,7 @@ class GenomeScoreCalculator:
         matched_peptides_cache_path: Optional[str] = None,
         compute_coverage: bool = True,
     ) -> pd.DataFrame:
-        """End-to-end analysis producing a genome-level q-value (q_exist_knock)."""
+        """End-to-end analysis producing a genome-level q-value (fdr_presence)."""
         if output_tsv_path is None:
             out_dir = self.peptide_table_dir if self.peptide_table_dir else os.getcwd()
             output_tsv_path = os.path.join(out_dir, "genome_scores_knockoff.tsv")
@@ -925,7 +925,7 @@ class GenomeScoreCalculator:
         self.genome_scores_df = df_scored
 
         self.logger.info(f"Saving results to: {output_tsv_path}")
-        self.genome_scores_df.to_csv(output_tsv_path, sep="\t", index=False)
+        df_scored.to_csv(output_tsv_path, sep="\t", index=False)
 
         self._print_summary()
         return self.genome_scores_df
@@ -942,16 +942,16 @@ class GenomeScoreCalculator:
         print(f"Genomes analyzed: {len(df)}")
         print(f"Genomes with matched>=1: {int(df['_genomes_with_any_match'].sum())}")
 
-        if "q_exist_knock" in df.columns:
-            keep01 = int(df["keep_q01"].fillna(False).sum())
-            keep05 = int(df["keep_q05"].fillna(False).sum())
+        if "fdr_presence" in df.columns:
+            keep01 = int(df["pass_fdr_0p01"].fillna(False).sum())
+            keep05 = int(df["pass_fdr_0p05"].fillna(False).sum())
             print(f"Genomes q<=0.01: {keep01}")
             print(f"Genomes q<=0.05: {keep05}")
 
-        top = df.loc[df["_genomes_with_any_match"]].head(5)
-        print("\nTop 5 target genomes by genome_score:")
+        top = df.loc[df["_genomes_with_any_match"]].head(10)
+        print("\nTop 10 target genomes by genome_score:")
         for i, (_, r) in enumerate(top.iterrows(), 1):
-            qv = r.get("q_exist_knock", np.nan)
+            qv = r.get("fdr_presence", np.nan)
             print(
                 f"{i}. {r['genome_id']} | U={int(r['unique_peptide_count'])}, "
                 f"M={int(r['matched_peptide_count'])}, "
@@ -1028,7 +1028,7 @@ if __name__ == "__main__":
     calc.knockoff_enabled = True
     # Two-stage MC (optional):
     # Stage 1: K1 for all genomes (fast screen)
-    # Stage 2: K2 only for genomes with stage-1 p_exist_knock in specified ranges
+    # Stage 2: K2 only for genomes with stage-1 p_presence in specified ranges
     calc.knockoff_mc_iterations = 500
     calc.knockoff_stage2_mc_iterations = 2000
     calc.knockoff_stage2_p_exist_ranges = [(0.005, 0.02), (0.02, 0.08)]
