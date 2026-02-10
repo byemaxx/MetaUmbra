@@ -861,16 +861,35 @@ class GenomeScoreCalculator:
                 np.asarray(selected_genome_files, dtype=object),
                 max(1, self.num_workers * 4),
             )
-            futures = {}
+            # Submit jobs to a ProcessPoolExecutor. Use explicit executor and
+            # explicit shutdown in a finally block, and clear references to
+            # futures/executor to avoid weakref callbacks during interpreter
+            # shutdown which can raise harmless-but-noisy exceptions.
             all_matched_peptides = []
-            with concurrent.futures.ProcessPoolExecutor(max_workers=self.num_workers) as pool:
+            futures = []
+            executor = concurrent.futures.ProcessPoolExecutor(max_workers=self.num_workers)
+            try:
                 for b in batches:
                     if len(b) == 0:
                         continue
-                    futures[pool.submit(self._process_genome_batch, list(b))] = len(b)
+                    futures.append(executor.submit(self._process_genome_batch, list(b)))
 
                 for fut in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Scanning genomes"):
                     all_matched_peptides.extend(fut.result())
+            finally:
+                try:
+                    executor.shutdown(wait=True)
+                except Exception:
+                    # Best-effort shutdown; swallow exceptions during interpreter
+                    # teardown to avoid noisy output.
+                    pass
+                # remove references that may keep callbacks alive during module
+                # teardown
+                try:
+                    del futures
+                    del executor
+                except Exception:
+                    pass
 
             if save_matched_peptides_cache:
                 if cache_pkl_path:
@@ -971,10 +990,10 @@ if __name__ == "__main__":
     # ---- Input peptide file ----
     # peptide_table_path = r"test_data/proj2/peptide_core.tsv"
     # peptide_table_path = r"test_data\sihumix\peptides.tsv"
-    peptide_table_path = r"test_data\proj1\peptides_all.tsv"
+    # peptide_table_path = r"test_data\proj1\peptides_all.tsv"
     # peptide_table_path = r"test_data\proj1\peptides_v48_PBS.tsv"
     # peptide_table_path = r"test_data\6bacteria\peptides.tsv"
-    # peptide_table_path = r"test_data\mix24x\peptides.tsv"
+    peptide_table_path = r"test_data\mix24x\peptides.tsv"
 
     peptide_seq_col = "Sequence"
     peptide_score_col = "Score"          # set to None if not available
@@ -996,11 +1015,12 @@ if __name__ == "__main__":
     ]
 
     # ---- Output ----
+    # output_tsv_path = r"test_data/proj1/genome_scores_knockoff_proj1.tsv"
     # output_tsv_path = r"test_data/proj2/genome_scores_knockoff.tsv"
     # output_tsv_path = r"test_data/mix24x/genome_scores_knockoff_mix24x.tsv"
-    output_tsv_path = r"test_data/proj1/genome_scores_knockoff_proj1.tsv"
+    output_tsv_path = r"test_data/mix24x/genome_scores_knockoff_mix24x_only_UHGP.tsv"
     # output_tsv_path = r"test_data\6bacteria\genome_scores_knockoff_6bacteria.tsv"
-    # output_tsv_path = r"test_data\sihumix\genome_scores_knockoff_sihumix.tsv"
+    # output_tsv_path = r"test_data\sihumix\genome_scores_knockoff_sihumix_only_UHGP.tsv"
     
     out_dir = os.path.dirname(output_tsv_path) or "."
     pickle_path = os.path.join(out_dir, "matched_peptides.pkl")  # set to e.g. r"test_data\6bacteria\matched_peptides_cache.pkl" to save/load matched peptides cache (speeds up repeated runs)
