@@ -68,7 +68,7 @@ def setup_logger(name: str, log_file: Optional[str] = None, level=logging.INFO) 
 # =========================
 # Main Calculator
 # =========================
-class GenomeScoreCalculator:
+class GenomePresenceScorer:
     """
     Genome-level existence scoring from an observed peptide table by mapping onto per-genome theoretical peptide files.
 
@@ -81,7 +81,7 @@ class GenomeScoreCalculator:
 
     def __init__(self, num_workers: Optional[int] = None, log_file: Optional[str] = None):
         self.num_workers = num_workers if num_workers is not None else max(1, (mp.cpu_count() or 1) - 1)
-        self.logger = setup_logger("GenomeScoreCalculator", log_file)
+        self.logger = setup_logger("GenomePresenceScorer", log_file)
 
         # Core states
         self.peptide_score: Dict[str, float] = {}  # peptide -> normalized score in [0,1] (or 1.0)
@@ -1371,7 +1371,7 @@ if __name__ == "__main__":
     # exclude_genome_ids += ['MGYG000002331'] # for Mix24x
     
     # ---- Calculator ----
-    calc = GenomeScoreCalculator(
+    calc = GenomePresenceScorer(
         num_workers=min(32, max(1, (mp.cpu_count() or 1) - 1))
     )
 

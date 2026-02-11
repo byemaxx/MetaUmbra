@@ -4,6 +4,9 @@
 Directly call RPG internal functions for protein digestion, and output only Protein and Sequence columns.
 Support filtering by peptide length.
 requires Rapid Peptides Generator (RPG) package: pip install rpg==2.0.5
+
+Input: FASTA file(s) containing protein sequences
+Output: TSV file(s) with two columns: Protein and Peptide
 """
 
 import sys
@@ -28,7 +31,7 @@ try:
     except ImportError:
         ALL_ENZYMES = AVAILABLE_ENZYMES
 except ImportError:
-    print("Error: Could not import RPG package. Make sure it's installed: pip install rpg", file=sys.stderr)
+    print("Error: Could not import RPG package. Make sure it's installed: pip install rpg==2.0.5", file=sys.stderr)
     sys.exit(1)
 
 # Set up logging
