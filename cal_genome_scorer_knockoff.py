@@ -1,5 +1,5 @@
 # Genome existence scoring from a peptide list using peptide-space knockoff null
-# Version: 4.2
+# Version: 4.3
 # Date: 2026-02-11
 #
 # Workflow:
@@ -76,7 +76,7 @@ class GenomeScoreCalculator:
     - Shared peptide degeneracy d(p) is computed across TARGET genomes (recommended).
     - A peptide-space knockoff null is used to estimate a per-genome existence p/q-value without requiring
       any second database matching.
-    - Extra paper-friendly artifacts exported into output_dir/temp/.
+    - Extra paper-friendly artifacts exported into output_dir/<result_stem>_artifacts/.
     """
 
     def __init__(self, num_workers: Optional[int] = None, log_file: Optional[str] = None):
@@ -897,8 +897,8 @@ class GenomeScoreCalculator:
         df_scored: pd.DataFrame,
         export_peptide_contrib_topN: int = 0,
     ) -> None:
-        """Export additional statistics for paper figures into out_dir/temp/."""
-        temp_dir = os.path.join(out_dir, "temp")
+        """Export additional statistics for paper figures into out_dir/<stem>_artifacts/."""
+        temp_dir = os.path.join(out_dir, f"{stem}_artifacts")
         os.makedirs(temp_dir, exist_ok=True)
 
         # --------------- run summary JSON ---------------
@@ -930,12 +930,12 @@ class GenomeScoreCalculator:
 
         meta["timing_seconds"] = {k: float(v) for k, v in (self.timing_stats or {}).items()}
 
-        with open(os.path.join(temp_dir, f"{stem}.run_summary.json"), "w", encoding="utf-8") as f:
+        with open(os.path.join(temp_dir, "run_summary.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
 
         # --------------- knockoff pools stats ---------------
         if self.knockoff_pool_stats is not None and isinstance(self.knockoff_pool_stats, pd.DataFrame) and len(self.knockoff_pool_stats) > 0:
-            self.knockoff_pool_stats.to_csv(os.path.join(temp_dir, f"{stem}.knockoff_pools.tsv"), sep="\t", index=False)
+            self.knockoff_pool_stats.to_csv(os.path.join(temp_dir, "knockoff_pools.tsv"), sep="\t", index=False)
 
         # --------------- degeneracy histogram (peptide-space) ---------------
         if self.peptide_degeneracy is not None and isinstance(self.peptide_degeneracy, dict) and len(self.peptide_degeneracy) > 0:
@@ -945,7 +945,7 @@ class GenomeScoreCalculator:
             h = pd.cut(ds, bins=bins, labels=labels).value_counts().reindex(labels).fillna(0).astype(int)
             frac = (h / max(int(h.sum()), 1)).astype(float)
             deg_df = pd.DataFrame({"deg_bin": labels, "count": h.values, "fraction": frac.values})
-            deg_df.to_csv(os.path.join(temp_dir, f"{stem}.degeneracy_hist.tsv"), sep="\t", index=False)
+            deg_df.to_csv(os.path.join(temp_dir, "degeneracy_hist.tsv"), sep="\t", index=False)
 
         # --------------- p_shared histogram (diagnostic) ---------------
         if "p_shared_knock" in df_scored.columns and "_genomes_with_any_match" in df_scored.columns:
@@ -965,7 +965,7 @@ class GenomeScoreCalculator:
             if "unique_peptide_count" in target.columns:
                 h2 = _hist(target.loc[target["unique_peptide_count"].fillna(0).astype(int) == 0, "p_shared_knock"], "unique0_targets")
             hs = pd.concat([h1, h2], axis=0, ignore_index=True)
-            hs.to_csv(os.path.join(temp_dir, f"{stem}.p_shared_hist.tsv"), sep="\t", index=False)
+            hs.to_csv(os.path.join(temp_dir, "p_shared_hist.tsv"), sep="\t", index=False)
 
         # --------------- q calling curve ---------------
         if "fdr_presence" in df_scored.columns and "_genomes_with_any_match" in df_scored.columns:
@@ -975,7 +975,7 @@ class GenomeScoreCalculator:
             rows = []
             for t in thresholds:
                 rows.append({"q_threshold": float(t), "n_called": int((q <= t).sum())})
-            pd.DataFrame(rows).to_csv(os.path.join(temp_dir, f"{stem}.q_calling_curve.tsv"), sep="\t", index=False)
+            pd.DataFrame(rows).to_csv(os.path.join(temp_dir, "q_calling_curve.tsv"), sep="\t", index=False)
 
         # --------------- compact targets table ---------------
         if "_genomes_with_any_match" in df_scored.columns:
@@ -989,7 +989,7 @@ class GenomeScoreCalculator:
                 "null_mean_shared", "null_sd_shared", "null_p95_shared", "null_p99_shared", "z_shared",
             ]
             keep_cols = [c for c in keep_cols if c in target.columns]
-            target[keep_cols].to_csv(os.path.join(temp_dir, f"{stem}.targets_compact.tsv"), sep="\t", index=False)
+            target[keep_cols].to_csv(os.path.join(temp_dir, "targets_compact.tsv"), sep="\t", index=False)
 
         # --------------- shared stratum counts (sparse long table) ---------------
         if self.knockoff_shared_stratum_counts_by_genome:
@@ -1000,7 +1000,7 @@ class GenomeScoreCalculator:
                 for k, c in ctr.items():
                     rows.append({"genome_id": gid, "stratum": str(k), "count": int(c)})
             if rows:
-                pd.DataFrame(rows).to_csv(os.path.join(temp_dir, f"{stem}.shared_stratum_counts.tsv"), sep="\t", index=False)
+                pd.DataFrame(rows).to_csv(os.path.join(temp_dir, "shared_stratum_counts.tsv"), sep="\t", index=False)
 
         # --------------- top-N peptide contribution table (optional) ---------------
         topN = int(export_peptide_contrib_topN) if export_peptide_contrib_topN is not None else 0
@@ -1039,7 +1039,7 @@ class GenomeScoreCalculator:
 
             if out_rows:
                 pd.DataFrame(out_rows).to_csv(
-                    os.path.join(temp_dir, f"{stem}.top{topN}_peptide_contrib.tsv"),
+                    os.path.join(temp_dir, f"top{topN}_peptide_contrib.tsv"),
                     sep="\t",
                     index=False
                 )
@@ -1057,11 +1057,12 @@ class GenomeScoreCalculator:
         compute_coverage: bool = True,
         export_temp: bool = True,
         export_peptide_contrib_topN: int = 0,
+        include_null_diagnostics_in_main: bool = False,
     ) -> pd.DataFrame:
         """End-to-end analysis producing a genome-level q-value (fdr_presence)."""
         if output_tsv_path is None:
             out_dir = self.peptide_table_dir if self.peptide_table_dir else os.getcwd()
-            output_tsv_path = os.path.join(out_dir, "genome_scores_knockoff.tsv")
+            output_tsv_path = os.path.join(out_dir, "genome_presence.tsv")
             self.logger.info(f"Output file not specified. Using: {output_tsv_path}")
         else:
             out_dir = os.path.dirname(output_tsv_path) or "."
@@ -1253,7 +1254,19 @@ class GenomeScoreCalculator:
         self.genome_scores_df = df_scored
 
         self.logger.info(f"Saving results to: {output_tsv_path}")
-        df_scored.to_csv(output_tsv_path, sep="\t", index=False)
+        if include_null_diagnostics_in_main:
+            df_to_save = df_scored
+        else:
+            null_diag_cols = [
+                "null_mean_shared",
+                "null_sd_shared",
+                "null_p95_shared",
+                "null_p99_shared",
+                "z_shared",
+            ]
+            keep_cols = [c for c in df_scored.columns if c not in null_diag_cols]
+            df_to_save = df_scored[keep_cols]
+        df_to_save.to_csv(output_tsv_path, sep="\t", index=False)
 
         self.timing_stats["save_tsv"] = float(time.time() - t_all0)
 
@@ -1334,16 +1347,16 @@ if __name__ == "__main__":
     ]
 
     # ---- Output ----
-    # output_tsv_path = r"test_data/proj1/genome_scores_knockoff_proj1.tsv"
-    output_tsv_path = r"test_data/proj2/genome_scores_knockoff_proj2.tsv"
-    # output_tsv_path = r"test_data/mix24x/genome_scores_knockoff_mix24x.tsv"
-    # output_tsv_path = r"test_data/mix24x/genome_scores_knockoff_mix24x_only_UHGP1.tsv"
-    # output_tsv_path = r"test_data\6bacteria\genome_scores_knockoff_6bacteria.tsv"
-    # output_tsv_path = r"test_data\sihumix\genome_scores_knockoff_sihumix_only_UHGP.tsv"
+    # output_tsv_path = r"test_data/proj1/genome_presence_proj1.tsv"
+    output_tsv_path = r"test_data/proj2/genome_presence_proj2.tsv"
+    # output_tsv_path = r"test_data/mix24x/genome_presence_mix24x.tsv"
+    # output_tsv_path = r"test_data/mix24x/genome_presence_mix24x_only_UHGP.tsv"
+    # output_tsv_path = r"test_data\6bacteria\genome_presence_6bacteria.tsv"
+    # output_tsv_path = r"test_data\sihumix\genome_presence_sihumix_only_UHGP.tsv"
     
     out_dir = os.path.dirname(output_tsv_path) or "."
     pickle_path = os.path.join(out_dir, "matched_peptides.pkl")  # set to e.g. r"test_data\6bacteria\matched_peptides_cache.pkl" to save/load matched peptides cache (speeds up repeated runs)
-    pickle_path = None  # set to None to disable matched peptides caching
+    # pickle_path = None  # set to None to disable matched peptides caching
     
     
     # ---- Optional: exclude list ----
