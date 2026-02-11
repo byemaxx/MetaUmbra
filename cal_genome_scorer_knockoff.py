@@ -1,6 +1,6 @@
 # Genome existence scoring from a peptide list using peptide-space knockoff null
-# Version: 4.0 
-# Date: 2026-02-09
+# Version: 4.2
+# Date: 2026-02-11
 #
 # Workflow:
 # 1) Read observed peptide list (optional peptide-level FDR filter).
@@ -19,8 +19,9 @@
 #    - Combine with Fisher (2 p-values) => p_presence; BH => fdr_presence (per-genome existence q-value).
 #
 # Outputs:
-# - genome_score: unified rank score (lexicographic; unique dominates).
+# - rank_by_score: unified rank index (lexicographic; unique dominates).
 # - fdr_presence: recommended per-genome existence q-value.
+# - presence_strength: -log10(fdr_presence) for paper-friendly existence strength.
 
 import os
 import time
@@ -32,6 +33,9 @@ import concurrent.futures
 from pathlib import Path
 from typing import Optional, List, Dict, Set, Tuple, Union, Literal
 from collections import Counter
+import json
+import sys
+import platform
 
 import numpy as np
 import pandas as pd
@@ -68,10 +72,11 @@ class GenomeScoreCalculator:
     """
     Genome-level existence scoring from an observed peptide table by mapping onto per-genome theoretical peptide files.
 
-    Clean v4.0:
+    Clean v4.1:
     - Shared peptide degeneracy d(p) is computed across TARGET genomes (recommended).
     - A peptide-space knockoff null is used to estimate a per-genome existence p/q-value without requiring
       any second database matching.
+    - Extra paper-friendly artifacts exported into output_dir/temp/.
     """
 
     def __init__(self, num_workers: Optional[int] = None, log_file: Optional[str] = None):
@@ -126,7 +131,7 @@ class GenomeScoreCalculator:
         self.knockoff_stage2_mc_iterations: Optional[int] = None
         self.knockoff_stage2_p_exist_ranges: List[Tuple[float, float]] = [(0.005, 0.02), (0.02, 0.08)]
 
-        # Optional speed knob: compute knockoff only for top-N TARGET genomes by genome_score, set others p=1
+        # Optional speed knob: compute knockoff only for top-N TARGET genomes by rank_by_score, set others p=1
         self.knockoff_top_n_targets: Optional[int] = None
 
         # Internal caches for knockoff
@@ -134,6 +139,11 @@ class GenomeScoreCalculator:
         self.num_target_genomes_for_degeneracy: Optional[int] = None
         self.knockoff_pools_weighted_contrib: Optional[Dict[Union[int, Tuple[int, int]], np.ndarray]] = None
         self.knockoff_shared_stratum_counts_by_genome: Dict[str, Counter] = {}  # genome_id -> Counter(stratum -> count)
+
+        # --- NEW: paper-friendly run diagnostics ---
+        self.run_stats: Dict[str, object] = {}
+        self.timing_stats: Dict[str, float] = {}
+        self.knockoff_pool_stats: Optional[pd.DataFrame] = None
 
     # =========================
     # I/O: Peptide table
@@ -204,16 +214,27 @@ class GenomeScoreCalculator:
 
         self.peptide_fdr_cutoff = float(peptide_fdr_cutoff)
 
+        # --- NEW: run-level input stats (for paper) ---
+        self.run_stats["peptide_rows_loaded"] = int(len(df))
+        self.run_stats["peptide_seq_col"] = peptide_seq_col
+        self.run_stats["peptide_score_col"] = peptide_score_col if peptide_score_col else None
+        self.run_stats["peptide_fdr_col"] = peptide_fdr_col if peptide_fdr_col else None
+        self.run_stats["peptide_fdr_cutoff"] = float(peptide_fdr_cutoff)
+        self.run_stats["peptide_decoy_flag_col"] = peptide_decoy_flag_col if peptide_decoy_flag_col else None
+        self.run_stats["decoy_flag_value"] = decoy_flag_value
+
         if peptide_decoy_flag_col and peptide_decoy_flag_col in df.columns:
             before = len(df)
             df = df[(df[peptide_decoy_flag_col] != decoy_flag_value) | (df[peptide_decoy_flag_col].isna())]
             self.logger.info(f"Peptide-level decoy filter: {before} -> {len(df)} rows.")
+            self.run_stats["peptide_rows_after_decoy_filter"] = int(len(df))
 
         if peptide_fdr_col and peptide_fdr_col in df.columns:
             before = len(df)
             df[peptide_fdr_col] = pd.to_numeric(df[peptide_fdr_col], errors="coerce")
             df = df[df[peptide_fdr_col] <= float(peptide_fdr_cutoff)]
             self.logger.info(f"Peptide-level FDR filter (<= {peptide_fdr_cutoff}): {before} -> {len(df)} rows.")
+            self.run_stats["peptide_rows_after_fdr_filter"] = int(len(df))
 
         if peptide_score_col and peptide_score_col in df.columns:
             pep_scores = df.groupby(peptide_seq_col)[peptide_score_col].max().reset_index()
@@ -228,6 +249,22 @@ class GenomeScoreCalculator:
         else:
             peps = df[peptide_seq_col].astype(str).unique()
             self.peptide_score = {p: 1.0 for p in peps}
+
+        # --- NEW: peptide score quantiles (NormScore in [0,1]) ---
+        try:
+            vals = np.asarray(list(self.peptide_score.values()), dtype=float)
+            if vals.size > 0:
+                qs = np.quantile(vals, [0.05, 0.25, 0.5, 0.75, 0.95]).tolist()
+                self.run_stats["peptide_normscore_quantiles"] = {
+                    "0.05": float(qs[0]), "0.25": float(qs[1]), "0.50": float(qs[2]),
+                    "0.75": float(qs[3]), "0.95": float(qs[4])
+                }
+        except Exception:
+            pass
+
+        self.run_stats["observed_unique_peptides"] = int(len(self.peptide_score))
+        self.run_stats.setdefault("peptide_rows_after_decoy_filter", int(len(df)))
+        self.run_stats.setdefault("peptide_rows_after_fdr_filter", int(len(df)))
 
         self.logger.info(f"Observed peptides: {len(self.peptide_score)} (unique)")
         return True
@@ -405,80 +442,110 @@ class GenomeScoreCalculator:
         return pd.DataFrame(out_rows)
 
     # =========================
-    # Unified integer score for ranking
+    # Lexicographic ranking
     # =========================
-    def _build_genome_score(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Build lexicographically-weighted integer genome_score for unified ranking."""
-        out = df.copy()
-        out["matched_peptide_count"] = pd.to_numeric(out["matched_peptide_count"], errors="coerce").fillna(0).astype(np.int64)
-        out["_genomes_with_any_match"] = out["matched_peptide_count"] >= 1
+    def _rank_genomes(self, df_metrics: pd.DataFrame) -> pd.DataFrame:
+        """
+        Build a lexicographically ranked genome table.
 
-        out["unique_peptide_count"] = pd.to_numeric(out["unique_peptide_count"], errors="coerce").fillna(0).astype(np.int64)
+        - This implementation enforces STRICT lexicographic ranking ("unique dominates"):
+            1) unique_peptide_count (U)
+            2) unique_weighted_evidence (UW)
+            3) weighted_evidence (WE)
+            4) effective_peptide_count (EP)
+            5) peptide_match_ratio (MR)
+            6) matched_peptide_count (M)
+        Ties are broken deterministically by genome_id.
 
-        for col in ["unique_weighted_evidence", "weighted_evidence", "effective_peptide_count", "peptide_match_ratio"]:
-            if col not in out.columns:
-                out[col] = 0.0
-            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0).astype(float)
+        The output rows are ordered from best to worst by the lexicographic rule above.
+        """
+        out = df_metrics.copy()
 
-        out["peptide_match_ratio"] = out["peptide_match_ratio"].clip(0.0, 1.0)
+        # Mark target genomes (matched >= 1)
+        if "matched_peptide_count" not in out.columns:
+            raise ValueError("Missing required column: matched_peptide_count")
+        out["_genomes_with_any_match"] = out["matched_peptide_count"].fillna(0).astype(int) >= 1
 
-        S = self.rank_lexico_scales
-        U_SCALE = int(S["U"])
-        UW_SCALE = int(S["UW"])
-        WE_SCALE = int(S["WE"])
-        EP_SCALE = int(S["EP"])
-        MR_SCALE = int(S["MR"])
-        M_SCALE = int(S["M"])
+        # Ensure required ranking columns exist (fill missing with zeros)
+        required_cols = [
+            "unique_peptide_count",
+            "unique_weighted_evidence",
+            "weighted_evidence",
+            "effective_peptide_count",
+            "peptide_match_ratio",
+            "matched_peptide_count",
+        ]
+        for c in required_cols:
+            if c not in out.columns:
+                out[c] = 0
 
-        genome_score = (
-            out["unique_peptide_count"] * U_SCALE
-            + np.rint(out["unique_weighted_evidence"] * UW_SCALE).astype(np.int64)
-            + np.rint(out["weighted_evidence"] * WE_SCALE).astype(np.int64)
-            + np.rint(out["effective_peptide_count"] * EP_SCALE).astype(np.int64)
-            + np.rint(out["peptide_match_ratio"] * MR_SCALE).astype(np.int64)
-            + out["matched_peptide_count"] * M_SCALE
-        )
+        # Cast / sanitize types for stable sorting
+        out["unique_peptide_count"] = pd.to_numeric(out["unique_peptide_count"], errors="coerce").fillna(0).astype(int)
+        out["matched_peptide_count"] = pd.to_numeric(out["matched_peptide_count"], errors="coerce").fillna(0).astype(int)
 
-        out["genome_score"] = genome_score.where(out["_genomes_with_any_match"], -1).astype(np.int64)
-        return out
+        float_cols = [
+            "unique_weighted_evidence",
+            "weighted_evidence",
+            "effective_peptide_count",
+            "peptide_match_ratio",
+        ]
+        for c in float_cols:
+            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0).astype(float)
+
+        if "genome_id" not in out.columns:
+            raise ValueError("Missing required column: genome_id")
+        out["genome_id"] = out["genome_id"].astype(str)
+
+        # STRICT lexicographic ordering: U > UW > WE > EP > MR > M
+        sort_cols = [
+            "unique_peptide_count",
+            "unique_weighted_evidence",
+            "weighted_evidence",
+            "effective_peptide_count",
+            "peptide_match_ratio",
+            "matched_peptide_count",
+            "genome_id",  # deterministic tie-breaker
+        ]
+        ascending = [False, False, False, False, False, False, True]
+
+        # Use stable sort to ensure reproducibility across platforms
+        ranked = out.sort_values(sort_cols, ascending=ascending, kind="mergesort").reset_index(drop=True)
+
+        return ranked
+
 
     # =========================
-    # Knockoff (scheme A)
+    # Knockoff helpers
     # =========================
     def _knock_deg_bin(self, d: int) -> int:
-        thr = self.degeneracy_bin_edges
-        if d <= thr[0]:
+        """Map degeneracy d to a bin index."""
+        d = int(max(d, 1))
+        edges = list(self.degeneracy_bin_edges)
+        if d <= edges[0]:
             return 0
-        if d <= thr[1]:
-            return 1
-        if d <= thr[2]:
-            return 2
-        if d <= thr[3]:
-            return 3
-        if d <= thr[4]:
-            return 4
-        return 5
+        for i, e in enumerate(edges[1:], start=1):
+            if d <= e:
+                return i
+        return len(edges)
 
-    def _knock_len_bin(self, pep_len: int) -> int:
-        thr = self.peptide_length_bin_edges
-        if pep_len <= thr[0]:
+    def _knock_len_bin(self, L: int) -> int:
+        """Map peptide length to a bin index."""
+        L = int(max(L, 0))
+        edges = list(self.peptide_length_bin_edges)
+        if L <= edges[0]:
             return 0
-        if pep_len <= thr[1]:
-            return 1
-        if pep_len <= thr[2]:
-            return 2
-        if pep_len <= thr[3]:
-            return 3
-        if pep_len <= thr[4]:
-            return 4
-        return 5
+        for i, e in enumerate(edges[1:], start=1):
+            if L <= e:
+                return i
+        return len(edges)
 
     def _knock_stratum(self, d: int, pep_len: int) -> Union[int, Tuple[int, int]]:
+        """Stratum key for knockoff pools."""
         db = self._knock_deg_bin(d)
         if not self.use_length_strata:
-            return db
+            return int(db)
         lb = self._knock_len_bin(pep_len)
-        return (db, lb)
+        return (int(db), int(lb))
 
     def _prepare_knockoff_pools(self, peptide_deg: Dict[str, int], N_targets_for_deg: int) -> None:
         """Build stratum pools of shared peptide contributions (w*s) for observed peptides with d(p)>1."""
@@ -493,55 +560,99 @@ class GenomeScoreCalculator:
 
         self.knockoff_pools_weighted_contrib = {k: np.asarray(v, dtype=np.float32) for k, v in pools.items()}
 
-    def _mc_sum_from_pool(self, pool: np.ndarray, K: int, c: int, rng: np.random.Generator) -> np.ndarray:
-        """Sample c items (with replacement) from pool, repeat K times, return K sums (blocking)."""
-        out = np.zeros(K, dtype=np.float64)
-        if c <= 0:
-            return out
-        if pool is None or pool.size == 0:
-            return out
+        # --- NEW: pool summary stats (for paper diagnostics) ---
+        rows = []
+        for k, arr in (self.knockoff_pools_weighted_contrib or {}).items():
+            if arr is None or arr.size == 0:
+                rows.append({"stratum": str(k), "pool_size": 0})
+                continue
+            a = arr.astype(np.float64, copy=False)
+            rows.append({
+                "stratum": str(k),
+                "pool_size": int(a.size),
+                "mean": float(a.mean()),
+                "sd": float(a.std(ddof=1)) if a.size > 1 else 0.0,
+                "p95": float(np.quantile(a, 0.95)),
+                "p99": float(np.quantile(a, 0.99)),
+                "min": float(a.min()),
+                "max": float(a.max()),
+            })
+        self.knockoff_pool_stats = pd.DataFrame(rows).sort_values("pool_size", ascending=False) if rows else None
 
-        remaining = int(c)
+    def _mc_sum_from_pool(self, pool: Optional[np.ndarray], K: int, c: int, rng: np.random.Generator) -> np.ndarray:
+        """Sample K times the sum of c draws (with replacement) from pool."""
+        if c <= 0:
+            return np.zeros(int(K), dtype=np.float64)
+        if pool is None or pool.size == 0:
+            return np.zeros(int(K), dtype=np.float64)
+
+        K = int(K)
+        c = int(c)
+
+        # Chunked sampling to reduce peak memory
         block = int(max(1, self.knockoff_sample_block_size))
-        while remaining > 0:
-            b = min(remaining, block)
-            draws = rng.choice(pool, size=(K, b), replace=True)
-            out += draws.sum(axis=1)
-            remaining -= b
+        out = np.zeros(K, dtype=np.float64)
+        i = 0
+        while i < K:
+            j = min(K, i + block)
+            # shape: (j-i, c)
+            idx = rng.integers(0, int(pool.size), size=(j - i, c), endpoint=False)
+            out[i:j] = pool[idx].sum(axis=1)
+            i = j
         return out
 
-    def _p_shared_knockoff_mc(self, gid: str, obs_shared_score: float, K: int, rng: np.random.Generator) -> float:
-        """Empirical p-value for shared evidence via knockoff Monte Carlo."""
+    def _p_shared_knockoff_mc(
+        self,
+        gid: str,
+        obs_shared_score: float,
+        K: int,
+        rng: np.random.Generator,
+        return_moments: bool = False,
+    ) -> Union[float, Tuple[float, float, float, float, float]]:
+        """Empirical p-value for shared evidence via knockoff Monte Carlo (optionally return null moments)."""
         counts = self.knockoff_shared_stratum_counts_by_genome.get(gid, None)
         if not counts:
-            return 1.0
+            return (1.0, 0.0, 0.0, 0.0, 0.0) if return_moments else 1.0
 
-        null_sum = np.zeros(K, dtype=np.float64)
+        null_sum = np.zeros(int(K), dtype=np.float64)
         for key, c in counts.items():
             pool = self.knockoff_pools_weighted_contrib.get(key, None) if self.knockoff_pools_weighted_contrib else None
-            null_sum += self._mc_sum_from_pool(pool=pool, K=K, c=int(c), rng=rng)
+            null_sum += self._mc_sum_from_pool(pool=pool, K=int(K), c=int(c), rng=rng)
 
         ge = float(np.sum(null_sum >= float(obs_shared_score)))
-        return (1.0 + ge) / (1.0 + float(K))
+        p = (1.0 + ge) / (1.0 + float(K))
+
+        if not return_moments:
+            return float(p)
+
+        mu = float(null_sum.mean())
+        sd = float(null_sum.std(ddof=1)) if int(K) > 1 else 0.0
+        p95 = float(np.quantile(null_sum, 0.95))
+        p99 = float(np.quantile(null_sum, 0.99))
+        return float(p), mu, sd, p95, p99
 
     @staticmethod
     def _fisher_p_2(p1: float, p2: float) -> float:
-        """Fisher combine 2 p-values without scipy (df=4)."""
+        """Fisher combine two p-values (df=4) using chi-square survival approximation."""
         p1 = float(min(max(p1, 1e-300), 1.0))
         p2 = float(min(max(p2, 1e-300), 1.0))
-        p_prod = p1 * p2
-        return float(min(max(p_prod * (1.0 - np.log(p_prod)), 0.0), 1.0))
+        stat = -2.0 * (np.log(p1) + np.log(p2))  # chi-square with df=4
+        # sf for df=4 has closed form: exp(-x/2) * (1 + x/2)
+        x = float(stat)
+        return float(np.exp(-x / 2.0) * (1.0 + x / 2.0))
 
     @staticmethod
     def _bh_qvalues(pvals: np.ndarray) -> np.ndarray:
-        """Benjamini-Hochberg q-values (monotone)."""
+        """Benjamini-Hochberg q-values for a 1D array of p-values."""
         p = np.asarray(pvals, dtype=float)
-        m = p.size
-        if m == 0:
+        n = int(p.size)
+        if n == 0:
             return p
+
         order = np.argsort(p)
         ranked = p[order]
-        q = ranked * (m / (np.arange(1, m + 1, dtype=float)))
+        q = ranked * float(n) / (np.arange(1, n + 1, dtype=float))
+        # enforce monotonicity
         q = np.minimum.accumulate(q[::-1])[::-1]
         q = np.clip(q, 0.0, 1.0)
         out = np.empty_like(q)
@@ -555,6 +666,14 @@ class GenomeScoreCalculator:
         out["p_unique_upper"] = np.nan
         out["p_presence"] = np.nan
         out["fdr_presence"] = np.nan
+        out["presence_strength"] = np.nan
+
+        # --- NEW: knockoff null diagnostics ---
+        out["null_mean_shared"] = np.nan
+        out["null_sd_shared"] = np.nan
+        out["null_p95_shared"] = np.nan
+        out["null_p99_shared"] = np.nan
+        out["z_shared"] = np.nan
 
         if not self.knockoff_enabled:
             return out
@@ -569,8 +688,9 @@ class GenomeScoreCalculator:
         # regardless of how many candidates enter stage-2.
         seed = int(self.knockoff_random_seed)
         ss = np.random.SeedSequence(seed)
-        rng_stage1 = np.random.default_rng(ss.spawn(1)[0])
-        rng_stage2 = np.random.default_rng(ss.spawn(1)[0])
+        children = ss.spawn(2)
+        rng_stage1 = np.random.default_rng(children[0])
+        rng_stage2 = np.random.default_rng(children[1])
 
         K1 = int(max(50, self.knockoff_mc_iterations))
         K2 = None
@@ -583,7 +703,7 @@ class GenomeScoreCalculator:
 
         if self.knockoff_top_n_targets is not None:
             topN = int(self.knockoff_top_n_targets)
-            target_df = target_df.sort_values("genome_score", ascending=False, kind="mergesort").head(topN)
+            target_df = target_df.sort_values("rank_by_score", ascending=True, kind="mergesort").head(topN)
 
         # -----------------
         # Stage 1 (fast screen)
@@ -593,12 +713,14 @@ class GenomeScoreCalculator:
         ):
             genome_id = row["genome_id"]
             observed_shared_evidence = float(row.get("weighted_evidence_shared", 0.0))
-            p_shared = self._p_shared_knockoff_mc(
+            result = self._p_shared_knockoff_mc(
                 gid=genome_id,
                 obs_shared_score=observed_shared_evidence,
                 K=K1,
                 rng=rng_stage1,
+                return_moments=True,
             )
+            p_shared, mu, sd, p95, p99 = result if isinstance(result, tuple) else (result, 0.0, 0.0, 0.0, 0.0)
 
             unique_peptides = int(row.get("unique_peptide_count", 0))
             p_unique_upper = 1.0 if unique_peptides <= 0 else float(peptide_fdr_upper ** unique_peptides)
@@ -608,6 +730,12 @@ class GenomeScoreCalculator:
             out.at[idx, "p_shared_knock"] = p_shared
             out.at[idx, "p_unique_upper"] = p_unique_upper
             out.at[idx, "p_presence"] = p_existence
+
+            out.at[idx, "null_mean_shared"] = mu
+            out.at[idx, "null_sd_shared"] = sd
+            out.at[idx, "null_p95_shared"] = p95
+            out.at[idx, "null_p99_shared"] = p99
+            out.at[idx, "z_shared"] = (observed_shared_evidence - mu) / (sd + 1e-12)
 
         # -----------------
         # Stage 2 (refine near-threshold genomes)
@@ -638,12 +766,14 @@ class GenomeScoreCalculator:
                         row = out.loc[idx]
                         genome_id = row["genome_id"]
                         observed_shared_evidence = float(row.get("weighted_evidence_shared", 0.0))
-                        p_shared = self._p_shared_knockoff_mc(
+                        result = self._p_shared_knockoff_mc(
                             gid=genome_id,
                             obs_shared_score=observed_shared_evidence,
                             K=K2,
                             rng=rng_stage2,
+                            return_moments=True,
                         )
+                        p_shared, mu, sd, p95, p99 = result if isinstance(result, tuple) else (result, 0.0, 0.0, 0.0, 0.0)
 
                         unique_peptides = int(row.get("unique_peptide_count", 0))
                         p_unique_upper = 1.0 if unique_peptides <= 0 else float(peptide_fdr_upper ** unique_peptides)
@@ -653,6 +783,12 @@ class GenomeScoreCalculator:
                         out.at[idx, "p_unique_upper"] = p_unique_upper
                         out.at[idx, "p_presence"] = p_existence
 
+                        out.at[idx, "null_mean_shared"] = mu
+                        out.at[idx, "null_sd_shared"] = sd
+                        out.at[idx, "null_p95_shared"] = p95
+                        out.at[idx, "null_p99_shared"] = p99
+                        out.at[idx, "z_shared"] = (observed_shared_evidence - mu) / (sd + 1e-12)
+
         remaining_idx = out.index[target_mask & out["p_presence"].isna()]
         if len(remaining_idx) > 0:
             out.loc[remaining_idx, "p_shared_knock"] = 1.0
@@ -661,13 +797,15 @@ class GenomeScoreCalculator:
 
         all_p = out.loc[target_mask, "p_presence"].to_numpy(dtype=float)
         out.loc[target_mask, "fdr_presence"] = self._bh_qvalues(all_p)
+        pvals = pd.to_numeric(out["p_presence"], errors="coerce")
+        valid = pvals.notna()
+        out.loc[valid, "presence_strength"] = -np.log10(np.clip(pvals.loc[valid].to_numpy(dtype=float), 1e-300, 1.0))
 
         out["pass_fdr_0p01"] = (out["fdr_presence"] <= 0.01) & (out["_genomes_with_any_match"])
         out["pass_fdr_0p05"] = (out["fdr_presence"] <= 0.05) & (out["_genomes_with_any_match"])
 
         return out
 
-    
     # =========================
     # Coverage (reference only; not used for final calling)
     # =========================
@@ -701,9 +839,8 @@ class GenomeScoreCalculator:
         out["peptide_coverage_rank"] = pd.Series([pd.NA] * len(out), index=out.index, dtype="Int64")
 
         if order_col not in out.columns:
-            # Fallback: derive order by genome_score
-            tmp = out.sort_values("genome_score", ascending=False, kind="mergesort").reset_index()
-            order_idx = tmp["index"].to_numpy()
+            # Fallback: keep current row order
+            order_idx = out.index.to_numpy()
         else:
             tmp = out.sort_values(order_col, ascending=True, kind="mergesort").reset_index()
             order_idx = tmp["index"].to_numpy()
@@ -713,9 +850,8 @@ class GenomeScoreCalculator:
             total_matchable = int(len(self.peptide_degeneracy))
         else:
             # Robust fallback: union over all genomes
-            total_matchable = 0
             seen = set()
-            for gid, ps in self.genome_matched_peptides.items():
+            for _, ps in self.genome_matched_peptides.items():
                 for p in ps:
                     if p not in seen:
                         seen.add(p)
@@ -753,6 +889,161 @@ class GenomeScoreCalculator:
     # =========================
     # Top-level pipeline
     # =========================
+
+    def _export_temp_artifacts(
+        self,
+        out_dir: str,
+        stem: str,
+        df_scored: pd.DataFrame,
+        export_peptide_contrib_topN: int = 0,
+    ) -> None:
+        """Export additional statistics for paper figures into out_dir/temp/."""
+        temp_dir = os.path.join(out_dir, "temp")
+        os.makedirs(temp_dir, exist_ok=True)
+
+        # --------------- run summary JSON ---------------
+        meta = dict(self.run_stats) if isinstance(self.run_stats, dict) else {}
+        meta["weighting_mode"] = self.weighting_mode
+        meta["idf_log_base"] = float(self.idf_log_base) if self.idf_log_base is not None else None
+        meta["use_length_strata"] = bool(self.use_length_strata)
+        meta["degeneracy_bin_edges"] = list(self.degeneracy_bin_edges)
+        meta["peptide_length_bin_edges"] = list(self.peptide_length_bin_edges)
+        meta["knockoff_enabled"] = bool(self.knockoff_enabled)
+        meta["knockoff_mc_iterations"] = int(self.knockoff_mc_iterations)
+        meta["knockoff_stage2_mc_iterations"] = int(self.knockoff_stage2_mc_iterations) if self.knockoff_stage2_mc_iterations is not None else None
+        meta["knockoff_stage2_p_exist_ranges"] = list(self.knockoff_stage2_p_exist_ranges or [])
+        meta["knockoff_top_n_targets"] = int(self.knockoff_top_n_targets) if self.knockoff_top_n_targets is not None else None
+        meta["knockoff_random_seed"] = int(self.knockoff_random_seed)
+        meta["python_version"] = sys.version
+        meta["platform"] = platform.platform()
+        meta["num_workers"] = int(self.num_workers)
+
+        try:
+            meta["genomes_total"] = int(len(df_scored))
+            meta["genomes_with_any_match"] = int(df_scored.get("_genomes_with_any_match", False).sum())
+            if "pass_fdr_0p01" in df_scored.columns:
+                meta["genomes_q_le_0p01"] = int(df_scored["pass_fdr_0p01"].fillna(False).sum())
+            if "pass_fdr_0p05" in df_scored.columns:
+                meta["genomes_q_le_0p05"] = int(df_scored["pass_fdr_0p05"].fillna(False).sum())
+        except Exception:
+            pass
+
+        meta["timing_seconds"] = {k: float(v) for k, v in (self.timing_stats or {}).items()}
+
+        with open(os.path.join(temp_dir, f"{stem}.run_summary.json"), "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+
+        # --------------- knockoff pools stats ---------------
+        if self.knockoff_pool_stats is not None and isinstance(self.knockoff_pool_stats, pd.DataFrame) and len(self.knockoff_pool_stats) > 0:
+            self.knockoff_pool_stats.to_csv(os.path.join(temp_dir, f"{stem}.knockoff_pools.tsv"), sep="\t", index=False)
+
+        # --------------- degeneracy histogram (peptide-space) ---------------
+        if self.peptide_degeneracy is not None and isinstance(self.peptide_degeneracy, dict) and len(self.peptide_degeneracy) > 0:
+            ds = pd.Series(list(self.peptide_degeneracy.values()), dtype=int)
+            bins = [-np.inf, 1, 5, 20, 100, 500, np.inf]
+            labels = ["1", "2-5", "6-20", "21-100", "101-500", ">500"]
+            h = pd.cut(ds, bins=bins, labels=labels).value_counts().reindex(labels).fillna(0).astype(int)
+            frac = (h / max(int(h.sum()), 1)).astype(float)
+            deg_df = pd.DataFrame({"deg_bin": labels, "count": h.values, "fraction": frac.values})
+            deg_df.to_csv(os.path.join(temp_dir, f"{stem}.degeneracy_hist.tsv"), sep="\t", index=False)
+
+        # --------------- p_shared histogram (diagnostic) ---------------
+        if "p_shared_knock" in df_scored.columns and "_genomes_with_any_match" in df_scored.columns:
+            def _hist(series: pd.Series, tag: str) -> pd.DataFrame:
+                s = pd.to_numeric(series, errors="coerce").dropna()
+                if len(s) == 0:
+                    return pd.DataFrame({"set": [tag], "bin": [], "count": [], "fraction": []})
+                edges = [0.0, 1e-6, 1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1, 5e-1, 1.0]
+                bins = pd.cut(s, bins=edges, include_lowest=True)
+                h = bins.value_counts().sort_index()
+                frac = (h / float(h.sum())).astype(float)
+                return pd.DataFrame({"set": tag, "bin": h.index.astype(str), "count": h.values.astype(int), "fraction": frac.values})
+
+            target = df_scored.loc[df_scored["_genomes_with_any_match"]].copy()
+            h1 = _hist(target["p_shared_knock"], "all_targets")
+            h2 = pd.DataFrame()
+            if "unique_peptide_count" in target.columns:
+                h2 = _hist(target.loc[target["unique_peptide_count"].fillna(0).astype(int) == 0, "p_shared_knock"], "unique0_targets")
+            hs = pd.concat([h1, h2], axis=0, ignore_index=True)
+            hs.to_csv(os.path.join(temp_dir, f"{stem}.p_shared_hist.tsv"), sep="\t", index=False)
+
+        # --------------- q calling curve ---------------
+        if "fdr_presence" in df_scored.columns and "_genomes_with_any_match" in df_scored.columns:
+            target = df_scored.loc[df_scored["_genomes_with_any_match"]].copy()
+            q = pd.to_numeric(target["fdr_presence"], errors="coerce")
+            thresholds = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0]
+            rows = []
+            for t in thresholds:
+                rows.append({"q_threshold": float(t), "n_called": int((q <= t).sum())})
+            pd.DataFrame(rows).to_csv(os.path.join(temp_dir, f"{stem}.q_calling_curve.tsv"), sep="\t", index=False)
+
+        # --------------- compact targets table ---------------
+        if "_genomes_with_any_match" in df_scored.columns:
+            target = df_scored.loc[df_scored["_genomes_with_any_match"]].copy()
+            keep_cols = [
+                "genome_id", "rank_by_score",
+                "matched_peptide_count", "unique_peptide_count",
+                "mean_degeneracy", "shared_fraction",
+                "weighted_evidence", "unique_weighted_evidence", "weighted_evidence_shared",
+                "p_shared_knock", "p_unique_upper", "p_presence", "presence_strength", "fdr_presence",
+                "null_mean_shared", "null_sd_shared", "null_p95_shared", "null_p99_shared", "z_shared",
+            ]
+            keep_cols = [c for c in keep_cols if c in target.columns]
+            target[keep_cols].to_csv(os.path.join(temp_dir, f"{stem}.targets_compact.tsv"), sep="\t", index=False)
+
+        # --------------- shared stratum counts (sparse long table) ---------------
+        if self.knockoff_shared_stratum_counts_by_genome:
+            rows = []
+            for gid, ctr in self.knockoff_shared_stratum_counts_by_genome.items():
+                if not ctr:
+                    continue
+                for k, c in ctr.items():
+                    rows.append({"genome_id": gid, "stratum": str(k), "count": int(c)})
+            if rows:
+                pd.DataFrame(rows).to_csv(os.path.join(temp_dir, f"{stem}.shared_stratum_counts.tsv"), sep="\t", index=False)
+
+        # --------------- top-N peptide contribution table (optional) ---------------
+        topN = int(export_peptide_contrib_topN) if export_peptide_contrib_topN is not None else 0
+        if topN > 0 and self.peptide_degeneracy is not None and self.num_target_genomes_for_degeneracy is not None:
+            if "_genomes_with_any_match" in df_scored.columns:
+                target = df_scored.loc[df_scored["_genomes_with_any_match"]].copy()
+            else:
+                target = df_scored.copy()
+            if "rank_by_score" in target.columns:
+                target = target.sort_values("rank_by_score", ascending=True, kind="mergesort")
+            target = target.head(topN)
+            out_rows = []
+            N_targets = int(self.num_target_genomes_for_degeneracy)
+
+            for _, r in target.iterrows():
+                gid = str(r["genome_id"])
+                peps = self.genome_matched_peptides.get(gid, set())
+                if not peps:
+                    continue
+                for pep in peps:
+                    d = int(self.peptide_degeneracy.get(pep, 1))
+                    w = float(self._compute_weight(d=d, N=N_targets))
+                    s = float(self.peptide_score.get(pep, 1.0))
+                    is_unique = (d == 1)
+                    out_rows.append({
+                        "genome_id": gid,
+                        "peptide": pep,
+                        "pep_len": int(len(pep)),
+                        "degeneracy": int(d),
+                        "stratum": str(self._knock_stratum(d=d, pep_len=len(pep))),
+                        "score": float(s),
+                        "weight": float(w),
+                        "contribution": float(w * s),
+                        "is_unique": bool(is_unique),
+                    })
+
+            if out_rows:
+                pd.DataFrame(out_rows).to_csv(
+                    os.path.join(temp_dir, f"{stem}.top{topN}_peptide_contrib.tsv"),
+                    sep="\t",
+                    index=False
+                )
+
     def analyze_genomes(
         self,
         genome_digest_dirs: Union[str, List[str]],
@@ -764,6 +1055,8 @@ class GenomeScoreCalculator:
         save_matched_peptides_cache: bool = True,
         matched_peptides_cache_path: Optional[str] = None,
         compute_coverage: bool = True,
+        export_temp: bool = True,
+        export_peptide_contrib_topN: int = 0,
     ) -> pd.DataFrame:
         """End-to-end analysis producing a genome-level q-value (fdr_presence)."""
         if output_tsv_path is None:
@@ -773,6 +1066,9 @@ class GenomeScoreCalculator:
         else:
             out_dir = os.path.dirname(output_tsv_path) or "."
             os.makedirs(out_dir, exist_ok=True)
+
+        t_all0 = time.time()
+        self.timing_stats = {}
 
         # Normalize cache path (if provided)
         cache_pkl_path: Optional[str] = None
@@ -825,6 +1121,8 @@ class GenomeScoreCalculator:
                     f"Failed to load/validate matched peptides cache ({cache_pkl_path}); recomputing. Error: {e}"
                 )
                 all_matched_peptides = None
+
+        t_scan0 = time.time()
 
         if all_matched_peptides is None:
             folders = [genome_digest_dirs] if isinstance(genome_digest_dirs, str) else list(genome_digest_dirs)
@@ -901,6 +1199,8 @@ class GenomeScoreCalculator:
                     pickle.dump(all_matched_peptides, f)
                 self.logger.info(f"Saved matched peptides cache: {pkl_path}")
 
+        self.timing_stats["scan_genomes"] = float(time.time() - t_scan0)
+
         self.genome_matched_peptides = {}
         self.genome_total_theoretical_peptides = {}
         obs_set = set(self.peptide_score.keys())
@@ -911,7 +1211,9 @@ class GenomeScoreCalculator:
             prev = self.genome_total_theoretical_peptides.get(genome_id, 0)
             self.genome_total_theoretical_peptides[genome_id] = max(prev, int(total_cnt))
 
+        t_deg0 = time.time()
         peptide_deg, genome_unique_counts, N_targets = self._calculate_peptide_degeneracy_and_unique_counts(all_matched_peptides)
+        self.timing_stats["compute_degeneracy"] = float(time.time() - t_deg0)
         self.peptide_degeneracy = peptide_deg
         self.num_target_genomes_for_degeneracy = N_targets
 
@@ -926,25 +1228,43 @@ class GenomeScoreCalculator:
         ]
 
         self.logger.info(f"Computing metrics for {len(genome_data_list)} genomes ...")
+        t_metrics0 = time.time()
         df_metrics = self._calculate_genome_metrics(genome_data_list, peptide_deg, N_targets)
+        self.timing_stats["compute_metrics"] = float(time.time() - t_metrics0)
 
-        self.logger.info("Building genome_score ...")
-        df_scored = self._build_genome_score(df_metrics)
-        df_scored = df_scored.sort_values("genome_score", ascending=False, kind="mergesort").reset_index(drop=True)
+        self.logger.info("Ranking genomes ...")
+        t_score0 = time.time()
+        df_scored = self._rank_genomes(df_metrics)
+        self.timing_stats["rank_genomes"] = float(time.time() - t_score0)
         df_scored["rank_by_score"] = np.arange(1, len(df_scored) + 1, dtype=int)
 
         if self.knockoff_enabled:
             self.logger.info("Computing per-genome existence q-values via knockoff (scheme A) ...")
+            t_knock0 = time.time()
             df_scored = self._add_knockoff_existence_stats(df_scored)
+            self.timing_stats["knockoff_pvalues"] = float(time.time() - t_knock0)
 
         if compute_coverage:
             self.logger.info("Computing coverage statistics (reference only; not used for final calling) ...")
+            t_cov0 = time.time()
             df_scored = self._add_coverage_stats(df_scored, order_col="rank_by_score")
+            self.timing_stats["coverage_stats"] = float(time.time() - t_cov0)
 
         self.genome_scores_df = df_scored
 
         self.logger.info(f"Saving results to: {output_tsv_path}")
         df_scored.to_csv(output_tsv_path, sep="\t", index=False)
+
+        self.timing_stats["save_tsv"] = float(time.time() - t_all0)
+
+        # --- NEW: export extra artifacts for paper figures ---
+        if export_temp:
+            try:
+                stem = Path(output_tsv_path).stem
+                self._export_temp_artifacts(out_dir=out_dir, stem=stem, df_scored=df_scored, export_peptide_contrib_topN=export_peptide_contrib_topN)
+                self.timing_stats["export_temp"] = float(time.time() - t_all0)
+            except Exception as e:
+                self.logger.warning(f"Failed to export temp artifacts: {e}")
 
         self._print_summary()
         return self.genome_scores_df
@@ -968,14 +1288,12 @@ class GenomeScoreCalculator:
             print(f"Genomes q<=0.05: {keep05}")
 
         top = df.loc[df["_genomes_with_any_match"]].head(10)
-        print("\nTop 10 target genomes by genome_score:")
+        print("\nTop 10 target genomes by rank_by_score:")
         for i, (_, r) in enumerate(top.iterrows(), 1):
             qv = r.get("fdr_presence", np.nan)
             print(
                 f"{i}. {r['genome_id']} | Unique_Pep={int(r['unique_peptide_count'])}, "
                 f"Matched_Pep={int(r['matched_peptide_count'])}, "
-                # f"w(p)={float(r['weighted_evidence']):.2f}, "
-                # f"w(p)_shared={float(r.get('weighted_evidence_shared', 0.0)):.2f}, "
                 f"FDR={qv if pd.notna(qv) else 'NA'}, "
                 f"Coverage={float(r.get('cumulative_coverage_percent', 0.0)):.1f}%"
             )
@@ -1009,7 +1327,7 @@ if __name__ == "__main__":
     # You only need TARGET folders for knockoff.
     genome_digest_dirs = [
         r"C:/Users/max/Desktop/digested_genomes/UHGP_digested",          # target digest peptides
-        # r"test_data\mix24x\Mix24_digested",  # target digest peptides
+        r"test_data\mix24x\Mix24_digested",  # target digest peptides
         # r'test_data\sihumix\digested',  # target digest peptides
         # r'test_data\6bacteria\genomes\faa_digested'
         
@@ -1018,14 +1336,16 @@ if __name__ == "__main__":
     # ---- Output ----
     # output_tsv_path = r"test_data/proj1/genome_scores_knockoff_proj1.tsv"
     # output_tsv_path = r"test_data/proj2/genome_scores_knockoff.tsv"
-    # output_tsv_path = r"test_data/mix24x/genome_scores_knockoff_mix24x.tsv"
-    output_tsv_path = r"test_data/mix24x/genome_scores_knockoff_mix24x_only_UHGP.tsv"
+    output_tsv_path = r"test_data/mix24x/genome_scores_knockoff_mix24x.tsv"
+    # output_tsv_path = r"test_data/mix24x/genome_scores_knockoff_mix24x_only_UHGP1.tsv"
     # output_tsv_path = r"test_data\6bacteria\genome_scores_knockoff_6bacteria.tsv"
     # output_tsv_path = r"test_data\sihumix\genome_scores_knockoff_sihumix_only_UHGP.tsv"
     
     out_dir = os.path.dirname(output_tsv_path) or "."
     pickle_path = os.path.join(out_dir, "matched_peptides.pkl")  # set to e.g. r"test_data\6bacteria\matched_peptides_cache.pkl" to save/load matched peptides cache (speeds up repeated runs)
-
+    pickle_path = None  # set to None to disable matched peptides caching
+    
+    
     # ---- Optional: exclude list ----
     exclude_genome_ids = []
     exclude_list_path = r"test_data/removed_genomes.txt"
@@ -1047,14 +1367,11 @@ if __name__ == "__main__":
 
     # Knockoff tuning
     calc.knockoff_enabled = True
-    # Two-stage MC (optional):
-    # Stage 1: K1 for all genomes (fast screen)
-    # Stage 2: K2 only for genomes with stage-1 p_presence in specified ranges
     calc.knockoff_mc_iterations = 500
     calc.knockoff_stage2_mc_iterations = 2000
     calc.knockoff_stage2_p_exist_ranges = [(0.005, 0.02), (0.02, 0.08)]
     calc.knockoff_random_seed = 1
-    calc.knockoff_top_n_targets = None   # set e.g. 5000 for speed on very large datasets
+    calc.knockoff_top_n_targets = None
 
     # Read peptides
     calc.read_peptide_file(
