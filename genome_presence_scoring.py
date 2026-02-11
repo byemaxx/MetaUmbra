@@ -16,7 +16,7 @@
 #    - For each genome, sample from these pools according to that genome's shared-stratum counts to get
 #      an empirical null for weighted_evidence_shared, yielding p_shared_knock.
 #    - Unique evidence p-value upper bound (conservative): p_unique_upper = (peptide_fdr_cutoff) ** U.
-#    - Combine with Fisher (2 p-values) => p_presence; BH => fdr_presence (per-genome existence q-value).
+#    - Combine with Fisher (2 p-values) => p_presence; BH => q_presence (per-genome existence q-value).
 #
 # Outputs:
 # - Main result table: concise, publication-facing columns with standardized names.
@@ -65,6 +65,56 @@ def setup_logger(name: str, log_file: Optional[str] = None, level=logging.INFO) 
 
 
 # =========================
+# Genome scan workers
+# =========================
+_OBS_PEPTIDES_WORKER: Set[str] = set()
+
+
+def _init_genome_batch_worker(obs_peptides: Set[str]) -> None:
+    """ProcessPool initializer: set read-only observed peptide universe once per worker."""
+    global _OBS_PEPTIDES_WORKER
+    _OBS_PEPTIDES_WORKER = set(obs_peptides)
+
+
+def _process_genome_batch_worker(file_paths: List[Union[str, os.PathLike]]) -> List[Tuple[str, Set[str], int]]:
+    """Process a batch of genome peptide files (worker-safe, avoids shipping class state per task)."""
+    results: List[Tuple[str, Set[str], int]] = []
+
+    for genome_peptides_path in file_paths:
+        genome_peptides_path = str(genome_peptides_path)
+        genome_id = Path(genome_peptides_path).stem
+        try:
+            # Fast path: read only the canonical peptide column.
+            try:
+                genome_peptides_df = pd.read_csv(
+                    genome_peptides_path,
+                    sep="\t",
+                    usecols=["Peptide"],
+                    dtype={"Peptide": "string"},
+                    engine="c",
+                )
+                peptide_column_name = "Peptide"
+            except ValueError:
+                # Fallback for files without "Peptide": read only the first column by index.
+                genome_peptides_df = pd.read_csv(
+                    genome_peptides_path,
+                    sep="\t",
+                    usecols=[0],
+                    dtype="string",
+                    engine="c",
+                )
+                peptide_column_name = genome_peptides_df.columns[0]
+
+            theoretical_peptides = set(genome_peptides_df[peptide_column_name].dropna().astype(str).values)
+            matched_peptides = theoretical_peptides.intersection(_OBS_PEPTIDES_WORKER)
+            results.append((genome_id, matched_peptides, len(theoretical_peptides)))
+        except Exception:
+            results.append((genome_id, set(), 0))
+
+    return results
+
+
+# =========================
 # Main Calculator
 # =========================
 class GenomePresenceScorer:
@@ -100,12 +150,12 @@ class GenomePresenceScorer:
 
         # Unified ranking score scales (lexicographic; unique dominates)
         self.rank_lexico_scales = {
-            "U": 10**12,   # unique_peptide_count
+            "U": 10**12,   # num_peptides_unique
             "UW": 10**9,   # unique_weighted_evidence
             "WE": 10**6,   # weighted_evidence
             "EP": 10**3,   # effective_peptide_count
             "MR": 10**5,   # peptide_match_ratio (0..1)
-            "M": 1         # matched_peptide_count
+            "M": 1         # num_peptides_matched
         }
 
         # Knockoff settings (scheme A)
@@ -130,7 +180,7 @@ class GenomePresenceScorer:
         self.knockoff_stage2_mc_iterations: Optional[int] = None
         self.knockoff_stage2_p_exist_ranges: List[Tuple[float, float]] = [(0.005, 0.02), (0.02, 0.08)]
 
-        # Optional speed knob: compute knockoff only for top-N TARGET genomes by rank_by_score, set others p=1
+        # Optional speed knob: compute knockoff only for top-N TARGET genomes by rank, set others p=1
         self.knockoff_top_n_targets: Optional[int] = None
 
         # Internal caches for knockoff
@@ -269,28 +319,6 @@ class GenomePresenceScorer:
         return True
 
     # =========================
-    # Genome scan
-    # =========================
-    def _process_genome_batch(self, file_paths: List[Union[str, os.PathLike]]) -> List[Tuple[str, Set[str], int]]:
-        """Process a batch of genome peptide files."""
-        obs_peptides = set(self.peptide_score.keys())
-        results: List[Tuple[str, Set[str], int]] = []
-
-        for genome_peptides_path in file_paths:
-            genome_peptides_path = str(genome_peptides_path)
-            genome_id = Path(genome_peptides_path).stem
-            try:
-                genome_peptides_df = pd.read_csv(genome_peptides_path, sep="\t", engine="c")
-                peptide_column_name = "Peptide" if "Peptide" in genome_peptides_df.columns else genome_peptides_df.columns[0]
-                theoretical_peptides = set(genome_peptides_df[peptide_column_name].dropna().astype(str).values)
-                matched_peptides = theoretical_peptides.intersection(obs_peptides)
-                results.append((genome_id, matched_peptides, len(theoretical_peptides)))
-            except Exception:
-                results.append((genome_id, set(), 0))
-
-        return results
-
-    # =========================
     # Shared peptide degeneracy + weights
     # =========================
     def _compute_weight(self, d: int, N: int) -> float:
@@ -352,14 +380,14 @@ class GenomePresenceScorer:
         for genome_id, matched_peptides, total_theoretical_peptides, unique_matched_peptides in tqdm(
             genome_data_list, desc="Computing genome metrics"
         ):
-            matched_peptide_count = len(matched_peptides)
+            num_peptides_matched = len(matched_peptides)
 
-            if matched_peptide_count == 0 or total_theoretical_peptides == 0:
+            if num_peptides_matched == 0 or total_theoretical_peptides == 0:
                 out_rows.append({
                     "genome_id": genome_id,
                     "total_peptide_count": int(total_theoretical_peptides),
-                    "matched_peptide_count": 0,
-                    "unique_peptide_count": 0,
+                    "num_peptides_matched": 0,
+                    "num_peptides_unique": 0,
                     "peptide_match_ratio": 0.0,
                     "average_peptide_score": 0.0,
                     "effective_peptide_count": 0.0,
@@ -406,7 +434,7 @@ class GenomePresenceScorer:
             self.knockoff_shared_stratum_counts_by_genome[genome_id] = strata_counter
 
             average_peptide_score = float(np.mean(peptide_scores)) if peptide_scores else 0.0
-            peptide_match_ratio = float(matched_peptide_count) / float(max(int(total_theoretical_peptides), 1))
+            peptide_match_ratio = float(num_peptides_matched) / float(max(int(total_theoretical_peptides), 1))
 
             effective_peptide_count = float(np.sum(peptide_weights)) if peptide_weights else 0.0
             weighted_evidence = float(np.sum(weighted_contributions)) if weighted_contributions else 0.0
@@ -416,16 +444,16 @@ class GenomePresenceScorer:
 
             mean_degeneracy = float(np.mean(peptide_degeneracies)) if peptide_degeneracies else 0.0
             shared_fraction = (
-                1.0 - (float(unique_matched_peptides) / float(matched_peptide_count))
-                if matched_peptide_count > 0
+                1.0 - (float(unique_matched_peptides) / float(num_peptides_matched))
+                if num_peptides_matched > 0
                 else 0.0
             )
 
             out_rows.append({
                 "genome_id": genome_id,
                 "total_peptide_count": int(total_theoretical_peptides),
-                "matched_peptide_count": int(matched_peptide_count),
-                "unique_peptide_count": int(unique_matched_peptides),
+                "num_peptides_matched": int(num_peptides_matched),
+                "num_peptides_unique": int(unique_matched_peptides),
                 "peptide_match_ratio": float(peptide_match_ratio),
                 "average_peptide_score": float(average_peptide_score),
                 "effective_peptide_count": float(effective_peptide_count),
@@ -448,12 +476,12 @@ class GenomePresenceScorer:
         Build a lexicographically ranked genome table.
 
         - This implementation enforces STRICT lexicographic ranking ("unique dominates"):
-            1) unique_peptide_count (U)
+            1) num_peptides_unique (U)
             2) unique_weighted_evidence (UW)
             3) weighted_evidence (WE)
             4) effective_peptide_count (EP)
             5) peptide_match_ratio (MR)
-            6) matched_peptide_count (M)
+            6) num_peptides_matched (M)
         Ties are broken deterministically by genome_id.
 
         The output rows are ordered from best to worst by the lexicographic rule above.
@@ -461,26 +489,26 @@ class GenomePresenceScorer:
         out = df_metrics.copy()
 
         # Mark target genomes (matched >= 1)
-        if "matched_peptide_count" not in out.columns:
-            raise ValueError("Missing required column: matched_peptide_count")
-        out["_genomes_with_any_match"] = out["matched_peptide_count"].fillna(0).astype(int) >= 1
+        if "num_peptides_matched" not in out.columns:
+            raise ValueError("Missing required column: num_peptides_matched")
+        out["_genomes_with_any_match"] = out["num_peptides_matched"].fillna(0).astype(int) >= 1
 
         # Ensure required ranking columns exist (fill missing with zeros)
         required_cols = [
-            "unique_peptide_count",
+            "num_peptides_unique",
             "unique_weighted_evidence",
             "weighted_evidence",
             "effective_peptide_count",
             "peptide_match_ratio",
-            "matched_peptide_count",
+            "num_peptides_matched",
         ]
         for c in required_cols:
             if c not in out.columns:
                 out[c] = 0
 
         # Cast / sanitize types for stable sorting
-        out["unique_peptide_count"] = pd.to_numeric(out["unique_peptide_count"], errors="coerce").fillna(0).astype(int)
-        out["matched_peptide_count"] = pd.to_numeric(out["matched_peptide_count"], errors="coerce").fillna(0).astype(int)
+        out["num_peptides_unique"] = pd.to_numeric(out["num_peptides_unique"], errors="coerce").fillna(0).astype(int)
+        out["num_peptides_matched"] = pd.to_numeric(out["num_peptides_matched"], errors="coerce").fillna(0).astype(int)
 
         float_cols = [
             "unique_weighted_evidence",
@@ -497,12 +525,12 @@ class GenomePresenceScorer:
 
         # STRICT lexicographic ordering: U > UW > WE > EP > MR > M
         sort_cols = [
-            "unique_peptide_count",
+            "num_peptides_unique",
             "unique_weighted_evidence",
             "weighted_evidence",
             "effective_peptide_count",
             "peptide_match_ratio",
-            "matched_peptide_count",
+            "num_peptides_matched",
             "genome_id",  # deterministic tie-breaker
         ]
         ascending = [False, False, False, False, False, False, True]
@@ -664,8 +692,8 @@ class GenomePresenceScorer:
         out["p_shared_knock"] = np.nan
         out["p_unique_upper"] = np.nan
         out["p_presence"] = np.nan
-        out["fdr_presence"] = np.nan
-        out["presence_strength"] = np.nan
+        out["q_presence"] = np.nan
+        out["presence_score"] = np.nan
 
         # --- NEW: knockoff null diagnostics ---
         out["null_mean_shared"] = np.nan
@@ -702,7 +730,7 @@ class GenomePresenceScorer:
 
         if self.knockoff_top_n_targets is not None:
             topN = int(self.knockoff_top_n_targets)
-            target_df = target_df.sort_values("rank_by_score", ascending=True, kind="mergesort").head(topN)
+            target_df = target_df.sort_values("rank", ascending=True, kind="mergesort").head(topN)
 
         # -----------------
         # Stage 1 (fast screen)
@@ -721,7 +749,7 @@ class GenomePresenceScorer:
             )
             p_shared, mu, sd, p95, p99 = result if isinstance(result, tuple) else (result, 0.0, 0.0, 0.0, 0.0)
 
-            unique_peptides = int(row.get("unique_peptide_count", 0))
+            unique_peptides = int(row.get("num_peptides_unique", 0))
             p_unique_upper = 1.0 if unique_peptides <= 0 else float(peptide_fdr_upper ** unique_peptides)
 
             p_existence = self._fisher_p_2(p1=p_shared, p2=p_unique_upper)
@@ -774,7 +802,7 @@ class GenomePresenceScorer:
                         )
                         p_shared, mu, sd, p95, p99 = result if isinstance(result, tuple) else (result, 0.0, 0.0, 0.0, 0.0)
 
-                        unique_peptides = int(row.get("unique_peptide_count", 0))
+                        unique_peptides = int(row.get("num_peptides_unique", 0))
                         p_unique_upper = 1.0 if unique_peptides <= 0 else float(peptide_fdr_upper ** unique_peptides)
                         p_existence = self._fisher_p_2(p1=p_shared, p2=p_unique_upper)
 
@@ -795,13 +823,13 @@ class GenomePresenceScorer:
             out.loc[remaining_idx, "p_presence"] = 1.0
 
         all_p = out.loc[target_mask, "p_presence"].to_numpy(dtype=float)
-        out.loc[target_mask, "fdr_presence"] = self._bh_qvalues(all_p)
-        pvals = pd.to_numeric(out["p_presence"], errors="coerce")
-        valid = pvals.notna()
-        out.loc[valid, "presence_strength"] = -np.log10(np.clip(pvals.loc[valid].to_numpy(dtype=float), 1e-300, 1.0))
+        out.loc[target_mask, "q_presence"] = self._bh_qvalues(all_p)
+        qvals = pd.to_numeric(out["q_presence"], errors="coerce")
+        valid = qvals.notna()
+        out.loc[valid, "presence_score"] = -np.log10(np.clip(qvals.loc[valid].to_numpy(dtype=float), 1e-300, 1.0))
 
-        out["pass_fdr_0p01"] = (out["fdr_presence"] <= 0.01) & (out["_genomes_with_any_match"])
-        out["pass_fdr_0p05"] = (out["fdr_presence"] <= 0.05) & (out["_genomes_with_any_match"])
+        out["pass_q_0_01"] = (out["q_presence"] <= 0.01) & (out["_genomes_with_any_match"])
+        out["pass_q_0_05"] = (out["q_presence"] <= 0.05) & (out["_genomes_with_any_match"])
 
         return out
 
@@ -811,7 +839,7 @@ class GenomePresenceScorer:
     def _add_coverage_stats(
         self,
         df_scored: pd.DataFrame,
-        order_col: str = "rank_by_score",
+        order_col: str = "rank",
     ) -> pd.DataFrame:
         """
         Add coverage statistics as a *human reference* (not used in q-value computation).
@@ -921,10 +949,10 @@ class GenomePresenceScorer:
         try:
             meta["genomes_total"] = int(len(df_scored))
             meta["genomes_with_any_match"] = int(df_scored.get("_genomes_with_any_match", False).sum())
-            if "pass_fdr_0p01" in df_scored.columns:
-                meta["genomes_q_le_0p01"] = int(df_scored["pass_fdr_0p01"].fillna(False).sum())
-            if "pass_fdr_0p05" in df_scored.columns:
-                meta["genomes_q_le_0p05"] = int(df_scored["pass_fdr_0p05"].fillna(False).sum())
+            if "pass_q_0_01" in df_scored.columns:
+                meta["genomes_q_le_0p01"] = int(df_scored["pass_q_0_01"].fillna(False).sum())
+            if "pass_q_0_05" in df_scored.columns:
+                meta["genomes_q_le_0p05"] = int(df_scored["pass_q_0_05"].fillna(False).sum())
         except Exception:
             pass
 
@@ -967,15 +995,15 @@ class GenomePresenceScorer:
             target = df_scored.loc[df_scored["_genomes_with_any_match"]].copy()
             h1 = _hist(target["p_shared_knock"], "all_targets")
             h2 = pd.DataFrame()
-            if "unique_peptide_count" in target.columns:
-                h2 = _hist(target.loc[target["unique_peptide_count"].fillna(0).astype(int) == 0, "p_shared_knock"], "unique0_targets")
+            if "num_peptides_unique" in target.columns:
+                h2 = _hist(target.loc[target["num_peptides_unique"].fillna(0).astype(int) == 0, "p_shared_knock"], "unique0_targets")
             hs = pd.concat([h1, h2], axis=0, ignore_index=True)
             hs.to_csv(os.path.join(temp_dir, "p_shared_hist.tsv"), sep="\t", index=False)
 
         # --------------- q calling curve ---------------
-        if "fdr_presence" in df_scored.columns and "_genomes_with_any_match" in df_scored.columns:
+        if "q_presence" in df_scored.columns and "_genomes_with_any_match" in df_scored.columns:
             target = df_scored.loc[df_scored["_genomes_with_any_match"]].copy()
-            q = pd.to_numeric(target["fdr_presence"], errors="coerce")
+            q = pd.to_numeric(target["q_presence"], errors="coerce")
             thresholds = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0]
             rows = []
             for t in thresholds:
@@ -1001,8 +1029,8 @@ class GenomePresenceScorer:
                 target = df_scored.loc[df_scored["_genomes_with_any_match"]].copy()
             else:
                 target = df_scored.copy()
-            if "rank_by_score" in target.columns:
-                target = target.sort_values("rank_by_score", ascending=True, kind="mergesort")
+            if "rank" in target.columns:
+                target = target.sort_values("rank", ascending=True, kind="mergesort")
             target = target.head(topN)
             out_rows = []
             N_targets = int(self.num_target_genomes_for_degeneracy)
@@ -1051,7 +1079,7 @@ class GenomePresenceScorer:
         export_peptide_contrib_topN: int = 0,
         include_null_diagnostics_in_main: bool = False,
     ) -> pd.DataFrame:
-        """End-to-end analysis producing a genome-level q-value (fdr_presence)."""
+        """End-to-end analysis producing a genome-level q-value (q_presence)."""
         if output_tsv_path is None:
             out_dir = self.peptide_table_dir if self.peptide_table_dir else os.getcwd()
             output_tsv_path = os.path.join(out_dir, "genome_presence.tsv")
@@ -1158,12 +1186,16 @@ class GenomePresenceScorer:
             # shutdown which can raise harmless-but-noisy exceptions.
             all_matched_peptides = []
             futures = []
-            executor = concurrent.futures.ProcessPoolExecutor(max_workers=self.num_workers)
+            executor = concurrent.futures.ProcessPoolExecutor(
+                max_workers=self.num_workers,
+                initializer=_init_genome_batch_worker,
+                initargs=(set(self.peptide_score.keys()),),
+            )
             try:
                 for b in batches:
                     if len(b) == 0:
                         continue
-                    futures.append(executor.submit(self._process_genome_batch, list(b)))
+                    futures.append(executor.submit(_process_genome_batch_worker, list(b)))
 
                 for fut in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Scanning genomes"):
                     all_matched_peptides.extend(fut.result())
@@ -1229,7 +1261,7 @@ class GenomePresenceScorer:
         t_score0 = time.time()
         df_scored = self._rank_genomes(df_metrics)
         self.timing_stats["rank_genomes"] = float(time.time() - t_score0)
-        df_scored["rank_by_score"] = np.arange(1, len(df_scored) + 1, dtype=int)
+        df_scored["rank"] = np.arange(1, len(df_scored) + 1, dtype=int)
 
         if self.knockoff_enabled:
             self.logger.info("Computing per-genome existence q-values via knockoff (scheme A) ...")
@@ -1240,7 +1272,7 @@ class GenomePresenceScorer:
         if compute_coverage:
             self.logger.info("Computing coverage statistics (reference only; not used for final calling) ...")
             t_cov0 = time.time()
-            df_scored = self._add_coverage_stats(df_scored, order_col="rank_by_score")
+            df_scored = self._add_coverage_stats(df_scored, order_col="rank")
             self.timing_stats["coverage_stats"] = float(time.time() - t_cov0)
 
         self.genome_scores_df = df_scored
@@ -1248,24 +1280,20 @@ class GenomePresenceScorer:
         self.logger.info(f"Saving results to: {output_tsv_path}")
         source_cols = [
             "genome_id",
-            "rank_by_score",
+            "rank",
             "p_presence",
-            "fdr_presence",
-            "pass_fdr_0p01",
-            "pass_fdr_0p05",
-            "matched_peptide_count",
-            "unique_peptide_count",
-            "presence_strength",
+            "q_presence",
+            "pass_q_0_01",
+            "pass_q_0_05",
+            "num_peptides_matched",
+            "num_peptides_unique",
+            "presence_score",
             "shared_fraction",
             "mean_degeneracy",
         ]
         rename_map = {
-            "rank_by_score": "rank",
             "p_presence": "pvalue",
-            "fdr_presence": "qvalue",
-            "matched_peptide_count": "num_peptides_matched",
-            "unique_peptide_count": "num_peptides_unique",
-            "presence_strength": "presence_score",
+            "q_presence": "qvalue",
         }
         missing = [c for c in source_cols if c not in df_scored.columns]
         if missing:
@@ -1317,20 +1345,20 @@ class GenomePresenceScorer:
         print(f"Genomes analyzed: {len(df)}")
         print(f"Genomes with matched>=1: {int(df['_genomes_with_any_match'].sum())}")
 
-        if "fdr_presence" in df.columns:
-            keep01 = int(df["pass_fdr_0p01"].fillna(False).sum())
-            keep05 = int(df["pass_fdr_0p05"].fillna(False).sum())
+        if "q_presence" in df.columns:
+            keep01 = int(df["pass_q_0_01"].fillna(False).sum())
+            keep05 = int(df["pass_q_0_05"].fillna(False).sum())
             print(f"Genomes q<=0.01: {keep01}")
             print(f"Genomes q<=0.05: {keep05}")
 
         top = df.loc[df["_genomes_with_any_match"]].head(10)
-        print("\nTop 10 target genomes by rank_by_score:")
+        print("\nTop 10 target genomes by rank:")
         for i, (_, r) in enumerate(top.iterrows(), 1):
-            qv = r.get("fdr_presence", np.nan)
+            qv = r.get("q_presence", np.nan)
             print(
-                f"{i}. {r['genome_id']} | Unique_Pep={int(r['unique_peptide_count'])}, "
-                f"Matched_Pep={int(r['matched_peptide_count'])}, "
-                f"FDR={qv if pd.notna(qv) else 'NA'}, "
+                f"{i}. {r['genome_id']} | Unique_Pep={int(r['num_peptides_unique'])}, "
+                f"Matched_Pep={int(r['num_peptides_matched'])}, "
+                f"Qvalue={qv if pd.notna(qv) else 'NA'}, "
                 f"Coverage={float(r.get('cumulative_coverage_percent', 0.0)):.1f}%"
             )
 
@@ -1379,7 +1407,7 @@ if __name__ == "__main__":
     
     out_dir = os.path.dirname(output_tsv_path) or "."
     pickle_path = os.path.join(out_dir, "matched_peptides.pkl")  # set to e.g. r"test_data\6bacteria\matched_peptides_cache.pkl" to save/load matched peptides cache (speeds up repeated runs)
-    # pickle_path = None  # set to None to disable matched peptides caching
+    pickle_path = None  # set to None to disable matched peptides caching
     
     
     # ---- Optional: exclude list ----
