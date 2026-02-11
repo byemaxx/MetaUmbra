@@ -1307,12 +1307,12 @@ if __name__ == "__main__":
     t0 = time.time()
 
     # ---- Input peptide file ----
-    # peptide_table_path = r"test_data/proj2/peptide_core.tsv"
+    peptide_table_path = r"test_data/proj2/peptide_core.tsv"
     # peptide_table_path = r"test_data\sihumix\peptides.tsv"
     # peptide_table_path = r"test_data\proj1\peptides_all.tsv"
     # peptide_table_path = r"test_data\proj1\peptides_v48_PBS.tsv"
     # peptide_table_path = r"test_data\6bacteria\peptides.tsv"
-    peptide_table_path = r"test_data\mix24x\peptides.tsv"
+    # peptide_table_path = r"test_data\mix24x\peptides.tsv"
 
     peptide_seq_col = "Sequence"
     peptide_score_col = "Score"          # set to None if not available
@@ -1327,7 +1327,7 @@ if __name__ == "__main__":
     # You only need TARGET folders for knockoff.
     genome_digest_dirs = [
         r"C:/Users/max/Desktop/digested_genomes/UHGP_digested",          # target digest peptides
-        r"test_data\mix24x\Mix24_digested",  # target digest peptides
+        # r"test_data\mix24x\Mix24_digested",  # target digest peptides
         # r'test_data\sihumix\digested',  # target digest peptides
         # r'test_data\6bacteria\genomes\faa_digested'
         
@@ -1335,8 +1335,8 @@ if __name__ == "__main__":
 
     # ---- Output ----
     # output_tsv_path = r"test_data/proj1/genome_scores_knockoff_proj1.tsv"
-    # output_tsv_path = r"test_data/proj2/genome_scores_knockoff.tsv"
-    output_tsv_path = r"test_data/mix24x/genome_scores_knockoff_mix24x.tsv"
+    output_tsv_path = r"test_data/proj2/genome_scores_knockoff_proj2.tsv"
+    # output_tsv_path = r"test_data/mix24x/genome_scores_knockoff_mix24x.tsv"
     # output_tsv_path = r"test_data/mix24x/genome_scores_knockoff_mix24x_only_UHGP1.tsv"
     # output_tsv_path = r"test_data\6bacteria\genome_scores_knockoff_6bacteria.tsv"
     # output_tsv_path = r"test_data\sihumix\genome_scores_knockoff_sihumix_only_UHGP.tsv"
