@@ -7,7 +7,7 @@
 # 2) For each genome (theoretical digest peptides), compute matched peptides = observed ∩ theoretical.
 # 3) Compute peptide degeneracy d(p) across TARGET genomes (recommended).
 # 4) Compute shared-aware evidence:
-#       w(p)=1/d(p) (or optional IDF)
+#       w(p)=1/d(p)
 #       weighted_evidence = Σ w(p)*score(p)
 #       unique_weighted_evidence = Σ score(p) for d(p)=1
 #       weighted_evidence_shared = Σ w(p)*score(p) for d(p)>1
@@ -30,7 +30,7 @@ import logging
 import multiprocessing as mp
 import concurrent.futures
 from pathlib import Path
-from typing import Optional, List, Dict, Set, Tuple, Union, Literal
+from typing import Optional, List, Dict, Set, Tuple, Union
 from collections import Counter
 import json
 import sys
@@ -141,13 +141,6 @@ class GenomePresenceScorer:
         self.genome_total_theoretical_peptides: Dict[str, int] = {}  # genome -> total theoretical peptides count
         self.genome_scores_df: Optional[pd.DataFrame] = None
 
-        # Shared-peptide / evidence parameters
-        # weighting_mode:
-        # - "inverse_degeneracy": w(p)=1/d(p)
-        # - "idf": w(p)=log((N+1)/(d+1)) with optional log base
-        self.weighting_mode: Literal["inverse_degeneracy", "idf"] = "inverse_degeneracy"
-        self.idf_log_base = np.e
-
         # Unified ranking score scales (lexicographic; unique dominates)
         self.rank_lexico_scales = {
             "U": 10**12,   # num_peptides_unique
@@ -185,7 +178,6 @@ class GenomePresenceScorer:
 
         # Internal caches for knockoff
         self.peptide_degeneracy: Optional[Dict[str, int]] = None
-        self.num_target_genomes_for_degeneracy: Optional[int] = None
         self.knockoff_pools_weighted_contrib: Optional[Dict[Union[int, Tuple[int, int]], np.ndarray]] = None
         self.knockoff_shared_stratum_counts_by_genome: Dict[str, Counter] = {}  # genome_id -> Counter(stratum -> count)
 
@@ -321,20 +313,15 @@ class GenomePresenceScorer:
     # =========================
     # Shared peptide degeneracy + weights
     # =========================
-    def _compute_weight(self, d: int, N: int) -> float:
+    def _compute_weight(self, d: int) -> float:
         """Shared-aware peptide weight given degeneracy d(p)=d."""
         d = int(max(d, 1))
-        if self.weighting_mode == "idf":
-            val = np.log((N + 1.0) / (d + 1.0))
-            if self.idf_log_base != np.e:
-                val = val / np.log(self.idf_log_base)
-            return float(max(val, 0.0))
         return 1.0 / float(d)
 
     def _calculate_peptide_degeneracy_and_unique_counts(
         self,
         all_matched_peptides: List[Tuple[str, Set[str], int]],
-    ) -> Tuple[Dict[str, int], Dict[str, int], int]:
+    ) -> Tuple[Dict[str, int], Dict[str, int]]:
         """Compute peptide degeneracy d(p) and per-genome unique peptide counts."""
         self.logger.info("Computing peptide degeneracy d(p) and per-genome unique counts ...")
 
@@ -360,7 +347,8 @@ class GenomePresenceScorer:
         self.logger.info(
             f"d(p): {len(peptide_deg)} peptides across {num_target_genomes} genomes."
         )
-        return peptide_deg, genome_unique_counts, num_target_genomes
+        self.run_stats["num_target_genomes_for_degeneracy"] = int(num_target_genomes)
+        return peptide_deg, genome_unique_counts
 
     # =========================
     # Genome metrics
@@ -369,7 +357,6 @@ class GenomePresenceScorer:
         self,
         genome_data_list: List[Tuple[str, Set[str], int, int]],
         peptide_deg: Dict[str, int],
-        N_targets_for_deg: int,
     ) -> pd.DataFrame:
         """Compute shared-aware metrics for each genome and record shared-stratum counts for knockoff."""
         self.knockoff_shared_stratum_counts_by_genome = {}
@@ -416,7 +403,7 @@ class GenomePresenceScorer:
             for peptide in matched_peptides:
                 score = float(self.peptide_score.get(peptide, default_score))
                 degeneracy = int(peptide_deg.get(peptide, 1))
-                weight = self._compute_weight(d=degeneracy, N=N_targets_for_deg)
+                weight = self._compute_weight(d=degeneracy)
 
                 peptide_scores.append(score)
                 peptide_degeneracies.append(degeneracy)
@@ -574,14 +561,14 @@ class GenomePresenceScorer:
         lb = self._knock_len_bin(pep_len)
         return (int(db), int(lb))
 
-    def _prepare_knockoff_pools(self, peptide_deg: Dict[str, int], N_targets_for_deg: int) -> None:
+    def _prepare_knockoff_pools(self, peptide_deg: Dict[str, int]) -> None:
         """Build stratum pools of shared peptide contributions (w*s) for observed peptides with d(p)>1."""
         pools: Dict[Union[int, Tuple[int, int]], List[float]] = {}
         for pep, s in self.peptide_score.items():
             d = int(peptide_deg.get(pep, 0))
             if d <= 1:
                 continue
-            w = self._compute_weight(d=d, N=N_targets_for_deg)
+            w = self._compute_weight(d=d)
             key = self._knock_stratum(d=d, pep_len=len(pep))
             pools.setdefault(key, []).append(float(w * float(s)))
 
@@ -705,11 +692,11 @@ class GenomePresenceScorer:
         if not self.knockoff_enabled:
             return out
 
-        if self.peptide_degeneracy is None or self.num_target_genomes_for_degeneracy is None:
-            raise RuntimeError("Knockoff requires peptide_deg and N_targets_for_deg to be set.")
+        if self.peptide_degeneracy is None:
+            raise RuntimeError("Knockoff requires peptide_deg to be set.")
 
         if self.knockoff_pools_weighted_contrib is None:
-            self._prepare_knockoff_pools(self.peptide_degeneracy, self.num_target_genomes_for_degeneracy)
+            self._prepare_knockoff_pools(self.peptide_degeneracy)
 
         # Use independent RNG streams for stage-1 and stage-2 so refinement is reproducible
         # regardless of how many candidates enter stage-2.
@@ -930,8 +917,6 @@ class GenomePresenceScorer:
 
         # --------------- run summary JSON ---------------
         meta = dict(self.run_stats) if isinstance(self.run_stats, dict) else {}
-        meta["weighting_mode"] = self.weighting_mode
-        meta["idf_log_base"] = float(self.idf_log_base) if self.idf_log_base is not None else None
         meta["use_length_strata"] = bool(self.use_length_strata)
         meta["degeneracy_bin_edges"] = list(self.degeneracy_bin_edges)
         meta["peptide_length_bin_edges"] = list(self.peptide_length_bin_edges)
@@ -1021,7 +1006,7 @@ class GenomePresenceScorer:
 
         # --------------- top-N peptide contribution table (optional) ---------------
         topN = int(export_peptide_contrib_topN) if export_peptide_contrib_topN is not None else 0
-        if topN > 0 and self.peptide_degeneracy is not None and self.num_target_genomes_for_degeneracy is not None:
+        if topN > 0 and self.peptide_degeneracy is not None:
             if "_genomes_with_any_match" in df_scored.columns:
                 target = df_scored.loc[df_scored["_genomes_with_any_match"]].copy()
             else:
@@ -1030,8 +1015,6 @@ class GenomePresenceScorer:
                 target = target.sort_values("rank", ascending=True, kind="mergesort")
             target = target.head(topN)
             out_rows = []
-            N_targets = int(self.num_target_genomes_for_degeneracy)
-
             for _, r in target.iterrows():
                 gid = str(r["genome_id"])
                 peps = self.genome_matched_peptides.get(gid, set())
@@ -1039,7 +1022,7 @@ class GenomePresenceScorer:
                     continue
                 for pep in peps:
                     d = int(self.peptide_degeneracy.get(pep, 1))
-                    w = float(self._compute_weight(d=d, N=N_targets))
+                    w = float(self._compute_weight(d=d))
                     s = float(self.peptide_score.get(pep, 1.0))
                     is_unique = (d == 1)
                     out_rows.append({
@@ -1233,10 +1216,9 @@ class GenomePresenceScorer:
             self.genome_total_theoretical_peptides[genome_id] = max(prev, int(total_cnt))
 
         t_deg0 = time.time()
-        peptide_deg, genome_unique_counts, N_targets = self._calculate_peptide_degeneracy_and_unique_counts(all_matched_peptides)
+        peptide_deg, genome_unique_counts = self._calculate_peptide_degeneracy_and_unique_counts(all_matched_peptides)
         self.timing_stats["compute_degeneracy"] = float(time.time() - t_deg0)
         self.peptide_degeneracy = peptide_deg
-        self.num_target_genomes_for_degeneracy = N_targets
 
         genome_data_list = [
             (
@@ -1250,7 +1232,7 @@ class GenomePresenceScorer:
 
         self.logger.info(f"Computing metrics for {len(genome_data_list)} genomes ...")
         t_metrics0 = time.time()
-        df_metrics = self._calculate_genome_metrics(genome_data_list, peptide_deg, N_targets)
+        df_metrics = self._calculate_genome_metrics(genome_data_list, peptide_deg)
         self.timing_stats["compute_metrics"] = float(time.time() - t_metrics0)
 
         self.logger.info("Ranking genomes ...")
@@ -1410,8 +1392,7 @@ if __name__ == "__main__":
         num_workers=min(32, max(1, (mp.cpu_count() or 1) - 1))
     )
 
-    # Weighting
-    calc.weighting_mode = "inverse_degeneracy"  # or "idf"
+    # Shared-peptide weight is fixed as w(p)=1/d(p)
 
     # Knockoff tuning
     calc.knockoff_enabled = True
