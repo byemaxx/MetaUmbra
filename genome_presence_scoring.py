@@ -19,9 +19,8 @@
 #    - Combine with Fisher (2 p-values) => p_presence; BH => fdr_presence (per-genome existence q-value).
 #
 # Outputs:
-# - rank_by_score: unified rank index (lexicographic; unique dominates).
-# - fdr_presence: recommended per-genome existence q-value.
-# - presence_strength: -log10(fdr_presence) for paper-friendly existence strength.
+# - Main result table: concise, publication-facing columns with standardized names.
+# - Artifacts folder: full internal metrics and diagnostics tables.
 
 import os
 import time
@@ -895,6 +894,7 @@ class GenomePresenceScorer:
         out_dir: str,
         stem: str,
         df_scored: pd.DataFrame,
+        df_main: Optional[pd.DataFrame] = None,
         export_peptide_contrib_topN: int = 0,
     ) -> None:
         """Export additional statistics for paper figures into out_dir/<stem>_artifacts/."""
@@ -932,6 +932,11 @@ class GenomePresenceScorer:
 
         with open(os.path.join(temp_dir, "run_summary.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
+
+        # --------------- full tables ---------------
+        df_scored.to_csv(os.path.join(temp_dir, "full_internal_metrics.tsv"), sep="\t", index=False)
+        if df_main is not None and isinstance(df_main, pd.DataFrame):
+            df_main.to_csv(os.path.join(temp_dir, "main_results_renamed.tsv"), sep="\t", index=False)
 
         # --------------- knockoff pools stats ---------------
         if self.knockoff_pool_stats is not None and isinstance(self.knockoff_pool_stats, pd.DataFrame) and len(self.knockoff_pool_stats) > 0:
@@ -977,19 +982,6 @@ class GenomePresenceScorer:
                 rows.append({"q_threshold": float(t), "n_called": int((q <= t).sum())})
             pd.DataFrame(rows).to_csv(os.path.join(temp_dir, "q_calling_curve.tsv"), sep="\t", index=False)
 
-        # --------------- compact targets table ---------------
-        if "_genomes_with_any_match" in df_scored.columns:
-            target = df_scored.loc[df_scored["_genomes_with_any_match"]].copy()
-            keep_cols = [
-                "genome_id", "rank_by_score",
-                "matched_peptide_count", "unique_peptide_count",
-                "mean_degeneracy", "shared_fraction",
-                "weighted_evidence", "unique_weighted_evidence", "weighted_evidence_shared",
-                "p_shared_knock", "p_unique_upper", "p_presence", "presence_strength", "fdr_presence",
-                "null_mean_shared", "null_sd_shared", "null_p95_shared", "null_p99_shared", "z_shared",
-            ]
-            keep_cols = [c for c in keep_cols if c in target.columns]
-            target[keep_cols].to_csv(os.path.join(temp_dir, "targets_compact.tsv"), sep="\t", index=False)
 
         # --------------- shared stratum counts (sparse long table) ---------------
         if self.knockoff_shared_stratum_counts_by_genome:
@@ -1254,9 +1246,33 @@ class GenomePresenceScorer:
         self.genome_scores_df = df_scored
 
         self.logger.info(f"Saving results to: {output_tsv_path}")
+        source_cols = [
+            "genome_id",
+            "rank_by_score",
+            "p_presence",
+            "fdr_presence",
+            "pass_fdr_0p01",
+            "pass_fdr_0p05",
+            "matched_peptide_count",
+            "unique_peptide_count",
+            "presence_strength",
+            "shared_fraction",
+            "mean_degeneracy",
+        ]
+        rename_map = {
+            "rank_by_score": "rank",
+            "p_presence": "pvalue",
+            "fdr_presence": "qvalue",
+            "matched_peptide_count": "num_peptides_matched",
+            "unique_peptide_count": "num_peptides_unique",
+            "presence_strength": "presence_score",
+        }
+        missing = [c for c in source_cols if c not in df_scored.columns]
+        if missing:
+            raise ValueError(f"Missing required columns for main result table: {missing}")
+
+        df_main = df_scored[source_cols].copy().rename(columns=rename_map)
         if include_null_diagnostics_in_main:
-            df_to_save = df_scored
-        else:
             null_diag_cols = [
                 "null_mean_shared",
                 "null_sd_shared",
@@ -1264,9 +1280,10 @@ class GenomePresenceScorer:
                 "null_p99_shared",
                 "z_shared",
             ]
-            keep_cols = [c for c in df_scored.columns if c not in null_diag_cols]
-            df_to_save = df_scored[keep_cols]
-        df_to_save.to_csv(output_tsv_path, sep="\t", index=False)
+            existing_diag = [c for c in null_diag_cols if c in df_scored.columns]
+            if existing_diag:
+                df_main = pd.concat([df_main, df_scored[existing_diag].reset_index(drop=True)], axis=1)
+        df_main.to_csv(output_tsv_path, sep="\t", index=False)
 
         self.timing_stats["save_tsv"] = float(time.time() - t_all0)
 
@@ -1274,7 +1291,13 @@ class GenomePresenceScorer:
         if export_temp:
             try:
                 stem = Path(output_tsv_path).stem
-                self._export_temp_artifacts(out_dir=out_dir, stem=stem, df_scored=df_scored, export_peptide_contrib_topN=export_peptide_contrib_topN)
+                self._export_temp_artifacts(
+                    out_dir=out_dir,
+                    stem=stem,
+                    df_scored=df_scored,
+                    df_main=df_main,
+                    export_peptide_contrib_topN=export_peptide_contrib_topN,
+                )
                 self.timing_stats["export_temp"] = float(time.time() - t_all0)
             except Exception as e:
                 self.logger.warning(f"Failed to export temp artifacts: {e}")
