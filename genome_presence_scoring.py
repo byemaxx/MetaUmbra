@@ -922,7 +922,6 @@ class GenomePresenceScorer:
         out_dir: str,
         stem: str,
         df_scored: pd.DataFrame,
-        df_main: Optional[pd.DataFrame] = None,
         export_peptide_contrib_topN: int = 0,
     ) -> None:
         """Export additional statistics for paper figures into out_dir/<stem>_artifacts/."""
@@ -963,8 +962,6 @@ class GenomePresenceScorer:
 
         # --------------- full tables ---------------
         df_scored.to_csv(os.path.join(temp_dir, "full_internal_metrics.tsv"), sep="\t", index=False)
-        if df_main is not None and isinstance(df_main, pd.DataFrame):
-            df_main.to_csv(os.path.join(temp_dir, "main_results_renamed.tsv"), sep="\t", index=False)
 
         # --------------- knockoff pools stats ---------------
         if self.knockoff_pool_stats is not None and isinstance(self.knockoff_pool_stats, pd.DataFrame) and len(self.knockoff_pool_stats) > 0:
@@ -1077,7 +1074,6 @@ class GenomePresenceScorer:
         compute_coverage: bool = True,
         export_temp: bool = True,
         export_peptide_contrib_topN: int = 0,
-        include_null_diagnostics_in_main: bool = False,
     ) -> pd.DataFrame:
         """End-to-end analysis producing a genome-level q-value (q_presence)."""
         if output_tsv_path is None:
@@ -1264,7 +1260,7 @@ class GenomePresenceScorer:
         df_scored["rank"] = np.arange(1, len(df_scored) + 1, dtype=int)
 
         if self.knockoff_enabled:
-            self.logger.info("Computing per-genome existence q-values via knockoff (scheme A) ...")
+            self.logger.info("Computing per-genome existence q-values via knockoff...")
             t_knock0 = time.time()
             df_scored = self._add_knockoff_existence_stats(df_scored)
             self.timing_stats["knockoff_pvalues"] = float(time.time() - t_knock0)
@@ -1281,15 +1277,15 @@ class GenomePresenceScorer:
         source_cols = [
             "genome_id",
             "rank",
-            "p_presence",
-            "q_presence",
-            "pass_q_0_01",
-            "pass_q_0_05",
             "num_peptides_matched",
             "num_peptides_unique",
-            "presence_score",
             "shared_fraction",
             "mean_degeneracy",
+            "p_presence",
+            "q_presence",
+            "presence_score",
+            "pass_q_0_01",
+            "pass_q_0_05",
         ]
         rename_map = {
             "p_presence": "pvalue",
@@ -1300,17 +1296,6 @@ class GenomePresenceScorer:
             raise ValueError(f"Missing required columns for main result table: {missing}")
 
         df_main = df_scored[source_cols].copy().rename(columns=rename_map)
-        if include_null_diagnostics_in_main:
-            null_diag_cols = [
-                "null_mean_shared",
-                "null_sd_shared",
-                "null_p95_shared",
-                "null_p99_shared",
-                "z_shared",
-            ]
-            existing_diag = [c for c in null_diag_cols if c in df_scored.columns]
-            if existing_diag:
-                df_main = pd.concat([df_main, df_scored[existing_diag].reset_index(drop=True)], axis=1)
         df_main.to_csv(output_tsv_path, sep="\t", index=False)
 
         self.timing_stats["save_tsv"] = float(time.time() - t_all0)
@@ -1323,7 +1308,6 @@ class GenomePresenceScorer:
                     out_dir=out_dir,
                     stem=stem,
                     df_scored=df_scored,
-                    df_main=df_main,
                     export_peptide_contrib_topN=export_peptide_contrib_topN,
                 )
                 self.timing_stats["export_temp"] = float(time.time() - t_all0)
