@@ -1,5 +1,5 @@
 # Genome existence scoring from a peptide list using peptide-space knockoff null
-# Version: 4.3
+# Version: 4.5
 # Date: 2026-02-11
 #
 # Workflow:
@@ -30,7 +30,7 @@ import logging
 import multiprocessing as mp
 import concurrent.futures
 from pathlib import Path
-from typing import Optional, List, Dict, Set, Tuple, Union
+from typing import Optional, List, Dict, Set, Tuple, Union, FrozenSet
 from collections import Counter
 import json
 import sys
@@ -67,49 +67,69 @@ def setup_logger(name: str, log_file: Optional[str] = None, level=logging.INFO) 
 # =========================
 # Genome scan workers
 # =========================
-_OBS_PEPTIDES_WORKER: Set[str] = set()
+_OBS_PEPTIDES_WORKER: Union[Set[str], FrozenSet[str]] = set()
 
 
-def _init_genome_batch_worker(obs_peptides: Set[str]) -> None:
+def _init_genome_batch_worker(obs_peptides: Union[Set[str], FrozenSet[str]]) -> None:
     """ProcessPool initializer: set read-only observed peptide universe once per worker."""
     global _OBS_PEPTIDES_WORKER
-    _OBS_PEPTIDES_WORKER = set(obs_peptides)
+    _OBS_PEPTIDES_WORKER = obs_peptides
 
 
-def _process_genome_batch_worker(file_paths: List[Union[str, os.PathLike]]) -> List[Tuple[str, Set[str], int]]:
-    """Process a batch of genome peptide files (worker-safe, avoids shipping class state per task)."""
-    results: List[Tuple[str, Set[str], int]] = []
+def _process_genome_batch_worker(file_paths: List[Union[str, os.PathLike]]) -> List[Tuple[str, Set[str], int, Optional[str]]]:
+    """
+    Process a batch of genome peptide files.
+
+    Returns tuples:
+    - (genome_id, matched_peptides, total_theoretical_unique_peptides, error_message)
+    - error_message is None on success; non-empty on failure.
+    """
+    results: List[Tuple[str, Set[str], int, Optional[str]]] = []
 
     for genome_peptides_path in file_paths:
         genome_peptides_path = str(genome_peptides_path)
         genome_id = Path(genome_peptides_path).stem
         try:
-            # Fast path: read only the canonical peptide column.
+            # Chunked read to reduce peak memory on large genome TSV files.
             try:
-                genome_peptides_df = pd.read_csv(
+                chunk_iter = pd.read_csv(
                     genome_peptides_path,
                     sep="\t",
                     usecols=["Peptide"],
                     dtype={"Peptide": "string"},
                     engine="c",
+                    chunksize=50000,
                 )
                 peptide_column_name = "Peptide"
             except ValueError:
                 # Fallback for files without "Peptide": read only the first column by index.
-                genome_peptides_df = pd.read_csv(
+                chunk_iter = pd.read_csv(
                     genome_peptides_path,
                     sep="\t",
                     usecols=[0],
                     dtype="string",
                     engine="c",
+                    chunksize=50000,
                 )
-                peptide_column_name = genome_peptides_df.columns[0]
+                peptide_column_name = None
 
-            theoretical_peptides = set(genome_peptides_df[peptide_column_name].dropna().astype(str).values)
-            matched_peptides = theoretical_peptides.intersection(_OBS_PEPTIDES_WORKER)
-            results.append((genome_id, matched_peptides, len(theoretical_peptides)))
-        except Exception:
-            results.append((genome_id, set(), 0))
+            seen_theoretical: Set[str] = set()
+            matched_peptides: Set[str] = set()
+            for chunk_df in chunk_iter:
+                col_name = peptide_column_name if peptide_column_name is not None else chunk_df.columns[0]
+                chunk_unique = set(chunk_df[col_name].dropna().astype(str).values.tolist())
+                if not chunk_unique:
+                    continue
+                new_peptides = chunk_unique.difference(seen_theoretical)
+                if not new_peptides:
+                    continue
+                seen_theoretical.update(new_peptides)
+                matched_peptides.update(new_peptides.intersection(_OBS_PEPTIDES_WORKER))
+
+            results.append((genome_id, matched_peptides, len(seen_theoretical), None))
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+            results.append((genome_id, set(), 0, err))
 
     return results
 
@@ -135,6 +155,8 @@ class GenomePresenceScorer:
         # Core states
         self.peptide_score: Dict[str, float] = {}  # peptide -> normalized score in [0,1] (or 1.0)
         self.peptide_fdr_cutoff: float = 0.05      # stored from read_peptide_file()
+        # Upper bound on per-peptide false match probability used for unique-evidence p-value bound.
+        self.single_peptide_error_rate_upper_bound: float = 1.0
         self.peptide_table_dir: Optional[str] = None
 
         self.genome_matched_peptides: Dict[str, Set[str]] = {}  # genome -> matched peptides (observed ∩ theoretical)
@@ -150,9 +172,6 @@ class GenomePresenceScorer:
             "MR": 10**5,   # peptide_match_ratio (0..1)
             "M": 1         # num_peptides_matched
         }
-
-        # Knockoff settings (scheme A)
-        self.knockoff_enabled: bool = True
 
         # Degeneracy bins: 1 | 2-5 | 6-20 | 21-100 | 101-500 | >500
         self.degeneracy_bin_edges = [1, 5, 20, 100, 500]
@@ -254,6 +273,7 @@ class GenomePresenceScorer:
             raise ValueError(f"Missing peptide column '{peptide_seq_col}'.")
 
         self.peptide_fdr_cutoff = float(peptide_fdr_cutoff)
+        fdr_filter_applied = False
 
         # --- NEW: run-level input stats (for paper) ---
         self.run_stats["peptide_rows_loaded"] = int(len(df))
@@ -276,6 +296,22 @@ class GenomePresenceScorer:
             df = df[df[peptide_fdr_col] <= float(peptide_fdr_cutoff)]
             self.logger.info(f"Peptide-level FDR filter (<= {peptide_fdr_cutoff}): {before} -> {len(df)} rows.")
             self.run_stats["peptide_rows_after_fdr_filter"] = int(len(df))
+            fdr_filter_applied = True
+
+        # Interpret unique-evidence bound as an upper bound on single-peptide false match probability.
+        # Keep backward-compatible behavior: if peptide-level FDR filtering was not applied,
+        # still use peptide_fdr_cutoff as the assumed per-peptide upper bound.
+        if fdr_filter_applied:
+            self.single_peptide_error_rate_upper_bound = float(min(max(peptide_fdr_cutoff, 1e-12), 1.0))
+            self.run_stats["single_peptide_error_rate_upper_bound_source"] = "peptide_fdr_cutoff"
+        else:
+            self.single_peptide_error_rate_upper_bound = float(min(max(peptide_fdr_cutoff, 1e-12), 1.0))
+            self.run_stats["single_peptide_error_rate_upper_bound_source"] = "assumed_from_peptide_fdr_cutoff_without_filter"
+            self.logger.warning(
+                "No peptide-level FDR filter was applied; assuming single_peptide_error_rate_upper_bound="
+                f"{self.single_peptide_error_rate_upper_bound:.4g} from peptide_fdr_cutoff."
+            )
+        self.run_stats["single_peptide_error_rate_upper_bound"] = float(self.single_peptide_error_rate_upper_bound)
 
         if peptide_score_col and peptide_score_col in df.columns:
             pep_scores = df.groupby(peptide_seq_col)[peptide_score_col].max().reset_index()
@@ -676,21 +712,19 @@ class GenomePresenceScorer:
     def _add_knockoff_existence_stats(self, df_scored: pd.DataFrame) -> pd.DataFrame:
         """Add per-genome knockoff existence p/q-values."""
         out = df_scored.copy()
-        out["p_shared_knock"] = np.nan
-        out["p_unique_upper"] = np.nan
-        out["p_presence"] = np.nan
-        out["q_presence"] = np.nan
-        out["presence_score"] = np.nan
+        # Conservative defaults for genomes with no match / skipped inference.
+        out["p_shared_knock"] = 1.0
+        out["p_unique_upper"] = 1.0
+        out["p_presence"] = 1.0
+        out["q_presence"] = 1.0
+        out["presence_score"] = 0.0
 
         # --- NEW: knockoff null diagnostics ---
-        out["null_mean_shared"] = np.nan
-        out["null_sd_shared"] = np.nan
-        out["null_p95_shared"] = np.nan
-        out["null_p99_shared"] = np.nan
-        out["z_shared"] = np.nan
-
-        if not self.knockoff_enabled:
-            return out
+        out["null_mean_shared"] = 0.0
+        out["null_sd_shared"] = 0.0
+        out["null_p95_shared"] = 0.0
+        out["null_p99_shared"] = 0.0
+        out["z_shared"] = 0.0
 
         if self.peptide_degeneracy is None:
             raise RuntimeError("Knockoff requires peptide_deg to be set.")
@@ -710,10 +744,15 @@ class GenomePresenceScorer:
         K2 = None
         if self.knockoff_stage2_mc_iterations is not None:
             K2 = int(max(50, self.knockoff_stage2_mc_iterations))
-        peptide_fdr_upper = float(min(max(self.peptide_fdr_cutoff, 1e-12), 0.5))
+        peptide_error_upper = float(min(max(self.single_peptide_error_rate_upper_bound, 1e-12), 0.5))
 
-        target_mask = out["_genomes_with_any_match"]
+        target_mask = out["_genomes_with_any_match"].astype(bool)
         target_df = out.loc[target_mask].copy()
+
+        if len(target_df) == 0:
+            out["pass_q_0_01"] = False
+            out["pass_q_0_05"] = False
+            return out
 
         if self.knockoff_top_n_targets is not None:
             topN = int(self.knockoff_top_n_targets)
@@ -737,7 +776,7 @@ class GenomePresenceScorer:
             p_shared, mu, sd, p95, p99 = result if isinstance(result, tuple) else (result, 0.0, 0.0, 0.0, 0.0)
 
             unique_peptides = int(row.get("num_peptides_unique", 0))
-            p_unique_upper = 1.0 if unique_peptides <= 0 else float(peptide_fdr_upper ** unique_peptides)
+            p_unique_upper = 1.0 if unique_peptides <= 0 else float(peptide_error_upper ** unique_peptides)
 
             p_existence = self._fisher_p_2(p1=p_shared, p2=p_unique_upper)
 
@@ -790,7 +829,7 @@ class GenomePresenceScorer:
                         p_shared, mu, sd, p95, p99 = result if isinstance(result, tuple) else (result, 0.0, 0.0, 0.0, 0.0)
 
                         unique_peptides = int(row.get("num_peptides_unique", 0))
-                        p_unique_upper = 1.0 if unique_peptides <= 0 else float(peptide_fdr_upper ** unique_peptides)
+                        p_unique_upper = 1.0 if unique_peptides <= 0 else float(peptide_error_upper ** unique_peptides)
                         p_existence = self._fisher_p_2(p1=p_shared, p2=p_unique_upper)
 
                         out.at[idx, "p_shared_knock"] = p_shared
@@ -802,12 +841,6 @@ class GenomePresenceScorer:
                         out.at[idx, "null_p95_shared"] = p95
                         out.at[idx, "null_p99_shared"] = p99
                         out.at[idx, "z_shared"] = (observed_shared_evidence - mu) / (sd + 1e-12)
-
-        remaining_idx = out.index[target_mask & out["p_presence"].isna()]
-        if len(remaining_idx) > 0:
-            out.loc[remaining_idx, "p_shared_knock"] = 1.0
-            out.loc[remaining_idx, "p_unique_upper"] = 1.0
-            out.loc[remaining_idx, "p_presence"] = 1.0
 
         all_p = out.loc[target_mask, "p_presence"].to_numpy(dtype=float)
         out.loc[target_mask, "q_presence"] = self._bh_qvalues(all_p)
@@ -920,7 +953,6 @@ class GenomePresenceScorer:
         meta["use_length_strata"] = bool(self.use_length_strata)
         meta["degeneracy_bin_edges"] = list(self.degeneracy_bin_edges)
         meta["peptide_length_bin_edges"] = list(self.peptide_length_bin_edges)
-        meta["knockoff_enabled"] = bool(self.knockoff_enabled)
         meta["knockoff_mc_iterations"] = int(self.knockoff_mc_iterations)
         meta["knockoff_stage2_mc_iterations"] = int(self.knockoff_stage2_mc_iterations) if self.knockoff_stage2_mc_iterations is not None else None
         meta["knockoff_stage2_p_exist_ranges"] = list(self.knockoff_stage2_p_exist_ranges or [])
@@ -1163,12 +1195,12 @@ class GenomePresenceScorer:
             # explicit shutdown in a finally block, and clear references to
             # futures/executor to avoid weakref callbacks during interpreter
             # shutdown which can raise harmless-but-noisy exceptions.
-            all_matched_peptides = []
+            raw_worker_results: List[Tuple[str, Set[str], int, Optional[str]]] = []
             futures = []
             executor = concurrent.futures.ProcessPoolExecutor(
                 max_workers=self.num_workers,
                 initializer=_init_genome_batch_worker,
-                initargs=(set(self.peptide_score.keys()),),
+                initargs=(frozenset(self.peptide_score.keys()),),
             )
             try:
                 for b in batches:
@@ -1177,7 +1209,7 @@ class GenomePresenceScorer:
                     futures.append(executor.submit(_process_genome_batch_worker, list(b)))
 
                 for fut in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Scanning genomes"):
-                    all_matched_peptides.extend(fut.result())
+                    raw_worker_results.extend(fut.result())
             finally:
                 try:
                     executor.shutdown(wait=True)
@@ -1192,6 +1224,24 @@ class GenomePresenceScorer:
                     del executor
                 except Exception:
                     pass
+
+            read_errors: List[Tuple[str, str]] = []
+            all_matched_peptides = []
+            for genome_id, matched_peptides, total_cnt, err in raw_worker_results:
+                if err:
+                    read_errors.append((genome_id, err))
+                    continue
+                all_matched_peptides.append((genome_id, matched_peptides, total_cnt))
+
+            self.run_stats["genome_scan_read_error_count"] = int(len(read_errors))
+            if read_errors:
+                preview = [{"genome_id": gid, "error": msg} for gid, msg in read_errors[:20]]
+                self.run_stats["genome_scan_read_error_preview"] = preview
+                examples = "; ".join(f"{gid}: {msg}" for gid, msg in read_errors[:5])
+                raise RuntimeError(
+                    f"Failed to read {len(read_errors)} genome peptide files. "
+                    f"Examples: {examples}"
+                )
 
             if save_matched_peptides_cache:
                 if cache_pkl_path:
@@ -1241,11 +1291,10 @@ class GenomePresenceScorer:
         self.timing_stats["rank_genomes"] = float(time.time() - t_score0)
         df_scored["rank"] = np.arange(1, len(df_scored) + 1, dtype=int)
 
-        if self.knockoff_enabled:
-            self.logger.info("Computing per-genome existence q-values via knockoff...")
-            t_knock0 = time.time()
-            df_scored = self._add_knockoff_existence_stats(df_scored)
-            self.timing_stats["knockoff_pvalues"] = float(time.time() - t_knock0)
+        t_knock0 = time.time()
+        self.logger.info("Computing per-genome existence q-values via knockoff...")
+        df_scored = self._add_knockoff_existence_stats(df_scored)
+        self.timing_stats["knockoff_pvalues"] = float(time.time() - t_knock0)
 
         if compute_coverage:
             self.logger.info("Computing coverage statistics (reference only; not used for final calling) ...")
@@ -1373,7 +1422,7 @@ if __name__ == "__main__":
     
     out_dir = os.path.dirname(output_tsv_path) or "."
     pickle_path = os.path.join(out_dir, "matched_peptides.pkl")  # set to e.g. r"test_data\6bacteria\matched_peptides_cache.pkl" to save/load matched peptides cache (speeds up repeated runs)
-    pickle_path = None  # set to None to disable matched peptides caching
+    # pickle_path = None  # set to None to disable matched peptides caching
     
     
     # ---- Optional: exclude list ----
@@ -1395,7 +1444,6 @@ if __name__ == "__main__":
     # Shared-peptide weight is fixed as w(p)=1/d(p)
 
     # Knockoff tuning
-    calc.knockoff_enabled = True
     calc.knockoff_mc_iterations = 500
     calc.knockoff_stage2_mc_iterations = 2000
     calc.knockoff_stage2_p_exist_ranges = [(0.005, 0.02), (0.02, 0.08)]
