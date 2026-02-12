@@ -21,12 +21,11 @@ from functools import lru_cache
 try:
     from rpg import core
     from rpg import digest
-    from rpg import enzyme
     from rpg import RapidPeptidesGenerator as rpg_main
     from rpg.enzymes_definition import AVAILABLE_ENZYMES
     sys.path.insert(0, str(Path.home()))  # Home path
     try:
-        from rpg_user import AVAILABLE_ENZYMES_USER
+        from rpg_user import AVAILABLE_ENZYMES_USER # type: ignore
         ALL_ENZYMES = AVAILABLE_ENZYMES + AVAILABLE_ENZYMES_USER
     except ImportError:
         ALL_ENZYMES = AVAILABLE_ENZYMES
@@ -359,7 +358,7 @@ if __name__ == "__main__":
             results = process_directory(
                 input_dir="test_data/mix24x/download_genome",
                 output_dir="test_data/mix24x/download_genome_digested",
-                enzyme_id="42",
+                enzyme_id="42", # Trypsin/P
                 min_length=7,
                 max_length=30,
                 max_num_miscleavages=2,

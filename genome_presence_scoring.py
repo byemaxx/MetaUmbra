@@ -782,7 +782,11 @@ class GenomePresenceScorer:
         return out
 
 
-    def _add_knockoff_existence_stats(self, df_scored: pd.DataFrame) -> pd.DataFrame:
+    def _add_knockoff_existence_stats(
+        self,
+        df_scored: pd.DataFrame,
+        use_peptide_error_for_unique_pvalue: bool = True,
+    ) -> pd.DataFrame:
         """Add per-genome knockoff existence p/q-values."""
         def _p_unique_upper_for_genome(gid: str) -> float:
             matched = self.genome_matched_peptides.get(gid, set())
@@ -794,8 +798,8 @@ class GenomePresenceScorer:
             if not uniq:
                 return 1.0
 
-            # If no per-peptide error mapping, keep legacy behavior
-            if not self.peptide_error_upper_by_peptide:
+            # Use global alpha^U if per-peptide mode is disabled or unavailable.
+            if not use_per_peptide_error:
                 return float(peptide_error_upper ** len(uniq))
 
             # Product of per-peptide upper bounds; fallback to peptide_error_upper if missing
@@ -838,24 +842,28 @@ class GenomePresenceScorer:
         peptide_error_upper = float(min(max(self.single_peptide_error_rate_upper_bound, 1e-12), 0.5))
         error_col = self.run_stats.get("peptide_error_col", None)
         has_per_peptide_error = bool(self.peptide_error_upper_by_peptide)
-        uses_pep_column = bool(has_per_peptide_error and isinstance(error_col, str) and error_col.upper() == "PEP")
+        use_per_peptide_error = bool(use_peptide_error_for_unique_pvalue and has_per_peptide_error)
+        uses_pep_column = bool(use_per_peptide_error and isinstance(error_col, str) and error_col.upper() == "PEP")
         source_col_display = str(error_col) if error_col is not None else "none"
-        self.run_stats["unique_pvalue_uses_per_peptide_error"] = bool(has_per_peptide_error)
-        self.run_stats["unique_pvalue_error_source_col"] = str(error_col) if error_col is not None else None
+        self.run_stats["unique_pvalue_use_peptide_error_switch"] = bool(use_peptide_error_for_unique_pvalue)
+        self.run_stats["unique_pvalue_use_peptide_error_for_unique_pvalue"] = bool(use_peptide_error_for_unique_pvalue)
+        self.run_stats["unique_pvalue_uses_per_peptide_error"] = bool(use_per_peptide_error)
+        self.run_stats["unique_pvalue_error_source_col"] = str(error_col) if use_per_peptide_error and error_col is not None else None
         self.run_stats["unique_pvalue_uses_pep_column"] = bool(uses_pep_column)
-        if has_per_peptide_error:
+        if use_per_peptide_error:
             self.logger.info(
-                f"Unique p-value mode: {'PEP' if uses_pep_column else '(0.05)^U'} used with "
+                f"Unique p-value mode: {'[PEP]' if uses_pep_column else '[per-peptide error column]'} "
                 f"source_col='{source_col_display}', "
                 f"per_peptide_error_n={len(self.peptide_error_upper_by_peptide)}, "
                 f"global_fallback={peptide_error_upper:.4g}"
             )
         else:
+            reason = "disabled_by_switch" if not bool(use_peptide_error_for_unique_pvalue) else "per_peptide_error_not_available"
             self.logger.info(
-                f"Unique p-value mode: no per-peptide error used with "
+                f"Unique p-value mode: [(alpha={peptide_error_upper:.4g})^U] "
                 f"source_col='{source_col_display}', "
-                f"per_peptide_error_n=0, "
-                f"using global_error_cutoff={peptide_error_upper:.4g}"
+                f"per_peptide_error_n={len(self.peptide_error_upper_by_peptide)}, "
+                f"reason={reason}"
             )
 
         target_mask = out["_genomes_with_any_match"].astype(bool)
@@ -1201,6 +1209,8 @@ class GenomePresenceScorer:
         compute_coverage: bool = True,
         export_temp: bool = True,
         export_peptide_contrib_topN: int = 0,
+        use_cache_if_exists: bool = True,
+        use_peptide_error_for_unique_pvalue: bool = True,
     ) -> pd.DataFrame:
         """End-to-end analysis producing a genome-level q-value (q_presence)."""
         if output_tsv_path is None:
@@ -1220,8 +1230,8 @@ class GenomePresenceScorer:
             cache_path = str(matched_peptides_cache_path)
             cache_pkl_path = cache_path if cache_path.lower().endswith(".pkl") else f"{cache_path}.pkl"
 
-        # Prefer using existing matched-peptides cache if available.
-        if all_matched_peptides is None and cache_pkl_path and os.path.exists(cache_pkl_path):
+        # Prefer using existing matched-peptides cache if allowed and available.
+        if use_cache_if_exists and all_matched_peptides is None and cache_pkl_path and os.path.exists(cache_pkl_path):
             self.logger.info(f"Loading matched peptides cache: {cache_pkl_path}")
             try:
                 with open(cache_pkl_path, "rb") as f:
@@ -1265,6 +1275,10 @@ class GenomePresenceScorer:
                     f"Failed to load/validate matched peptides cache ({cache_pkl_path}); recomputing. Error: {e}"
                 )
                 all_matched_peptides = None
+        elif not use_cache_if_exists and all_matched_peptides is None and cache_pkl_path and os.path.exists(cache_pkl_path):
+            self.logger.info(
+                f"Cache exists but use_cache_if_exists=False; recomputing matched peptides: {cache_pkl_path}"
+            )
 
         t_scan0 = time.time()
 
@@ -1405,7 +1419,10 @@ class GenomePresenceScorer:
 
         t_knock0 = time.time()
         self.logger.info("Computing per-genome existence q-values via knockoff...")
-        df_scored = self._add_knockoff_existence_stats(df_scored)
+        df_scored = self._add_knockoff_existence_stats(
+            df_scored,
+            use_peptide_error_for_unique_pvalue=use_peptide_error_for_unique_pvalue,
+        )
         self.timing_stats["knockoff_pvalues"] = float(time.time() - t_knock0)
 
         if compute_coverage:
@@ -1534,7 +1551,9 @@ if __name__ == "__main__":
     
     out_dir = os.path.dirname(output_tsv_path) or "."
     pickle_path = os.path.join(out_dir, "matched_peptides.pkl")  # set to e.g. r"test_data\6bacteria\matched_peptides_cache.pkl" to save/load matched peptides cache (speeds up repeated runs)
-    pickle_path = None  # set to None to disable matched peptides caching
+    
+    use_cache_if_exists = False  # if False, ignore existing cache file and force recomputation
+    use_peptide_error_for_unique_pvalue = True  # True: use peptide-level PEP/FDR; False: use (alpha)^U (alpha=peptide_error_cutoff, default 0.05)
     
     
     # ---- Optional: exclude list ----
@@ -1582,6 +1601,8 @@ if __name__ == "__main__":
         all_matched_peptides=None,
         save_matched_peptides_cache=True,
         matched_peptides_cache_path=pickle_path,
+        use_cache_if_exists=use_cache_if_exists,
+        use_peptide_error_for_unique_pvalue=use_peptide_error_for_unique_pvalue,
     )
 
     print(f"\nDone. Elapsed: {time.time() - t0:.1f}s")
