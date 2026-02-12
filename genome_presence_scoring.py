@@ -3,7 +3,7 @@
 # Date: 2026-02-11
 #
 # Workflow:
-# 1) Read observed peptide list (optional peptide-level FDR filter).
+# 1) Read observed peptide list (optional peptide-level error-probability filter, e.g. PEP/FDR).
 # 2) For each genome (theoretical digest peptides), compute matched peptides = observed ∩ theoretical.
 # 3) Compute peptide degeneracy d(p) across TARGET genomes (recommended).
 # 4) Compute shared-aware evidence:
@@ -15,7 +15,7 @@
 #    - Build pools of shared peptide contributions (w*s) stratified by degeneracy (and optional length).
 #    - For each genome, sample from these pools according to that genome's shared-stratum counts to get
 #      an empirical null for weighted_evidence_shared, yielding p_shared_knock.
-#    - Unique evidence p-value upper bound (conservative): p_unique_upper = (peptide_fdr_cutoff) ** U.
+#    - Unique evidence p-value upper bound (conservative): p_unique_upper = (peptide_error_cutoff) ** U.
 #    - Combine with Fisher (2 p-values) => p_presence; BH => q_presence (per-genome existence q-value).
 #
 # Outputs:
@@ -68,6 +68,7 @@ def setup_logger(name: str, log_file: Optional[str] = None, level=logging.INFO) 
 # Genome scan workers
 # =========================
 _OBS_PEPTIDES_WORKER: Union[Set[str], FrozenSet[str]] = set()
+_AA_ONLY_PATTERN = r"^[ACDEFGHIKLMNPQRSTVWYBXZJUO]+$"
 
 
 def _init_genome_batch_worker(obs_peptides: Union[Set[str], FrozenSet[str]]) -> None:
@@ -91,6 +92,8 @@ def _process_genome_batch_worker(file_paths: List[Union[str, os.PathLike]]) -> L
         genome_id = Path(genome_peptides_path).stem
         try:
             # Chunked read to reduce peak memory on large genome TSV files.
+            fallback_to_first_col = False
+            fallback_available_columns: Optional[List[str]] = None
             try:
                 chunk_iter = pd.read_csv(
                     genome_peptides_path,
@@ -103,6 +106,15 @@ def _process_genome_batch_worker(file_paths: List[Union[str, os.PathLike]]) -> L
                 peptide_column_name = "Peptide"
             except ValueError:
                 # Fallback for files without "Peptide": read only the first column by index.
+                fallback_to_first_col = True
+                try:
+                    fallback_available_columns = pd.read_csv(
+                        genome_peptides_path,
+                        sep="\t",
+                        nrows=0,
+                    ).columns.tolist()
+                except Exception:
+                    fallback_available_columns = None
                 chunk_iter = pd.read_csv(
                     genome_peptides_path,
                     sep="\t",
@@ -115,9 +127,27 @@ def _process_genome_batch_worker(file_paths: List[Union[str, os.PathLike]]) -> L
 
             seen_theoretical: Set[str] = set()
             matched_peptides: Set[str] = set()
+            fallback_sanity_checked = False
             for chunk_df in chunk_iter:
                 col_name = peptide_column_name if peptide_column_name is not None else chunk_df.columns[0]
-                chunk_unique = set(chunk_df[col_name].dropna().astype(str).values.tolist())
+                col_series = chunk_df[col_name].dropna().astype(str).str.strip()
+
+                if fallback_to_first_col and not fallback_sanity_checked:
+                    sample = col_series[col_series != ""].head(200)
+                    if not sample.empty:
+                        is_aa_only = sample.str.upper().str.fullmatch(_AA_ONLY_PATTERN)
+                        if not bool(is_aa_only.all()):
+                            bad_examples = sample[~is_aa_only].head(5).tolist()
+                            cols_for_error = fallback_available_columns if fallback_available_columns else chunk_df.columns.tolist()
+                            available_cols = ", ".join(map(str, cols_for_error))
+                            raise ValueError(
+                                "Fallback to first column failed sanity check: values are not peptide-like "
+                                f"(AA letters only). Available columns: [{available_cols}]. "
+                                f"Please provide a 'Peptide' column. Non-peptide examples: {bad_examples}"
+                            )
+                        fallback_sanity_checked = True
+
+                chunk_unique = set(col_series[col_series != ""].values.tolist())
                 if not chunk_unique:
                     continue
                 new_peptides = chunk_unique.difference(seen_theoretical)
@@ -154,7 +184,7 @@ class GenomePresenceScorer:
 
         # Core states
         self.peptide_score: Dict[str, float] = {}  # peptide -> normalized score in [0,1] (or 1.0)
-        self.peptide_fdr_cutoff: float = 0.05      # stored from read_peptide_file()
+        self.peptide_error_cutoff: float = 0.05    # stored from read_peptide_file()
         # Upper bound on per-peptide false match probability used for unique-evidence p-value bound.
         self.single_peptide_error_rate_upper_bound: float = 1.0
         self.peptide_table_dir: Optional[str] = None
@@ -204,6 +234,8 @@ class GenomePresenceScorer:
         self.run_stats: Dict[str, object] = {}
         self.timing_stats: Dict[str, float] = {}
         self.knockoff_pool_stats: Optional[pd.DataFrame] = None
+        self.peptide_error_upper_by_peptide: Dict[str, float] = {}  # peptide -> per-peptide upper bound (from error column)
+
 
     # =========================
     # I/O: Peptide table
@@ -217,8 +249,8 @@ class GenomePresenceScorer:
         peptide_decoy_flag_col: Optional[str] = "Target/Decoy",
         decoy_flag_value: str = "decoy",
         peptide_table_sep: str = "\t",
-        peptide_fdr_col: Optional[str] = "FDR",
-        peptide_fdr_cutoff: float = 0.05,
+        peptide_error_col: Optional[str] = None,
+        peptide_error_cutoff: float = 0.05,
     ) -> bool:
         """Read a peptide table and build peptide->score dictionary."""
         if peptide_table_path is None and peptide_table_df is None:
@@ -244,6 +276,13 @@ class GenomePresenceScorer:
             if peptide_seq_col not in available_columns:
                 raise ValueError(f"Missing peptide column '{peptide_seq_col}' in peptide file.")
 
+            if peptide_error_col is None:
+                for candidate in ("PEP", "FDR"):
+                    if candidate in available_columns:
+                        peptide_error_col = candidate
+                        self.logger.info(f"Auto-detected peptide error column: '{peptide_error_col}'.")
+                        break
+
             cols = [peptide_seq_col]
             dtype = {peptide_seq_col: "string"}
 
@@ -260,11 +299,15 @@ class GenomePresenceScorer:
             else:
                 peptide_decoy_flag_col = None
 
-            if peptide_fdr_col and peptide_fdr_col in available_columns:
-                cols.append(peptide_fdr_col)
-                dtype[peptide_fdr_col] = "float32"
+            if peptide_error_col and peptide_error_col in available_columns:
+                cols.append(peptide_error_col)
+                dtype[peptide_error_col] = "float32"
             else:
-                peptide_fdr_col = None
+                if peptide_error_col is not None:
+                    self.logger.warning(
+                        f"Error column '{peptide_error_col}' not found; skipping peptide-level error filtering."
+                    )
+                peptide_error_col = None
 
             df = pd.read_csv(peptide_file_path, sep=peptide_table_sep, usecols=cols, dtype=dtype, engine="c")
             self.logger.info(f"Loaded {len(df)} rows from peptide file.")
@@ -272,15 +315,22 @@ class GenomePresenceScorer:
         if peptide_seq_col not in available_columns:
             raise ValueError(f"Missing peptide column '{peptide_seq_col}'.")
 
-        self.peptide_fdr_cutoff = float(peptide_fdr_cutoff)
-        fdr_filter_applied = False
+        if peptide_error_col is None:
+            for candidate in ("PEP", "FDR"):
+                if candidate in df.columns:
+                    peptide_error_col = candidate
+                    self.logger.info(f"Auto-detected peptide error column: '{peptide_error_col}'.")
+                    break
+
+        self.peptide_error_cutoff = float(peptide_error_cutoff)
+        error_filter_applied = False
 
         # --- NEW: run-level input stats (for paper) ---
         self.run_stats["peptide_rows_loaded"] = int(len(df))
         self.run_stats["peptide_seq_col"] = peptide_seq_col
         self.run_stats["peptide_score_col"] = peptide_score_col if peptide_score_col else None
-        self.run_stats["peptide_fdr_col"] = peptide_fdr_col if peptide_fdr_col else None
-        self.run_stats["peptide_fdr_cutoff"] = float(peptide_fdr_cutoff)
+        self.run_stats["peptide_error_col"] = peptide_error_col if peptide_error_col else None
+        self.run_stats["peptide_error_cutoff"] = float(peptide_error_cutoff)
         self.run_stats["peptide_decoy_flag_col"] = peptide_decoy_flag_col if peptide_decoy_flag_col else None
         self.run_stats["decoy_flag_value"] = decoy_flag_value
 
@@ -290,28 +340,50 @@ class GenomePresenceScorer:
             self.logger.info(f"Peptide-level decoy filter: {before} -> {len(df)} rows.")
             self.run_stats["peptide_rows_after_decoy_filter"] = int(len(df))
 
-        if peptide_fdr_col and peptide_fdr_col in df.columns:
+        if peptide_error_col and peptide_error_col in df.columns:
             before = len(df)
-            df[peptide_fdr_col] = pd.to_numeric(df[peptide_fdr_col], errors="coerce")
-            df = df[df[peptide_fdr_col] <= float(peptide_fdr_cutoff)]
-            self.logger.info(f"Peptide-level FDR filter (<= {peptide_fdr_cutoff}): {before} -> {len(df)} rows.")
-            self.run_stats["peptide_rows_after_fdr_filter"] = int(len(df))
-            fdr_filter_applied = True
+            df[peptide_error_col] = pd.to_numeric(df[peptide_error_col], errors="coerce")
+            df = df[df[peptide_error_col] <= float(peptide_error_cutoff)]
+            self.logger.info(
+                f"Peptide-level error filter on '{peptide_error_col}' (<= {peptide_error_cutoff}): {before} -> {len(df)} rows."
+            )
+            self.run_stats["peptide_rows_after_error_filter"] = int(len(df))
+            error_filter_applied = True
 
         # Interpret unique-evidence bound as an upper bound on single-peptide false match probability.
-        # Keep backward-compatible behavior: if peptide-level FDR filtering was not applied,
-        # still use peptide_fdr_cutoff as the assumed per-peptide upper bound.
-        if fdr_filter_applied:
-            self.single_peptide_error_rate_upper_bound = float(min(max(peptide_fdr_cutoff, 1e-12), 1.0))
-            self.run_stats["single_peptide_error_rate_upper_bound_source"] = "peptide_fdr_cutoff"
+        # Keep backward-compatible behavior: if peptide-level error filtering was not applied,
+        # still use peptide_error_cutoff as the assumed per-peptide upper bound.
+        if error_filter_applied:
+            self.single_peptide_error_rate_upper_bound = float(min(max(peptide_error_cutoff, 1e-12), 1.0))
+            self.run_stats["single_peptide_error_rate_upper_bound_source"] = "peptide_error_cutoff"
         else:
-            self.single_peptide_error_rate_upper_bound = float(min(max(peptide_fdr_cutoff, 1e-12), 1.0))
-            self.run_stats["single_peptide_error_rate_upper_bound_source"] = "assumed_from_peptide_fdr_cutoff_without_filter"
+            self.single_peptide_error_rate_upper_bound = float(min(max(peptide_error_cutoff, 1e-12), 1.0))
+            self.run_stats["single_peptide_error_rate_upper_bound_source"] = "assumed_from_peptide_error_cutoff_without_filter"
             self.logger.warning(
-                "No peptide-level FDR filter was applied; assuming single_peptide_error_rate_upper_bound="
-                f"{self.single_peptide_error_rate_upper_bound:.4g} from peptide_fdr_cutoff."
+                "No peptide-level error filter was applied; assuming single_peptide_error_rate_upper_bound="
+                f"{self.single_peptide_error_rate_upper_bound:.4g} from peptide_error_cutoff."
             )
         self.run_stats["single_peptide_error_rate_upper_bound"] = float(self.single_peptide_error_rate_upper_bound)
+
+        self.peptide_error_upper_by_peptide = {}
+        if peptide_error_col and peptide_error_col in df.columns:
+            # Use MAX among rows for the same peptide to stay conservative as an "upper bound".
+            pep_err = (
+                df.groupby(peptide_seq_col)[peptide_error_col]
+                .max()
+                .reset_index()
+            )
+            pep_err.columns = ["Peptide", "Error"]
+            pep_err["Error"] = pd.to_numeric(pep_err["Error"], errors="coerce").astype(float)
+            pep_err = pep_err.dropna(subset=["Error"])
+            pep_err["Error"] = pep_err["Error"].clip(lower=1e-12, upper=1.0)
+
+            self.peptide_error_upper_by_peptide = dict(
+                zip(pep_err["Peptide"].astype(str), pep_err["Error"].astype(float))
+            )
+
+        self.run_stats["unique_upper_uses_per_peptide_error"] = bool(self.peptide_error_upper_by_peptide)
+        self.run_stats["per_peptide_error_mapping_size"] = int(len(self.peptide_error_upper_by_peptide))
 
         if peptide_score_col and peptide_score_col in df.columns:
             pep_scores = df.groupby(peptide_seq_col)[peptide_score_col].max().reset_index()
@@ -341,7 +413,7 @@ class GenomePresenceScorer:
 
         self.run_stats["observed_unique_peptides"] = int(len(self.peptide_score))
         self.run_stats.setdefault("peptide_rows_after_decoy_filter", int(len(df)))
-        self.run_stats.setdefault("peptide_rows_after_fdr_filter", int(len(df)))
+        self.run_stats.setdefault("peptide_rows_after_error_filter", int(len(df)))
 
         self.logger.info(f"Observed peptides: {len(self.peptide_score)} (unique)")
         return True
@@ -709,8 +781,27 @@ class GenomePresenceScorer:
         out[order] = q
         return out
 
+
     def _add_knockoff_existence_stats(self, df_scored: pd.DataFrame) -> pd.DataFrame:
         """Add per-genome knockoff existence p/q-values."""
+        def _p_unique_upper_for_genome(gid: str) -> float:
+            matched = self.genome_matched_peptides.get(gid, set())
+            if not matched:
+                return 1.0
+
+            # Unique peptides are those with degeneracy == 1
+            uniq = [p for p in matched if int(self.peptide_degeneracy.get(p, 1)) == 1]
+            if not uniq:
+                return 1.0
+
+            # If no per-peptide error mapping, keep legacy behavior
+            if not self.peptide_error_upper_by_peptide:
+                return float(peptide_error_upper ** len(uniq))
+
+            # Product of per-peptide upper bounds; fallback to peptide_error_upper if missing
+            errs = [self.peptide_error_upper_by_peptide.get(p, peptide_error_upper) for p in uniq]
+            return float(np.prod(np.clip(errs, 1e-12, 0.5)))
+        
         out = df_scored.copy()
         # Conservative defaults for genomes with no match / skipped inference.
         out["p_shared_knock"] = 1.0
@@ -745,6 +836,27 @@ class GenomePresenceScorer:
         if self.knockoff_stage2_mc_iterations is not None:
             K2 = int(max(50, self.knockoff_stage2_mc_iterations))
         peptide_error_upper = float(min(max(self.single_peptide_error_rate_upper_bound, 1e-12), 0.5))
+        error_col = self.run_stats.get("peptide_error_col", None)
+        has_per_peptide_error = bool(self.peptide_error_upper_by_peptide)
+        uses_pep_column = bool(has_per_peptide_error and isinstance(error_col, str) and error_col.upper() == "PEP")
+        source_col_display = str(error_col) if error_col is not None else "none"
+        self.run_stats["unique_pvalue_uses_per_peptide_error"] = bool(has_per_peptide_error)
+        self.run_stats["unique_pvalue_error_source_col"] = str(error_col) if error_col is not None else None
+        self.run_stats["unique_pvalue_uses_pep_column"] = bool(uses_pep_column)
+        if has_per_peptide_error:
+            self.logger.info(
+                f"Unique p-value mode: {'PEP' if uses_pep_column else '(0.05)^U'} used with "
+                f"source_col='{source_col_display}', "
+                f"per_peptide_error_n={len(self.peptide_error_upper_by_peptide)}, "
+                f"global_fallback={peptide_error_upper:.4g}"
+            )
+        else:
+            self.logger.info(
+                f"Unique p-value mode: no per-peptide error used with "
+                f"source_col='{source_col_display}', "
+                f"per_peptide_error_n=0, "
+                f"using global_error_cutoff={peptide_error_upper:.4g}"
+            )
 
         target_mask = out["_genomes_with_any_match"].astype(bool)
         target_df = out.loc[target_mask].copy()
@@ -775,8 +887,8 @@ class GenomePresenceScorer:
             )
             p_shared, mu, sd, p95, p99 = result if isinstance(result, tuple) else (result, 0.0, 0.0, 0.0, 0.0)
 
-            unique_peptides = int(row.get("num_peptides_unique", 0))
-            p_unique_upper = 1.0 if unique_peptides <= 0 else float(peptide_error_upper ** unique_peptides)
+            p_unique_upper = _p_unique_upper_for_genome(genome_id)
+
 
             p_existence = self._fisher_p_2(p1=p_shared, p2=p_unique_upper)
 
@@ -828,8 +940,8 @@ class GenomePresenceScorer:
                         )
                         p_shared, mu, sd, p95, p99 = result if isinstance(result, tuple) else (result, 0.0, 0.0, 0.0, 0.0)
 
-                        unique_peptides = int(row.get("num_peptides_unique", 0))
-                        p_unique_upper = 1.0 if unique_peptides <= 0 else float(peptide_error_upper ** unique_peptides)
+                        p_unique_upper = _p_unique_upper_for_genome(genome_id)
+
                         p_existence = self._fisher_p_2(p1=p_shared, p2=p_unique_upper)
 
                         out.at[idx, "p_shared_knock"] = p_shared
@@ -1386,17 +1498,17 @@ if __name__ == "__main__":
     t0 = time.time()
 
     # ---- Input peptide file ----
-    peptide_table_path = r"test_data/proj2/peptide_core.tsv"
+    # peptide_table_path = r"test_data/proj2/peptide_core.tsv"
     # peptide_table_path = r"test_data\sihumix\peptides.tsv"
     # peptide_table_path = r"test_data\proj1\peptides_all.tsv"
     # peptide_table_path = r"test_data\proj1\peptides_v48_PBS.tsv"
-    # peptide_table_path = r"test_data\6bacteria\peptides.tsv"
+    peptide_table_path = r"test_data\6bacteria\peptides.tsv"
     # peptide_table_path = r"test_data\mix24x\peptides.tsv"
 
     peptide_seq_col = "Sequence"
     peptide_score_col = "Score"          # set to None if not available
-    peptide_fdr_col = "FDR"              # set to None if not available
-    peptide_fdr_cutoff = 0.05
+    peptide_error_col = "PEP"            # set to None if not available; auto-detects PEP/FDR when None
+    peptide_error_cutoff = 0.05
 
     # peptide-level decoy flag (optional)
     peptide_decoy_flag_col = "Reverse"       # set to None if not available
@@ -1408,21 +1520,21 @@ if __name__ == "__main__":
         r"C:/Users/max/Desktop/digested_genomes/UHGP_digested",          # target digest peptides
         # r"test_data\mix24x\Mix24_digested",  # target digest peptides
         # r'test_data\sihumix\digested',  # target digest peptides
-        # r'test_data\6bacteria\genomes\faa_digested'
+        r'test_data\6bacteria\genomes\faa_digested'
         
     ]
 
     # ---- Output ----
     # output_tsv_path = r"test_data/proj1/genome_presence_proj1.tsv"
-    output_tsv_path = r"test_data/proj2/genome_presence_proj2.tsv"
+    # output_tsv_path = r"test_data/proj2/genome_presence_proj2.tsv"
     # output_tsv_path = r"test_data/mix24x/genome_presence_mix24x.tsv"
     # output_tsv_path = r"test_data/mix24x/genome_presence_mix24x_only_UHGP.tsv"
-    # output_tsv_path = r"test_data\6bacteria\genome_presence_6bacteria.tsv"
+    output_tsv_path = r"test_data\6bacteria\genome_presence_6bacteria.tsv"
     # output_tsv_path = r"test_data\sihumix\genome_presence_sihumix_only_UHGP.tsv"
     
     out_dir = os.path.dirname(output_tsv_path) or "."
     pickle_path = os.path.join(out_dir, "matched_peptides.pkl")  # set to e.g. r"test_data\6bacteria\matched_peptides_cache.pkl" to save/load matched peptides cache (speeds up repeated runs)
-    # pickle_path = None  # set to None to disable matched peptides caching
+    pickle_path = None  # set to None to disable matched peptides caching
     
     
     # ---- Optional: exclude list ----
@@ -1433,7 +1545,7 @@ if __name__ == "__main__":
             exclude_genome_ids = [x.strip() for x in f if x.strip()]
     
     # exclude_genome_ids += ['MGYG000002386'] # for Sihumix
-    # exclude_genome_ids += ['MGYG000002506', 'MGYG000002463', 'MGYG000002337', 'MGYG000000109', 'MGYG000003394'] # for 6bacteria
+    exclude_genome_ids += ['MGYG000002506', 'MGYG000002463', 'MGYG000002337', 'MGYG000000109', 'MGYG000003394'] # for 6bacteria
     # exclude_genome_ids += ['MGYG000002331'] # for Mix24x
     
     # ---- Calculator ----
@@ -1458,8 +1570,8 @@ if __name__ == "__main__":
         peptide_decoy_flag_col=peptide_decoy_flag_col,
         decoy_flag_value=decoy_flag_value,
         peptide_table_sep="\t",
-        peptide_fdr_col=peptide_fdr_col,
-        peptide_fdr_cutoff=peptide_fdr_cutoff,
+        peptide_error_col=peptide_error_col,
+        peptide_error_cutoff=peptide_error_cutoff,
     )
 
     # Run
