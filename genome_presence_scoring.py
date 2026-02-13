@@ -1,6 +1,6 @@
 # Genome existence scoring from a peptide list using peptide-space knockoff null
-# Version: 4.5
-# Date: 2026-02-11
+# Version: 4.6
+# Date: 2026-02-13
 #
 # Workflow:
 # 1) Read observed peptide list (optional peptide-level error-probability filter, e.g. PEP/FDR).
@@ -249,7 +249,7 @@ class GenomePresenceScorer:
         peptide_decoy_flag_col: Optional[str] = "Target/Decoy",
         decoy_flag_value: str = "decoy",
         peptide_table_sep: str = "\t",
-        peptide_error_col: Optional[str] = None,
+        peptide_error_col: Optional[str] = None, # ["PEP", "FDR", "AUTO", None]
         peptide_error_cutoff: float = 0.05,
     ) -> bool:
         """Read a peptide table and build peptide->score dictionary."""
@@ -861,8 +861,6 @@ class GenomePresenceScorer:
             reason = "disabled_by_switch" if not bool(use_peptide_error_for_unique_pvalue) else "per_peptide_error_not_available"
             self.logger.info(
                 f"Unique p-value mode: [(alpha={peptide_error_upper:.4g})^U] "
-                f"source_col='{source_col_display}', "
-                f"per_peptide_error_n={len(self.peptide_error_upper_by_peptide)}, "
                 f"reason={reason}"
             )
 
@@ -1210,7 +1208,7 @@ class GenomePresenceScorer:
         export_temp: bool = True,
         export_peptide_contrib_topN: int = 0,
         use_cache_if_exists: bool = True,
-        use_peptide_error_for_unique_pvalue: bool = True,
+        use_peptide_error_for_unique_pvalue: bool = False,
     ) -> pd.DataFrame:
         """End-to-end analysis producing a genome-level q-value (q_presence)."""
         if output_tsv_path is None:
@@ -1513,14 +1511,28 @@ class GenomePresenceScorer:
 if __name__ == "__main__":
     print("\n======= Genome existence scoring (knockoff) =======")
     t0 = time.time()
+    
+    # Load test configs from JSON in test_data
+    config_path = Path("test_data/test_configs.json")
 
-    # ---- Input peptide file ----
-    # peptide_table_path = r"test_data/proj2/peptide_core.tsv"
-    # peptide_table_path = r"test_data\sihumix\peptides.tsv"
-    # peptide_table_path = r"test_data\proj1\peptides_all.tsv"
-    # peptide_table_path = r"test_data\proj1\peptides_v48_PBS.tsv"
-    peptide_table_path = r"test_data\6bacteria\peptides.tsv"
-    # peptide_table_path = r"test_data\mix24x\peptides.tsv"
+    with open(config_path, "r", encoding="utf-8") as f:
+        test_dict = json.load(f)
+
+
+    test_proj = "sihumix" 
+    
+    if test_proj in test_dict:
+        params = test_dict[test_proj]
+        peptide_table_path = params.get("peptide_table")
+        genome_digest_dirs = list(params.get("genome_digest_dirs") or [])
+        # normalize entries to str and drop empties
+        genome_digest_dirs = [str(g) for g in genome_digest_dirs if g]
+        # add common digest dir to all tests (kept from original script)
+        genome_digest_dirs.append(r"C:/Users/max/Desktop/digested_genomes/UHGP_digested")
+        output_tsv_path = params.get("output_tsv")
+        exclude_genome_ids = list(params.get("exclude_genome_ids") or [])
+    else:
+        raise ValueError(f"Unknown test_proj: {test_proj}. Valid keys: {list(test_dict.keys())}")
 
     peptide_seq_col = "Sequence"
     peptide_score_col = "Score"          # set to None if not available
@@ -1531,41 +1543,14 @@ if __name__ == "__main__":
     peptide_decoy_flag_col = "Reverse"       # set to None if not available
     decoy_flag_value = "+"
 
-    # ---- Genome peptide folders (theoretical digests) ----
-    # You only need TARGET folders for knockoff.
-    genome_digest_dirs = [
-        r"C:/Users/max/Desktop/digested_genomes/UHGP_digested",          # target digest peptides
-        # r"test_data\mix24x\Mix24_digested",  # target digest peptides
-        # r'test_data\sihumix\digested',  # target digest peptides
-        r'test_data\6bacteria\genomes\faa_digested'
         
-    ]
-
-    # ---- Output ----
-    # output_tsv_path = r"test_data/proj1/genome_presence_proj1.tsv"
-    # output_tsv_path = r"test_data/proj2/genome_presence_proj2.tsv"
-    # output_tsv_path = r"test_data/mix24x/genome_presence_mix24x.tsv"
-    # output_tsv_path = r"test_data/mix24x/genome_presence_mix24x_only_UHGP.tsv"
-    output_tsv_path = r"test_data\6bacteria\genome_presence_6bacteria.tsv"
-    # output_tsv_path = r"test_data\sihumix\genome_presence_sihumix_only_UHGP.tsv"
-    
     out_dir = os.path.dirname(output_tsv_path) or "."
     pickle_path = os.path.join(out_dir, "matched_peptides.pkl")  # set to e.g. r"test_data\6bacteria\matched_peptides_cache.pkl" to save/load matched peptides cache (speeds up repeated runs)
     
     use_cache_if_exists = False  # if False, ignore existing cache file and force recomputation
-    use_peptide_error_for_unique_pvalue = True  # True: use peptide-level PEP/FDR; False: use (alpha)^U (alpha=peptide_error_cutoff, default 0.05)
+    use_peptide_error_for_unique_pvalue = False  # True: use peptide-level PEP/FDR; False: use (alpha)^U (alpha=peptide_error_cutoff, default 0.05)
     
-    
-    # ---- Optional: exclude list ----
-    exclude_genome_ids = []
-    exclude_list_path = r"test_data/removed_genomes.txt"
-    if os.path.exists(exclude_list_path):
-        with open(exclude_list_path, "r") as f:
-            exclude_genome_ids = [x.strip() for x in f if x.strip()]
-    
-    # exclude_genome_ids += ['MGYG000002386'] # for Sihumix
-    exclude_genome_ids += ['MGYG000002506', 'MGYG000002463', 'MGYG000002337', 'MGYG000000109', 'MGYG000003394'] # for 6bacteria
-    # exclude_genome_ids += ['MGYG000002331'] # for Mix24x
+
     
     # ---- Calculator ----
     calc = GenomePresenceScorer(
