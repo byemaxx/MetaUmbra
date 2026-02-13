@@ -874,7 +874,7 @@ class GenomePresenceScorer:
 
         if self.knockoff_top_n_targets is not None:
             topN = int(self.knockoff_top_n_targets)
-            target_df = target_df.sort_values("rank", ascending=True, kind="mergesort").head(topN)
+            target_df = target_df.sort_values("evidence_rank", ascending=True, kind="mergesort").head(topN)
 
         # -----------------
         # Stage 1 (fast screen)
@@ -977,12 +977,12 @@ class GenomePresenceScorer:
     def _add_coverage_stats(
         self,
         df_scored: pd.DataFrame,
-        order_col: str = "rank",
+        order_col: str = "presence_rank",
     ) -> pd.DataFrame:
         """
         Add coverage statistics as a *human reference* (not used in q-value computation).
 
-        Coverage is computed along the existing ranking order (default: score-based order),
+        Coverage is computed along the existing ranking order (default: presence_rank),
         and reports how many unique, matchable observed peptides are cumulatively explained.
 
         Columns added:
@@ -1161,8 +1161,8 @@ class GenomePresenceScorer:
                 target = df_scored.loc[df_scored["_genomes_with_any_match"]].copy()
             else:
                 target = df_scored.copy()
-            if "rank" in target.columns:
-                target = target.sort_values("rank", ascending=True, kind="mergesort")
+            if "evidence_rank" in target.columns:
+                target = target.sort_values("evidence_rank", ascending=True, kind="mergesort")
             target = target.head(topN)
             out_rows = []
             for _, r in target.iterrows():
@@ -1209,6 +1209,7 @@ class GenomePresenceScorer:
         export_peptide_contrib_topN: int = 0,
         use_cache_if_exists: bool = True,
         use_peptide_error_for_unique_pvalue: bool = False,
+        return_full_table: bool = False,
     ) -> pd.DataFrame:
         """End-to-end analysis producing a genome-level q-value (q_presence)."""
         if output_tsv_path is None:
@@ -1413,7 +1414,7 @@ class GenomePresenceScorer:
         t_score0 = time.time()
         df_scored = self._rank_genomes(df_metrics)
         self.timing_stats["rank_genomes"] = float(time.time() - t_score0)
-        df_scored["rank"] = np.arange(1, len(df_scored) + 1, dtype=int)
+        df_scored["evidence_rank"] = np.arange(1, len(df_scored) + 1, dtype=int)
 
         t_knock0 = time.time()
         self.logger.info("Computing per-genome existence q-values via knockoff...")
@@ -1423,10 +1424,15 @@ class GenomePresenceScorer:
         )
         self.timing_stats["knockoff_pvalues"] = float(time.time() - t_knock0)
 
+        # Re-sort by presence_score (descending) before coverage computation
+        self.logger.info("Re-sorting by presence_score...")
+        df_scored = df_scored.sort_values("presence_score", ascending=False, kind="mergesort").reset_index(drop=True)
+        df_scored["presence_rank"] = np.arange(1, len(df_scored) + 1, dtype=int)
+
         if compute_coverage:
             self.logger.info("Computing coverage statistics (reference only; not used for final calling) ...")
             t_cov0 = time.time()
-            df_scored = self._add_coverage_stats(df_scored, order_col="rank")
+            df_scored = self._add_coverage_stats(df_scored, order_col="presence_rank")
             self.timing_stats["coverage_stats"] = float(time.time() - t_cov0)
 
         self.genome_scores_df = df_scored
@@ -1434,7 +1440,8 @@ class GenomePresenceScorer:
         self.logger.info(f"Saving results to: {output_tsv_path}")
         source_cols = [
             "genome_id",
-            "rank",
+            "evidence_rank",
+            "presence_rank",
             "num_peptides_matched",
             "num_peptides_unique",
             "shared_fraction",
@@ -1473,7 +1480,7 @@ class GenomePresenceScorer:
                 self.logger.warning(f"Failed to export temp artifacts: {e}")
 
         self._print_summary()
-        return self.genome_scores_df
+        return df_scored if return_full_table else df_main
 
     # =========================
     # Summary
