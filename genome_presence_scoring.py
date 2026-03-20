@@ -249,7 +249,7 @@ class GenomePresenceScorer:
         peptide_decoy_flag_col: Optional[str] = "Target/Decoy",
         decoy_flag_value: str = "decoy",
         peptide_table_sep: str = "\t",
-        peptide_error_col: Optional[str] = None, # ["PEP", "FDR", "AUTO", None]
+        peptide_error_col: Optional[str] = None, # ["PEP", "FDR", "AUTO", None, "Q.Value", ...]
         peptide_error_cutoff: float = 0.05,
     ) -> bool:
         """Read a peptide table and build peptide->score dictionary."""
@@ -277,7 +277,7 @@ class GenomePresenceScorer:
                 raise ValueError(f"Missing peptide column '{peptide_seq_col}' in peptide file.")
 
             if peptide_error_col is None:
-                for candidate in ("PEP", "FDR"):
+                for candidate in ("PEP", "FDR", "Q.Value"):
                     if candidate in available_columns:
                         peptide_error_col = candidate
                         self.logger.info(f"Auto-detected peptide error column: '{peptide_error_col}'.")
@@ -316,7 +316,7 @@ class GenomePresenceScorer:
             raise ValueError(f"Missing peptide column '{peptide_seq_col}'.")
 
         if peptide_error_col is None:
-            for candidate in ("PEP", "FDR"):
+            for candidate in ("PEP", "FDR", "Q.Value"):
                 if candidate in df.columns:
                     peptide_error_col = candidate
                     self.logger.info(f"Auto-detected peptide error column: '{peptide_error_col}'.")
@@ -1526,7 +1526,7 @@ if __name__ == "__main__":
         test_dict = json.load(f)
 
 
-    test_proj = "sihumix" 
+    test_proj = "mix24x" 
     
     if test_proj in test_dict:
         params = test_dict[test_proj]
@@ -1541,9 +1541,22 @@ if __name__ == "__main__":
     else:
         raise ValueError(f"Unknown test_proj: {test_proj}. Valid keys: {list(test_dict.keys())}")
 
+    ### TEST for ONE project
+    # peptide_table_path = "C:/Users/max/OneDrive - University of Ottawa/code/TaxaSeeker/test_data/pro3/peptides.tsv"
+    # genome_digest_dirs = [
+    #     r"C:/Users/max/Desktop/digested_genomes/UHGP_digested",]
+    # output_tsv_path = r"C:\Users\max\OneDrive - University of Ottawa\code\TaxaSeeker\test_data\pro3/genome_presence_results.tsv"
+    # exclude_genome_ids = [] 
+    # with open(r"test_data\removed_genomes.txt", "r", encoding="utf-8") as f:
+    #     for line in f:
+    #         genome_id = line.strip()
+    #         if genome_id:
+    #             exclude_genome_ids.append(genome_id)
+
+    
     peptide_seq_col = "Sequence"
-    peptide_score_col = "Score"          # set to None if not available
-    peptide_error_col = "PEP"            # set to None if not available; auto-detects PEP/FDR when None
+    peptide_score_col = "score"          # set to None if not available
+    peptide_error_col = "Q.Value"            # set to None if not available; auto-detects PEP/FDR when None
     peptide_error_cutoff = 0.05
 
     # peptide-level decoy flag (optional)
