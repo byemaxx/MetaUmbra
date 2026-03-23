@@ -4,3 +4,4 @@ __pycache__/
 local/
 test/
 test_data/
+.venv/
