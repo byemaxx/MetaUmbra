@@ -34,6 +34,9 @@ class DigestConfig:
 @dataclass
 class ScoringConfig:
     peptide_table_path: str = ""
+    genome_lineage_table_path: str = ""
+    genome_lineage_genome_id_col: str = ""
+    genome_lineage_lineage_col: str = ""
     genome_digest_dirs: list[str] = field(default_factory=list)
     output_tsv_path: str = ""
     peptide_seq_col: str = "Sequence"
@@ -206,6 +209,7 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
 
     output_tsv_path = _normalize_output_path(config.output_tsv_path)
     cache_path = _normalize_output_path(config.matched_peptides_cache_path)
+    genome_lineage_table_path = _normalize_output_path(config.genome_lineage_table_path)
 
     with capture_runtime_output(log_callback, ["GenomePresenceScorer"]):
         calc = scoring_module.GenomePresenceScorer(num_workers=config.num_workers)
@@ -229,6 +233,9 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
         result_df = calc.analyze_genomes(
             genome_digest_dirs=[str(Path(p).expanduser()) for p in config.genome_digest_dirs],
             output_tsv_path=output_tsv_path or None,
+            genome_lineage_table_path=genome_lineage_table_path or None,
+            genome_lineage_genome_id_col=_none_if_blank(config.genome_lineage_genome_id_col),
+            genome_lineage_lineage_col=_none_if_blank(config.genome_lineage_lineage_col),
             exclude_genome_ids=config.exclude_genome_ids or None,
             all_matched_peptides=None,
             save_matched_peptides_cache=bool(config.save_matched_peptides_cache),

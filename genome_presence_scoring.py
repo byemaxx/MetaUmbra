@@ -235,6 +235,70 @@ class GenomePresenceScorer:
         self.timing_stats: Dict[str, float] = {}
         self.knockoff_pool_stats: Optional[pd.DataFrame] = None
         self.peptide_error_upper_by_peptide: Dict[str, float] = {}  # peptide -> per-peptide upper bound (from error column)
+        self.genome_lineage_df: Optional[pd.DataFrame] = None
+
+    def _read_genome_lineage_table(
+        self,
+        genome_lineage_table_path: str,
+        genome_lineage_genome_id_col: str,
+        genome_lineage_lineage_col: str,
+    ) -> pd.DataFrame:
+        """Read a genome->Lineage mapping table using explicitly provided column names."""
+        path = str(genome_lineage_table_path)
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Genome lineage table not found: {path}")
+
+        df = pd.read_csv(path, sep="\t", dtype="string")
+        if df.empty:
+            raise ValueError(f"Genome lineage table is empty: {path}")
+
+        genome_col = str(genome_lineage_genome_id_col).strip()
+        lineage_col = str(genome_lineage_lineage_col).strip()
+        missing_cols = [col for col in [genome_col, lineage_col] if col not in df.columns]
+        if missing_cols:
+            raise ValueError(
+                f"Genome lineage table is missing required columns: {missing_cols}. "
+                f"Available columns: {list(map(str, df.columns))}"
+            )
+
+        lineage_df = df[[genome_col, lineage_col]].copy()
+        lineage_df.columns = ["genome_id", "Lineage"]
+        lineage_df["genome_id"] = lineage_df["genome_id"].astype("string").str.strip()
+        lineage_df["Lineage"] = lineage_df["Lineage"].astype("string").str.strip()
+        lineage_df = lineage_df[
+            lineage_df["genome_id"].notna()
+            & lineage_df["Lineage"].notna()
+            & (lineage_df["genome_id"] != "")
+            & (lineage_df["Lineage"] != "")
+        ].copy()
+
+        dup_count = int(lineage_df["genome_id"].duplicated().sum())
+        if dup_count:
+            self.logger.warning(
+                f"Genome lineage table has {dup_count} duplicate genome IDs; keeping the first Lineage per genome."
+            )
+            lineage_df = lineage_df.drop_duplicates(subset=["genome_id"], keep="first")
+
+        self.logger.info(f"Loaded genome lineage annotations for {len(lineage_df)} genomes from: {path}")
+        return lineage_df
+
+    def _attach_lineage_column(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add Lineage to result tables when an annotation table is available."""
+        if self.genome_lineage_df is None or df is None or len(df) == 0 or "genome_id" not in df.columns:
+            return df
+
+        out = df.copy()
+        lineage_map = self.genome_lineage_df.set_index("genome_id")["Lineage"]
+        lineage_values = out["genome_id"].astype(str).map(lineage_map)
+
+        if "Lineage" in out.columns:
+            existing = out["Lineage"]
+            out["Lineage"] = existing.where(existing.notna() & (existing.astype(str) != ""), lineage_values)
+            return out
+
+        insert_at = out.columns.get_loc("genome_id") + 1
+        out.insert(insert_at, "Lineage", lineage_values)
+        return out
 
 
     # =========================
@@ -1198,6 +1262,9 @@ class GenomePresenceScorer:
         self,
         genome_digest_dirs: Union[str, List[str]],
         output_tsv_path: Optional[str] = None,
+        genome_lineage_table_path: Optional[str] = None,
+        genome_lineage_genome_id_col: Optional[str] = None,
+        genome_lineage_lineage_col: Optional[str] = None,
         genome_list: Optional[List[str]] = None,
         exclude_genome_ids: Optional[List[str]] = None,
         test_genomes_num: Optional[int] = None,
@@ -1219,6 +1286,28 @@ class GenomePresenceScorer:
         else:
             out_dir = os.path.dirname(output_tsv_path) or "."
             os.makedirs(out_dir, exist_ok=True)
+
+        if genome_lineage_table_path:
+            if not genome_lineage_genome_id_col or not genome_lineage_lineage_col:
+                raise ValueError(
+                    "When genome_lineage_table_path is provided, you must also provide "
+                    "genome_lineage_genome_id_col and genome_lineage_lineage_col."
+                )
+            self.genome_lineage_df = self._read_genome_lineage_table(
+                genome_lineage_table_path=genome_lineage_table_path,
+                genome_lineage_genome_id_col=genome_lineage_genome_id_col,
+                genome_lineage_lineage_col=genome_lineage_lineage_col,
+            )
+            self.run_stats["genome_lineage_table_path"] = str(genome_lineage_table_path)
+            self.run_stats["genome_lineage_genome_id_col"] = str(genome_lineage_genome_id_col)
+            self.run_stats["genome_lineage_lineage_col"] = str(genome_lineage_lineage_col)
+            self.run_stats["genome_lineage_annotations_loaded"] = int(len(self.genome_lineage_df))
+        else:
+            self.genome_lineage_df = None
+            self.run_stats["genome_lineage_table_path"] = None
+            self.run_stats["genome_lineage_genome_id_col"] = None
+            self.run_stats["genome_lineage_lineage_col"] = None
+            self.run_stats["genome_lineage_annotations_loaded"] = 0
 
         t_all0 = time.time()
         self.timing_stats = {}
@@ -1435,11 +1524,16 @@ class GenomePresenceScorer:
             df_scored = self._add_coverage_stats(df_scored, order_col="presence_rank")
             self.timing_stats["coverage_stats"] = float(time.time() - t_cov0)
 
+        df_scored = self._attach_lineage_column(df_scored)
         self.genome_scores_df = df_scored
 
         self.logger.info(f"Saving results to: {output_tsv_path}")
         source_cols = [
             "genome_id",
+        ]
+        if "Lineage" in df_scored.columns:
+            source_cols.append("Lineage")
+        source_cols.extend([
             "evidence_rank",
             "presence_rank",
             "num_peptides_matched",
@@ -1451,7 +1545,7 @@ class GenomePresenceScorer:
             "presence_score",
             "pass_q_0_01",
             "pass_q_0_05",
-        ]
+        ])
         rename_map = {
             "p_presence": "pvalue",
             "q_presence": "qvalue",
@@ -1490,6 +1584,69 @@ class GenomePresenceScorer:
             return
 
         df = self.genome_scores_df
+        target = df.loc[df["_genomes_with_any_match"]].copy()
+
+        def _format_qvalue(value: object) -> str:
+            return f"{float(value):.3g}" if pd.notna(value) else "NA"
+
+        def _print_row(rank_label: object, row: pd.Series) -> None:
+            print(
+                f"{rank_label}. {row['genome_id']} | Unique_Pep={int(row['num_peptides_unique'])}, "
+                f"Matched_Pep={int(row['num_peptides_matched'])}, "
+                f"Qvalue={_format_qvalue(row.get('q_presence', np.nan))}, "
+                f"Coverage={float(row.get('cumulative_coverage_percent', 0.0)):.1f}%"
+            )
+
+        def _get_threshold_window_positions(threshold: float, window_size: int = 2) -> List[int]:
+            if "q_presence" not in target.columns or target.empty:
+                return []
+
+            qvals = pd.to_numeric(target["q_presence"], errors="coerce")
+            passing_positions = np.flatnonzero((qvals <= threshold).fillna(False).to_numpy(dtype=bool))
+            failing_positions = np.flatnonzero((qvals > threshold).fillna(False).to_numpy(dtype=bool))
+
+            if len(passing_positions) == 0 and len(failing_positions) == 0:
+                return []
+
+            positions: List[int] = []
+            if len(passing_positions) > 0:
+                start = max(0, len(passing_positions) - window_size)
+                positions.extend(int(pos) for pos in passing_positions[start:])
+            if len(failing_positions) > 0:
+                positions.extend(int(pos) for pos in failing_positions[:window_size])
+            return sorted(set(positions))
+
+        def _print_threshold_window(threshold: float, positions: List[int], window_size: int = 2) -> None:
+            if not positions:
+                return
+
+            qvals = pd.to_numeric(target["q_presence"], errors="coerce")
+            passing_positions = np.flatnonzero((qvals <= threshold).fillna(False).to_numpy(dtype=bool))
+            failing_positions = np.flatnonzero((qvals > threshold).fillna(False).to_numpy(dtype=bool))
+            print(f"\nAround q<={threshold:.2f}:")
+            printed_any = False
+
+            if len(passing_positions) > 0:
+                start = max(0, len(passing_positions) - window_size)
+                for pos in passing_positions[start:]:
+                    row = target.iloc[int(pos)]
+                    rank_label = int(row["presence_rank"]) if "presence_rank" in row.index else int(pos) + 1
+                    _print_row(rank_label, row)
+                    printed_any = True
+
+            if len(passing_positions) > 0 and len(failing_positions) > 0:
+                print("...")
+
+            if len(failing_positions) > 0:
+                for pos in failing_positions[:window_size]:
+                    row = target.iloc[int(pos)]
+                    rank_label = int(row["presence_rank"]) if "presence_rank" in row.index else int(pos) + 1
+                    _print_row(rank_label, row)
+                    printed_any = True
+
+            if not printed_any:
+                print("(no genomes around this threshold)")
+
         print("\n======= Genome existence scoring (knockoff) summary =======")
         print(f"Genomes analyzed: {len(df)}")
         print(f"Genomes with matched>=1: {int(df['_genomes_with_any_match'].sum())}")
@@ -1500,16 +1657,20 @@ class GenomePresenceScorer:
             print(f"Genomes q<=0.01: {keep01}")
             print(f"Genomes q<=0.05: {keep05}")
 
-        top = df.loc[df["_genomes_with_any_match"]].head(10)
+        top = target.head(10)
         print("\nTop 10 target genomes by rank:")
         for i, (_, r) in enumerate(top.iterrows(), 1):
-            qv = r.get("q_presence", np.nan)
-            print(
-                f"{i}. {r['genome_id']} | Unique_Pep={int(r['num_peptides_unique'])}, "
-                f"Matched_Pep={int(r['num_peptides_matched'])}, "
-                f"Qvalue={qv if pd.notna(qv) else 'NA'}, "
-                f"Coverage={float(r.get('cumulative_coverage_percent', 0.0)):.1f}%"
-            )
+            _print_row(i, r)
+        if len(target) > 10:
+            print("...")
+
+        if "q_presence" in target.columns:
+            window_001 = _get_threshold_window_positions(0.01)
+            window_005 = _get_threshold_window_positions(0.05)
+            _print_threshold_window(0.01, window_001)
+            if window_001 and window_005 and (max(window_001) + 1 < min(window_005)):
+                print("...")
+            _print_threshold_window(0.05, window_005)
 
 
 # =========================
@@ -1562,6 +1723,9 @@ if __name__ == "__main__":
     # peptide-level decoy flag (optional)
     peptide_decoy_flag_col = "Reverse"       # set to None if not available
     decoy_flag_value = "+"
+    genome_lineage_table_path = None         # optional TSV/TXT with genome ID and Lineage columns
+    genome_lineage_genome_id_col = "Genome_id"
+    genome_lineage_lineage_col = "Lineage"
 
         
     out_dir = os.path.dirname(output_tsv_path) or "."
@@ -1602,6 +1766,9 @@ if __name__ == "__main__":
     calc.analyze_genomes(
         genome_digest_dirs=genome_digest_dirs,
         output_tsv_path=output_tsv_path,
+        genome_lineage_table_path=genome_lineage_table_path,
+        genome_lineage_genome_id_col=genome_lineage_genome_id_col,
+        genome_lineage_lineage_col=genome_lineage_lineage_col,
         exclude_genome_ids=exclude_genome_ids,
         all_matched_peptides=None,
         save_matched_peptides_cache=True,

@@ -393,6 +393,14 @@ class ScoringTab(QWidget):
         required_form = QFormLayout(required_box)
         peptide_row, self.peptide_table_edit = _make_path_row("Browse", self._browse_peptide_table)
         required_form.addRow("Observed peptide table", peptide_row)
+        lineage_row, self.genome_lineage_table_edit = _make_path_row("Browse", self._browse_genome_lineage_table)
+        required_form.addRow("Genome-Lineage table (optional)", lineage_row)
+        self.genome_lineage_genome_id_col_edit = QLineEdit()
+        self.genome_lineage_lineage_col_edit = QLineEdit()
+        self.genome_lineage_genome_id_col_edit.setPlaceholderText("Required if table is provided, e.g. Genome_id")
+        self.genome_lineage_lineage_col_edit.setPlaceholderText("Required if table is provided, e.g. Lineage")
+        required_form.addRow("Lineage genome ID column", self.genome_lineage_genome_id_col_edit)
+        required_form.addRow("Lineage column", self.genome_lineage_lineage_col_edit)
         output_row, self.output_tsv_edit = _make_path_row("Browse", self._browse_output_tsv)
         required_form.addRow("Output result TSV", output_row)
 
@@ -537,6 +545,16 @@ class ScoringTab(QWidget):
         if path:
             self.output_tsv_edit.setText(path)
 
+    def _browse_genome_lineage_table(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select genome-Lineage table",
+            "",
+            "TSV files (*.tsv *.txt);;All files (*.*)",
+        )
+        if path:
+            self.genome_lineage_table_edit.setText(path)
+
     def _browse_cache_path(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
             self,
@@ -565,6 +583,9 @@ class ScoringTab(QWidget):
     def build_config(self, require_required_fields: bool = True) -> ScoringConfig:
         config = ScoringConfig(
             peptide_table_path=self.peptide_table_edit.text().strip(),
+            genome_lineage_table_path=self.genome_lineage_table_edit.text().strip(),
+            genome_lineage_genome_id_col=self.genome_lineage_genome_id_col_edit.text().strip(),
+            genome_lineage_lineage_col=self.genome_lineage_lineage_col_edit.text().strip(),
             genome_digest_dirs=[self.genome_dir_list.item(i).text() for i in range(self.genome_dir_list.count())],
             output_tsv_path=self.output_tsv_edit.text().strip(),
             peptide_seq_col=self.peptide_seq_col_edit.text().strip(),
@@ -603,6 +624,11 @@ class ScoringTab(QWidget):
         if require_required_fields:
             if not config.peptide_table_path:
                 raise ValueError("Please choose an observed peptide table.")
+            if config.genome_lineage_table_path:
+                if not config.genome_lineage_genome_id_col:
+                    raise ValueError("Please provide the genome ID column name for the genome-Lineage table.")
+                if not config.genome_lineage_lineage_col:
+                    raise ValueError("Please provide the Lineage column name for the genome-Lineage table.")
             if not config.output_tsv_path:
                 raise ValueError("Please choose an output result TSV file.")
             if not config.peptide_seq_col:
@@ -615,6 +641,9 @@ class ScoringTab(QWidget):
 
     def load_config(self, config: ScoringConfig) -> None:
         self.peptide_table_edit.setText(config.peptide_table_path)
+        self.genome_lineage_table_edit.setText(config.genome_lineage_table_path)
+        self.genome_lineage_genome_id_col_edit.setText(config.genome_lineage_genome_id_col)
+        self.genome_lineage_lineage_col_edit.setText(config.genome_lineage_lineage_col)
         self.output_tsv_edit.setText(config.output_tsv_path)
         self.peptide_seq_col_edit.setText(config.peptide_seq_col)
         self.peptide_score_col_edit.setText(config.peptide_score_col)
