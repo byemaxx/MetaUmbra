@@ -541,6 +541,8 @@ class DigestTab(QWidget):
         options_form.addRow(self.skip_existing_checkbox)
         options_form.addRow(
             _make_wrapped_label(
+                "Single-file mode: number of worker processes used within one FASTA. "
+                "Directory mode: number of FASTA files processed in parallel. "
                 f"Default processes = CPU cores minus one. Maximum allowed here is {MAX_PROCESS_COUNT}."
             )
         )
