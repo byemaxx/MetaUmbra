@@ -763,8 +763,8 @@ if __name__ == "__main__":
     try:
         with timer("Total directory processing time"):
             results = process_directory(
-                input_dir=r"C:\Users\max\OneDrive - University of Ottawa\code\TaxaSeeker\test_data\mix24x\protein_fasta",
-                output_dir=r"C:\Users\max\OneDrive - University of Ottawa\code\TaxaSeeker\test_data\mix24x\protein_fasta_digested2",
+                input_dir=r"test_data\mix24x\protein_fasta",
+                output_dir=r"test_data\mix24x\protein_fasta_digested",
                 enzyme_id="42",
                 min_length=7,
                 max_length=30,
