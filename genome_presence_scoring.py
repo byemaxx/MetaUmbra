@@ -1388,6 +1388,17 @@ class GenomePresenceScorer:
             if genome_list:
                 genome_set = {g.strip() for g in genome_list if isinstance(g, str) and g.strip()}
                 selected_genome_files = [p for p in all_genome_files if p.stem in genome_set]
+                missing_genomes = sorted(genome_set.difference({p.stem for p in selected_genome_files}))
+                self.logger.info(
+                    f"Selected {len(selected_genome_files)} genomes from include list ({len(genome_set)} requested)."
+                )
+                if missing_genomes:
+                    preview = ", ".join(missing_genomes[:10])
+                    suffix = " ..." if len(missing_genomes) > 10 else ""
+                    self.logger.warning(
+                        f"{len(missing_genomes)} requested genome IDs were not found in the digest folders: "
+                        f"{preview}{suffix}"
+                    )
             elif test_genomes_num and test_genomes_num < len(all_genome_files):
                 selected_genome_files = random.sample(all_genome_files, int(test_genomes_num))
             else:
@@ -1398,6 +1409,14 @@ class GenomePresenceScorer:
                 before = len(selected_genome_files)
                 selected_genome_files = [p for p in selected_genome_files if p.stem not in ex]
                 self.logger.info(f"Excluded {before - len(selected_genome_files)} genomes by exclude list.")
+
+            if not selected_genome_files:
+                if genome_list:
+                    raise ValueError(
+                        "No genome peptide TSV files matched the Only Run Genome IDs list. "
+                        "Please check that the IDs match the TSV filenames."
+                    )
+                raise ValueError("No genome peptide TSV files remained after filtering.")
 
             self.logger.info(f"Processing {len(selected_genome_files)} genome files with num_workers={self.num_workers} ...")
 
@@ -1468,6 +1487,42 @@ class GenomePresenceScorer:
                 self.logger.info(f"Saved matched peptides cache: {pkl_path}")
 
         self.timing_stats["scan_genomes"] = float(time.time() - t_scan0)
+
+        selected_genome_set = {
+            g.strip() for g in (genome_list or []) if isinstance(g, str) and g.strip()
+        }
+        excluded_genome_set = {
+            g.strip() for g in (exclude_genome_ids or []) if isinstance(g, str) and g.strip()
+        }
+        if selected_genome_set or excluded_genome_set:
+            before = len(all_matched_peptides)
+            available_genome_ids = {genome_id for genome_id, _, _ in all_matched_peptides}
+            filtered_matched_peptides: List[Tuple[str, Set[str], int]] = []
+            for genome_id, matched_peptides, total_cnt in all_matched_peptides:
+                if selected_genome_set and genome_id not in selected_genome_set:
+                    continue
+                if excluded_genome_set and genome_id in excluded_genome_set:
+                    continue
+                filtered_matched_peptides.append((genome_id, matched_peptides, total_cnt))
+            all_matched_peptides = filtered_matched_peptides
+            self.logger.info(f"Retained {len(all_matched_peptides)} genomes after applying cache-safe filters.")
+            if not all_matched_peptides:
+                if selected_genome_set:
+                    raise ValueError(
+                        "No genomes remained after applying the Only Run Genome IDs list to the matched-peptide data."
+                    )
+                raise ValueError("No genomes remained after applying genome filters.")
+            if selected_genome_set:
+                missing_from_data = sorted(selected_genome_set.difference(available_genome_ids))
+                if missing_from_data:
+                    preview = ", ".join(missing_from_data[:10])
+                    suffix = " ..." if len(missing_from_data) > 10 else ""
+                    self.logger.warning(
+                        f"{len(missing_from_data)} Only Run Genome IDs were not present in the matched-peptide data: "
+                        f"{preview}{suffix}"
+                    )
+            self.run_stats["genome_filter_input_count"] = int(before)
+            self.run_stats["genome_filter_output_count"] = int(len(all_matched_peptides))
 
         self.genome_matched_peptides = {}
         self.genome_total_theoretical_peptides = {}

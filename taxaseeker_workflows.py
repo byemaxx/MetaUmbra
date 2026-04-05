@@ -38,6 +38,7 @@ class ScoringConfig:
     genome_lineage_genome_id_col: str = ""
     genome_lineage_lineage_col: str = ""
     genome_digest_dirs: list[str] = field(default_factory=list)
+    selected_genome_ids: list[str] = field(default_factory=list)
     output_tsv_path: str = ""
     peptide_seq_col: str = "Sequence"
     peptide_score_col: str = "score"
@@ -236,6 +237,7 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
             genome_lineage_table_path=genome_lineage_table_path or None,
             genome_lineage_genome_id_col=_none_if_blank(config.genome_lineage_genome_id_col),
             genome_lineage_lineage_col=_none_if_blank(config.genome_lineage_lineage_col),
+            genome_list=config.selected_genome_ids or None,
             exclude_genome_ids=config.exclude_genome_ids or None,
             all_matched_peptides=None,
             save_matched_peptides_cache=bool(config.save_matched_peptides_cache),

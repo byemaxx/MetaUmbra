@@ -307,26 +307,6 @@ def _create_scroll_form_host() -> tuple[QScrollArea, QVBoxLayout]:
     return scroll, layout
 
 
-def _create_action_bar(hint_text: str, button_text: str) -> tuple[QWidget, QPushButton]:
-    action_bar = QWidget()
-    action_bar.setObjectName("ActionBar")
-    action_layout = QHBoxLayout(action_bar)
-    action_layout.setContentsMargins(18, 12, 18, 12)
-    action_layout.setSpacing(12)
-
-    action_hint = QLabel(hint_text)
-    action_hint.setObjectName("ActionHint")
-    action_hint.setWordWrap(True)
-    action_layout.addWidget(action_hint, 1)
-
-    run_button = QPushButton(button_text)
-    run_button.setProperty("accent", True)
-    run_button.setMinimumHeight(42)
-    run_button.setMinimumWidth(PRIMARY_BUTTON_MIN_WIDTH)
-    action_layout.addWidget(run_button, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-    return action_bar, run_button
-
-
 def _polish_form_layout(form: QFormLayout) -> None:
     form.setHorizontalSpacing(14)
     form.setVerticalSpacing(10)
@@ -350,7 +330,12 @@ def _create_editable_combo(default_text: str = "", placeholder: str = "") -> QCo
     return combo
 
 
-def _set_editable_combo_items(combo: QComboBox, items: list[str], preferred_text: str = "") -> None:
+def _set_editable_combo_items(
+    combo: QComboBox,
+    items: list[str],
+    preferred_text: str = "",
+    preferred_index: int | None = None,
+) -> None:
     current_text = combo.currentText().strip()
     combo.blockSignals(True)
     combo.clear()
@@ -361,6 +346,9 @@ def _set_editable_combo_items(combo: QComboBox, items: list[str], preferred_text
     if preferred_text and preferred_text in items:
         if not target_text or target_text not in items:
             target_text = preferred_text
+    elif preferred_index is not None and 0 <= preferred_index < len(items):
+        if not target_text or target_text not in items:
+            target_text = items[preferred_index]
     elif not target_text and items:
         target_text = items[0]
 
@@ -550,12 +538,6 @@ class DigestTab(QWidget):
         layout.addWidget(self.more_options)
         layout.addStretch(1)
 
-        action_bar, self.run_button = _create_action_bar(
-            "Review the inputs above, then start the digest workflow.",
-            "Run Digest",
-        )
-        outer_layout.addWidget(action_bar)
-
         self.mode_combo.currentIndexChanged.connect(self._sync_mode_visibility)
         self._sync_mode_visibility()
 
@@ -692,7 +674,8 @@ class ScoringTab(QWidget):
         genome_box = QGroupBox("Genome Digest Directories")
         genome_layout = QVBoxLayout(genome_box)
         self.genome_dir_list = DirectoryDropListWidget()
-        self.genome_dir_list.setMinimumHeight(120)
+        self.genome_dir_list.setMinimumHeight(84)
+        self.genome_dir_list.setMaximumHeight(96)
         button_row = QHBoxLayout()
         add_button = QPushButton("Add")
         add_button.clicked.connect(self._add_genome_dir)
@@ -802,9 +785,28 @@ class ScoringTab(QWidget):
         exclude_box.setProperty("subtle", True)
         exclude_layout = QVBoxLayout(exclude_box)
         self.exclude_text = QTextEdit()
-        self.exclude_text.setPlaceholderText("One genome ID per line, or comma-separated.")
+        self.exclude_text.setPlaceholderText(
+            "One genome ID per line, or comma-separated.\n"
+            "Genome IDs should match digest TSV filenames without the .tsv suffix."
+        )
         exclude_layout.addWidget(self.exclude_text)
         options_layout.addWidget(exclude_box)
+
+        selected_box = QGroupBox("Only Run Genome IDs")
+        selected_box.setProperty("subtle", True)
+        selected_layout = QVBoxLayout(selected_box)
+        self.selected_genomes_text = QTextEdit()
+        self.selected_genomes_text.setPlaceholderText(
+            "Optional. If provided, TaxaSeeker will only run these genome IDs.\n"
+            "One genome ID per line, or comma-separated.\n"
+            "Genome IDs should match digest TSV filenames without the .tsv suffix."
+        )
+        selected_layout.addWidget(self.selected_genomes_text)
+        genome_id_boxes_row = QHBoxLayout()
+        genome_id_boxes_row.setSpacing(12)
+        genome_id_boxes_row.addWidget(exclude_box, 1)
+        genome_id_boxes_row.addWidget(selected_box, 1)
+        options_layout.addLayout(genome_id_boxes_row)
 
         flags_box = QGroupBox("Flags")
         flags_box.setProperty("subtle", True)
@@ -827,12 +829,6 @@ class ScoringTab(QWidget):
         options_layout.addWidget(flags_box)
         layout.addWidget(self.more_options)
         layout.addStretch(1)
-
-        action_bar, self.run_button = _create_action_bar(
-            "Run genome presence scoring with the selected inputs and mappings.",
-            "Run Genome Presence Scoring",
-        )
-        outer_layout.addWidget(action_bar)
         self.peptide_table_edit.textChanged.connect(self._update_auto_output_tsv_from_peptide_table)
         self.peptide_table_edit.textChanged.connect(self._update_peptide_table_column_options)
         self.genome_lineage_table_edit.textChanged.connect(self._update_genome_lineage_column_options)
@@ -887,6 +883,7 @@ class ScoringTab(QWidget):
             self.genome_lineage_lineage_col_edit,
             columns,
             preferred_text="Lineage",
+            preferred_index=1,
         )
 
     def _sync_genome_lineage_column_visibility(self) -> None:
@@ -967,6 +964,7 @@ class ScoringTab(QWidget):
             genome_lineage_genome_id_col=self.genome_lineage_genome_id_col_edit.currentText().strip(),
             genome_lineage_lineage_col=self.genome_lineage_lineage_col_edit.currentText().strip(),
             genome_digest_dirs=[self.genome_dir_list.item(i).text() for i in range(self.genome_dir_list.count())],
+            selected_genome_ids=_parse_text_list(self.selected_genomes_text.toPlainText()),
             output_tsv_path=self.output_tsv_edit.text().strip(),
             peptide_seq_col=self.peptide_seq_col_edit.currentText().strip(),
             peptide_score_col=self.peptide_score_col_edit.currentText().strip(),
@@ -1069,6 +1067,7 @@ class ScoringTab(QWidget):
             self.genome_dir_list.addItem(path)
 
         self.exclude_text.setPlainText("\n".join(config.exclude_genome_ids))
+        self.selected_genomes_text.setPlainText("\n".join(config.selected_genome_ids))
 
 
 class WorkflowWorker(QObject):
@@ -1111,11 +1110,15 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         central = QWidget()
+        central.setObjectName("AppRoot")
         root_layout = QVBoxLayout(central)
         root_layout.setContentsMargins(12, 12, 12, 12)
         root_layout.setSpacing(12)
 
-        button_row = QHBoxLayout()
+        top_bar = QWidget()
+        top_bar.setObjectName("TopBar")
+        button_row = QHBoxLayout(top_bar)
+        button_row.setContentsMargins(14, 12, 14, 12)
         button_row.setSpacing(10)
         self.load_button = QPushButton("Load Config")
         self.save_button = QPushButton("Save Config")
@@ -1136,16 +1139,30 @@ class MainWindow(QMainWindow):
         button_row.addWidget(self.busy_bar)
         button_row.addWidget(self.state_badge)
         button_row.addWidget(self.status_label)
-        root_layout.addLayout(button_row)
+        root_layout.addWidget(top_bar)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         self.tabs = QTabWidget()
+        self.tabs.setObjectName("PrimaryTabs")
         self.digest_tab = DigestTab()
         self.scoring_tab = ScoringTab()
-        self.tabs.addTab(self.digest_tab, "Digest FASTA")
         self.tabs.addTab(self.scoring_tab, "Genome Presence Scoring")
+        self.tabs.addTab(self.digest_tab, "Digest FASTA")
+        self.tab_actions = QWidget()
+        self.tab_actions.setObjectName("TabActions")
+        tab_actions_layout = QHBoxLayout(self.tab_actions)
+        tab_actions_layout.setContentsMargins(0, 0, 0, 0)
+        tab_actions_layout.setSpacing(0)
+        self.run_current_button = QPushButton()
+        self.run_current_button.setObjectName("PrimaryRunButton")
+        self.run_current_button.setProperty("accent", True)
+        self.run_current_button.setMinimumHeight(38)
+        self.run_current_button.setMinimumWidth(PRIMARY_BUTTON_MIN_WIDTH)
+        tab_actions_layout.addWidget(self.run_current_button)
+        self.tabs.setCornerWidget(self.tab_actions, Qt.Corner.TopRightCorner)
 
         log_panel = QGroupBox("Run Log")
+        log_panel.setProperty("elevated", True)
         log_layout = QVBoxLayout(log_panel)
         self.log_output = QPlainTextEdit()
         self.log_output.setReadOnly(True)
@@ -1163,8 +1180,9 @@ class MainWindow(QMainWindow):
         self.load_button.clicked.connect(self._load_config)
         self.save_button.clicked.connect(self._save_config)
         self.clear_log_button.clicked.connect(self.log_output.clear)
-        self.digest_tab.run_button.clicked.connect(self._run_digest_tab)
-        self.scoring_tab.run_button.clicked.connect(self._run_scoring_tab)
+        self.run_current_button.clicked.connect(self._run_current_tab)
+        self.tabs.currentChanged.connect(self._sync_primary_run_button)
+        self._sync_primary_run_button()
 
     def _append_log(self, message: str) -> None:
         self.log_output.appendPlainText(message)
@@ -1173,104 +1191,129 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(
             """
             QMainWindow {
-                background: #f6f8fb;
+                background: #eef3f8;
                 color: #1f2a37;
             }
-            QTabWidget::pane {
-                border: 1px solid #d8e0ea;
-                border-radius: 10px;
-                background: #fbfcfe;
-                top: -1px;
+            QWidget#AppRoot {
+                background: qlineargradient(
+                    x1: 0, y1: 0, x2: 0, y2: 1,
+                    stop: 0 #f5f8fc,
+                    stop: 1 #eef3f8
+                );
+            }
+            QWidget#TopBar {
+                background: rgba(255, 255, 255, 0.88);
+                border: 1px solid #dbe4ee;
+                border-radius: 14px;
+            }
+            QTabWidget#PrimaryTabs::pane {
+                border: 1px solid #dbe4ee;
+                border-radius: 16px;
+                background: rgba(252, 253, 255, 0.94);
+                top: 0px;
+                margin-top: 8px;
+            }
+            QTabWidget#PrimaryTabs::tab-bar {
+                left: 8px;
+            }
+            QWidget#TabActions {
+                background: transparent;
+                margin-right: 10px;
             }
             QTabBar::tab {
-                background: transparent;
+                background: #edf2f7;
                 color: #5b6776;
-                border: 1px solid transparent;
-                border-bottom: none;
-                padding: 9px 16px;
-                margin-right: 6px;
-                border-top-left-radius: 8px;
-                border-top-right-radius: 8px;
+                border: 1px solid #e1e7ef;
+                padding: 10px 18px;
+                margin-right: 8px;
+                margin-top: 2px;
+                border-radius: 10px;
             }
             QTabBar::tab:selected {
-                background: #fbfcfe;
-                color: #1f2f3f;
+                background: #ffffff;
+                color: #1b3148;
                 font-weight: 600;
-                border-color: #d8e0ea;
+                border-color: #d4dde8;
+            }
+            QTabBar::tab:hover:!selected {
+                background: #f4f7fb;
+                color: #415264;
             }
             QGroupBox {
                 background: #ffffff;
-                border: 1px solid #dde4ec;
-                border-radius: 10px;
-                margin-top: 10px;
-                padding-top: 10px;
+                border: 1px solid #dfe6ee;
+                border-radius: 14px;
+                margin-top: 12px;
+                padding-top: 12px;
                 font-weight: 600;
             }
             QGroupBox[elevated="true"] {
-                border-color: #d4dce6;
+                border-color: #d7e0ea;
                 background: #ffffff;
             }
             QGroupBox[subtle="true"] {
-                background: #fafbfd;
-                border-color: #e3e8ef;
+                background: #f7f9fc;
+                border-color: #e5ebf2;
+                border-radius: 12px;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 6px;
-                color: #2d3b4b;
+                left: 14px;
+                padding: 0 8px;
+                color: #2a3c4d;
             }
             QWidget#FormCanvas {
                 background: transparent;
             }
             QLabel#StatusBadge {
-                padding: 5px 11px;
-                border-radius: 10px;
+                padding: 6px 12px;
+                border-radius: 9px;
                 font-weight: 700;
-                background: #eef2f7;
-                color: #425466;
+                background: #eef3f8;
+                color: #415366;
             }
             QLabel#StatusBadge[statusState="running"] {
-                background: #e9f2ff;
-                color: #1f63c1;
+                background: #e8f1ff;
+                color: #205fb4;
             }
             QLabel#StatusBadge[statusState="done"] {
-                background: #e8f6ec;
+                background: #e7f5ec;
                 color: #1c7a43;
             }
             QLabel#StatusBadge[statusState="failed"] {
-                background: #fdeced;
+                background: #fcebec;
                 color: #b42318;
             }
             QLabel#StatusDetail {
-                color: #516274;
-                padding-left: 4px;
-            }
-            QLabel#ActionHint {
-                color: #637386;
-            }
-            QWidget#ActionBar {
-                border: 1px solid #dbe2ea;
-                background: #fbfcfe;
-                border-radius: 10px;
+                color: #5b6a79;
+                padding-left: 6px;
             }
             QLineEdit, QComboBox, QSpinBox, QTextEdit, QPlainTextEdit, QListWidget {
                 background: #ffffff;
-                border: 1px solid #ccd6e0;
-                border-radius: 8px;
-                padding: 6px 10px;
-                selection-background-color: #d9e7ff;
+                border: 1px solid #cfd8e3;
+                border-radius: 10px;
+                padding: 7px 11px;
+                selection-background-color: #dbe8ff;
             }
             QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QTextEdit:focus, QPlainTextEdit:focus, QListWidget:focus {
-                border-color: #2a6fdb;
+                border-color: #2d6cdf;
+                background: #ffffff;
+            }
+            QComboBox QLineEdit {
+                border: none;
+                background: transparent;
+                padding: 0;
             }
             QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 30px;
                 border: none;
-                width: 26px;
+                border-left: 1px solid #ebeff5;
             }
             QComboBox::down-arrow {
-                width: 10px;
-                height: 10px;
+                width: 9px;
+                height: 9px;
             }
             QPlainTextEdit#RunLog {
                 font-family: Consolas, "Courier New", monospace;
@@ -1278,25 +1321,33 @@ class MainWindow(QMainWindow):
                 line-height: 1.3;
                 background: #f8fafc;
                 color: #334155;
-                border-color: #d7e0ea;
+                border-color: #d9e2ec;
             }
             QPushButton {
                 background: #ffffff;
-                border: 1px solid #cad3de;
-                border-radius: 8px;
-                padding: 8px 14px;
+                border: 1px solid #cfd7e2;
+                border-radius: 10px;
+                padding: 8px 16px;
+                color: #233548;
             }
             QPushButton:hover {
-                background: #f6f9fc;
+                background: #f5f8fc;
+                border-color: #c4cedb;
             }
             QPushButton[accent="true"] {
-                background: #1f6feb;
+                background: #2569d8;
                 color: white;
-                border: 1px solid #1f6feb;
+                border: 1px solid #2569d8;
                 font-weight: 700;
+                border-radius: 12px;
+            }
+            QPushButton#PrimaryRunButton {
+                padding-left: 18px;
+                padding-right: 18px;
             }
             QPushButton[accent="true"]:hover {
-                background: #185ec7;
+                background: #1f5bb9;
+                border-color: #1f5bb9;
             }
             QPushButton:disabled {
                 background: #eef2f6;
@@ -1307,18 +1358,34 @@ class MainWindow(QMainWindow):
                 font-weight: 700;
                 color: #314456;
                 spacing: 10px;
-                padding: 0 0 0 2px;
+                padding: 2px 0 2px 2px;
             }
             QCheckBox#SectionToggle::indicator {
                 width: 16px;
                 height: 16px;
+                border-radius: 5px;
+                border: 1px solid #c8d2de;
+                background: #ffffff;
+            }
+            QCheckBox#SectionToggle::indicator:checked {
+                background: #2569d8;
+                border-color: #2569d8;
             }
             QScrollArea {
                 border: none;
                 background: transparent;
             }
+            QProgressBar {
+                background: #edf2f7;
+                border: 1px solid #d7e0ea;
+                border-radius: 8px;
+            }
+            QProgressBar::chunk {
+                background: #2569d8;
+                border-radius: 8px;
+            }
             QSplitter::handle {
-                background: #e2e7ee;
+                background: #dde5ee;
                 height: 5px;
             }
             """
@@ -1345,6 +1412,24 @@ class MainWindow(QMainWindow):
         self.tabs.setEnabled(not is_busy)
         self._set_run_buttons_enabled(not is_busy)
 
+    def _current_tab_key(self) -> str:
+        return "scoring" if self.tabs.currentWidget() is self.scoring_tab else "digest"
+
+    def _sync_primary_run_button(self, index: int | None = None) -> None:
+        if self.tabs.currentWidget() is self.scoring_tab:
+            self.run_current_button.setText("Run Genome Presence Scoring")
+            self.run_current_button.setToolTip("Run genome presence scoring with the current inputs and mappings.")
+        else:
+            self.run_current_button.setText("Run Digest")
+            self.run_current_button.setToolTip("Run FASTA digestion with the current inputs and settings.")
+
+    def _select_tab_by_key(self, tab_key: str) -> None:
+        if tab_key == "scoring":
+            self.tabs.setCurrentWidget(self.scoring_tab)
+        else:
+            self.tabs.setCurrentWidget(self.digest_tab)
+        self._sync_primary_run_button()
+
     @staticmethod
     def _summarize_error_text(error_text: str) -> str:
         lines = [line.strip() for line in error_text.splitlines() if line.strip()]
@@ -1361,14 +1446,14 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            if self.tabs.currentIndex() == 0:
-                task_name = "digest"
-                config = self.digest_tab.build_config(require_required_fields=True)
-                busy_text = "Digest workflow in progress"
-            else:
+            if self.tabs.currentWidget() is self.scoring_tab:
                 task_name = "scoring"
                 config = self.scoring_tab.build_config(require_required_fields=True)
                 busy_text = "Genome presence scoring in progress"
+            else:
+                task_name = "digest"
+                config = self.digest_tab.build_config(require_required_fields=True)
+                busy_text = "Digest workflow in progress"
         except Exception as exc:
             QMessageBox.critical(self, "Invalid Input", str(exc))
             return
@@ -1427,15 +1512,14 @@ class MainWindow(QMainWindow):
             self.worker_thread = None
 
     def _set_run_buttons_enabled(self, enabled: bool) -> None:
-        self.digest_tab.run_button.setEnabled(enabled)
-        self.scoring_tab.run_button.setEnabled(enabled)
+        self.run_current_button.setEnabled(enabled)
 
     def _run_digest_tab(self) -> None:
-        self.tabs.setCurrentIndex(0)
+        self.tabs.setCurrentWidget(self.digest_tab)
         self._run_current_tab()
 
     def _run_scoring_tab(self) -> None:
-        self.tabs.setCurrentIndex(1)
+        self.tabs.setCurrentWidget(self.scoring_tab)
         self._run_current_tab()
 
     def _format_summary(self, task_name: str, payload: dict) -> str:
@@ -1458,7 +1542,7 @@ class MainWindow(QMainWindow):
     def _save_config(self) -> None:
         try:
             payload = {
-                "selected_tab": int(self.tabs.currentIndex()),
+                "selected_tab": self._current_tab_key(),
                 "digest": asdict(self.digest_tab.build_config(require_required_fields=False)),
                 "scoring": asdict(self.scoring_tab.build_config(require_required_fields=False)),
             }
@@ -1495,9 +1579,10 @@ class MainWindow(QMainWindow):
 
         self.digest_tab.load_config(DigestConfig(**payload.get("digest", {})))
         self.scoring_tab.load_config(ScoringConfig(**payload.get("scoring", {})))
-        selected_tab = int(payload.get("selected_tab", 0))
-        if selected_tab in (0, 1):
-            self.tabs.setCurrentIndex(selected_tab)
+        selected_tab = payload.get("selected_tab", "scoring")
+        if isinstance(selected_tab, int):
+            selected_tab = "digest" if selected_tab == 0 else "scoring"
+        self._select_tab_by_key(str(selected_tab))
         self._last_config_dir = _remember_dialog_directory(path)
         self._set_status_state("idle", f"Loaded config: {path}")
 
