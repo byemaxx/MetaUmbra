@@ -467,6 +467,7 @@ class DigestTab(QWidget):
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(10)
         self._last_browse_dir = ""
+        self._last_auto_output_dir = ""
 
         scroll, layout = _create_scroll_form_host()
         outer_layout.addWidget(scroll, 1)
@@ -492,7 +493,7 @@ class DigestTab(QWidget):
         dir_form = QFormLayout(self.dir_inputs)
         dir_input_row, self.input_dir_edit = _make_path_row("Browse", self._browse_input_dir, accept_mode="dir")
         dir_output_row, self.output_dir_edit = _make_path_row("Browse", self._browse_output_dir, accept_mode="dir")
-        self.output_dir_edit.setPlaceholderText("Suggested: <input_folder>_digested")
+        self.output_dir_edit.setPlaceholderText("Auto-filled from input folder")
         dir_form.addRow("Input FASTA directory", dir_input_row)
         dir_form.addRow("Output TSV directory", dir_output_row)
 
@@ -539,7 +540,32 @@ class DigestTab(QWidget):
         layout.addStretch(1)
 
         self.mode_combo.currentIndexChanged.connect(self._sync_mode_visibility)
+        self.input_dir_edit.textChanged.connect(self._update_auto_output_dir_from_input_dir)
         self._sync_mode_visibility()
+
+    def _suggest_output_dir_path(self, input_dir_path: str) -> str:
+        input_path = Path(input_dir_path.strip())
+        if not input_path.name:
+            return ""
+        return str(input_path.with_name(f"{input_path.name}_digested"))
+
+    def _update_auto_output_dir_from_input_dir(self) -> None:
+        input_dir_path = self.input_dir_edit.text().strip()
+        current_output = self.output_dir_edit.text().strip()
+
+        if not input_dir_path:
+            if current_output == self._last_auto_output_dir:
+                self.output_dir_edit.clear()
+            self._last_auto_output_dir = ""
+            return
+
+        suggested_output = self._suggest_output_dir_path(input_dir_path)
+        if not suggested_output:
+            return
+
+        if not current_output or current_output == self._last_auto_output_dir:
+            self.output_dir_edit.setText(suggested_output)
+        self._last_auto_output_dir = suggested_output
 
     def _sync_mode_visibility(self) -> None:
         mode = self.mode_combo.currentData()
@@ -646,6 +672,7 @@ class DigestTab(QWidget):
         self._last_browse_dir = _remember_dialog_directory(
             config.input_file or config.input_dir or config.output_file or config.output_dir
         )
+        self._last_auto_output_dir = self._suggest_output_dir_path(config.input_dir)
         self._sync_mode_visibility()
 
 
