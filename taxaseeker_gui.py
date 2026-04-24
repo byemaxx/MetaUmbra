@@ -9,14 +9,17 @@ from dataclasses import asdict
 from pathlib import Path
 
 try:
-    from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
+    from PySide6.QtCore import QEvent, QObject, Qt, QThread, Signal, Slot
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import (
         QApplication,
         QCheckBox,
         QComboBox,
+        QDialog,
+        QDialogButtonBox,
         QFileDialog,
         QFormLayout,
+        QGridLayout,
         QGroupBox,
         QHBoxLayout,
         QLabel,
@@ -40,8 +43,10 @@ except ImportError as exc:
 
 from taxaseeker_workflows import (
     DigestConfig,
+    ParquetExtractionConfig,
     ScoringConfig,
     run_digest_workflow,
+    run_parquet_extraction_workflow,
     run_scoring_workflow,
 )
 
@@ -190,6 +195,16 @@ class DirectoryDropListWidget(QListWidget):
         super().dropEvent(event)
 
 
+class WheelChangeGuard(QObject):
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() != QEvent.Type.Wheel:
+            return super().eventFilter(watched, event)
+        if isinstance(watched, (QComboBox, QSpinBox)):
+            event.ignore()
+            return True
+        return super().eventFilter(watched, event)
+
+
 def _make_path_row(browse_text: str, browse_handler, accept_mode: str = "path") -> tuple[QWidget, QLineEdit]:
     wrapper = QWidget()
     layout = QHBoxLayout(wrapper)
@@ -318,6 +333,33 @@ def _polish_form_layout(form: QFormLayout) -> None:
         if isinstance(widget, QLabel):
             widget.setMinimumWidth(FORM_LABEL_MIN_WIDTH)
             widget.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+
+def _set_compact_control_width(widget: QWidget, width: int = 150) -> None:
+    widget.setMaximumWidth(width)
+
+
+def _create_compact_grid() -> QGridLayout:
+    grid = QGridLayout()
+    grid.setContentsMargins(0, 0, 0, 0)
+    grid.setHorizontalSpacing(14)
+    grid.setVerticalSpacing(8)
+    return grid
+
+
+def _add_compact_field(
+    grid: QGridLayout,
+    row: int,
+    column: int,
+    label_text: str,
+    widget: QWidget,
+    widget_width: int = 150,
+) -> None:
+    label = QLabel(label_text)
+    label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    _set_compact_control_width(widget, widget_width)
+    grid.addWidget(label, row, column * 2)
+    grid.addWidget(widget, row, column * 2 + 1)
 
 
 def _create_editable_combo(default_text: str = "", placeholder: str = "") -> QComboBox:
@@ -510,7 +552,7 @@ class DigestTab(QWidget):
         layout.addWidget(required_box)
 
         self.more_options = CollapsibleOptions()
-        options_form = QFormLayout(self.more_options.body)
+        options_layout = QVBoxLayout(self.more_options.body)
         self.min_length_edit = QLineEdit("7")
         self.max_length_edit = QLineEdit("30")
         self.max_miscleavages_edit = QLineEdit("2")
@@ -521,21 +563,25 @@ class DigestTab(QWidget):
         self.verbose_checkbox.setChecked(True)
         self.skip_existing_checkbox = QCheckBox("Skip existing output files in directory mode")
         self.skip_existing_checkbox.setChecked(True)
-        options_form.addRow("Minimum peptide length", self.min_length_edit)
-        options_form.addRow("Maximum peptide length", self.max_length_edit)
-        options_form.addRow("Maximum miscleavages", self.max_miscleavages_edit)
-        options_form.addRow("Processes", self.processes_spin)
-        options_form.addRow(self.short_header_checkbox)
-        options_form.addRow(self.verbose_checkbox)
-        options_form.addRow(self.skip_existing_checkbox)
-        options_form.addRow(
+        digest_grid = _create_compact_grid()
+        _add_compact_field(digest_grid, 0, 0, "Minimum length", self.min_length_edit, 110)
+        _add_compact_field(digest_grid, 0, 1, "Maximum length", self.max_length_edit, 110)
+        _add_compact_field(digest_grid, 0, 2, "Miscleavages", self.max_miscleavages_edit, 110)
+        _add_compact_field(digest_grid, 1, 0, "Processes", self.processes_spin, 110)
+        options_layout.addLayout(digest_grid)
+
+        digest_flags_grid = _create_compact_grid()
+        digest_flags_grid.addWidget(self.short_header_checkbox, 0, 0)
+        digest_flags_grid.addWidget(self.verbose_checkbox, 0, 1)
+        digest_flags_grid.addWidget(self.skip_existing_checkbox, 1, 0, 1, 2)
+        options_layout.addLayout(digest_flags_grid)
+        options_layout.addWidget(
             _make_wrapped_label(
                 "Single-file mode: number of worker processes used within one FASTA. "
                 "Directory mode: number of FASTA files processed in parallel. "
                 f"Default processes = CPU cores minus one. Maximum allowed here is {MAX_PROCESS_COUNT}."
             )
         )
-        _polish_form_layout(options_form)
         layout.addWidget(self.more_options)
         layout.addStretch(1)
 
@@ -676,6 +722,147 @@ class DigestTab(QWidget):
         self._sync_mode_visibility()
 
 
+class ParquetExtractionDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None, initial_dir: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle("Import Parquet Peptide Table")
+        self.resize(760, 380)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(14, 14, 14, 14)
+        outer_layout.setSpacing(10)
+        self._last_auto_output_tsv = ""
+        self._last_browse_dir = initial_dir
+
+        scroll, layout = _create_scroll_form_host()
+
+        required_box = QGroupBox("Required")
+        required_box.setProperty("elevated", True)
+        required_form = QFormLayout(required_box)
+        input_row, self.input_parquet_edit = _make_path_row("Browse", self._browse_input_parquet, accept_mode="file")
+        output_row, self.output_tsv_edit = _make_path_row("Browse", self._browse_output_tsv, accept_mode="file")
+        self.input_parquet_edit.setPlaceholderText("Drop a DIA-NN report.parquet file here or click Browse")
+        self.output_tsv_edit.setPlaceholderText("Auto-filled as <parquet_stem>_peptides_for_taxaseeker.tsv")
+        required_form.addRow("Input parquet report", input_row)
+        required_form.addRow("Output peptide TSV", output_row)
+        _polish_form_layout(required_form)
+        layout.addWidget(required_box)
+
+        self.more_options = CollapsibleOptions()
+        options_layout = QVBoxLayout(self.more_options.body)
+        self.input_columns_edit = QLineEdit("Run, Stripped.Sequence, Evidence, Q.Value")
+        self.output_columns_edit = QLineEdit("Run, Sequence, score, Q.Value")
+        self.batch_size_edit = QLineEdit("65536")
+        self.force_checkbox = QCheckBox("Overwrite output TSV if it already exists")
+        batch_grid = _create_compact_grid()
+        _add_compact_field(batch_grid, 0, 0, "Batch size", self.batch_size_edit, 120)
+        batch_grid.addWidget(self.force_checkbox, 0, 2, 1, 2)
+        options_layout.addLayout(batch_grid)
+        options_form = QFormLayout()
+        options_form.addRow("Input columns", self.input_columns_edit)
+        options_form.addRow("Output columns", self.output_columns_edit)
+        _polish_form_layout(options_form)
+        options_layout.addLayout(options_form)
+        options_layout.addWidget(
+            _make_wrapped_label(
+                "Default mapping converts DIA-NN Stripped.Sequence to TaxaSeeker Sequence and Evidence to score."
+            )
+        )
+        layout.addWidget(self.more_options)
+        layout.addStretch(1)
+        outer_layout.addWidget(scroll, 1)
+
+        self.button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        self.button_box.button(QDialogButtonBox.StandardButton.Ok).setText("Extract")
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        outer_layout.addWidget(self.button_box)
+
+        self.input_parquet_edit.textChanged.connect(self._update_auto_output_tsv_from_input_parquet)
+
+    def _suggest_output_tsv_path(self, parquet_path: str) -> str:
+        input_path = Path(parquet_path.strip())
+        if not input_path.name:
+            return ""
+        return str(input_path.with_name(f"{input_path.stem}_peptides_for_taxaseeker.tsv"))
+
+    def _update_auto_output_tsv_from_input_parquet(self) -> None:
+        parquet_path = self.input_parquet_edit.text().strip()
+        current_output = self.output_tsv_edit.text().strip()
+
+        if not parquet_path:
+            if current_output == self._last_auto_output_tsv:
+                self.output_tsv_edit.clear()
+            self._last_auto_output_tsv = ""
+            return
+
+        suggested_output = self._suggest_output_tsv_path(parquet_path)
+        if not suggested_output:
+            return
+
+        if not current_output or current_output == self._last_auto_output_tsv:
+            self.output_tsv_edit.setText(suggested_output)
+        self._last_auto_output_tsv = suggested_output
+
+    def _browse_input_parquet(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select parquet report",
+            _initial_dialog_path(self.input_parquet_edit.text(), self._last_browse_dir),
+            "Parquet files (*.parquet);;All files (*.*)",
+        )
+        if path:
+            self.input_parquet_edit.setText(path)
+            self._last_browse_dir = _remember_dialog_directory(path)
+
+    def _browse_output_tsv(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Select output peptide TSV",
+            _initial_dialog_path(self.output_tsv_edit.text(), self._last_browse_dir, "peptides_for_taxaseeker.tsv"),
+            "TSV files (*.tsv);;All files (*.*)",
+        )
+        if path:
+            self.output_tsv_edit.setText(path)
+            self._last_browse_dir = _remember_dialog_directory(path)
+
+    def build_config(self, require_required_fields: bool = True) -> ParquetExtractionConfig:
+        config = ParquetExtractionConfig(
+            input_parquet_path=self.input_parquet_edit.text().strip(),
+            output_tsv_path=self.output_tsv_edit.text().strip(),
+            input_columns=_parse_text_list(self.input_columns_edit.text()),
+            output_columns=_parse_text_list(self.output_columns_edit.text()),
+            batch_size=_parse_required_int(self.batch_size_edit.text(), "Batch size"),
+            force=self.force_checkbox.isChecked(),
+        )
+
+        if require_required_fields:
+            if not config.input_parquet_path:
+                raise ValueError("Please choose an input parquet report.")
+            _require_existing_file(config.input_parquet_path, "Input parquet report")
+            if not config.output_tsv_path:
+                raise ValueError("Please choose an output peptide TSV file.")
+            _require_output_parent_directory(config.output_tsv_path, "output peptide TSV file")
+            if Path(config.output_tsv_path).expanduser().exists() and not config.force:
+                raise ValueError("Output peptide TSV already exists. Enable overwrite to replace it.")
+            if not config.input_columns:
+                raise ValueError("Please provide at least one input column.")
+            if len(config.input_columns) != len(config.output_columns):
+                raise ValueError("Input columns and output columns must have the same number of entries.")
+            if config.batch_size <= 0:
+                raise ValueError("Batch size must be a positive integer.")
+        return config
+
+    def accept(self) -> None:
+        try:
+            self.build_config(require_required_fields=True)
+        except Exception as exc:
+            QMessageBox.critical(self, "Invalid Input", str(exc))
+            return
+        super().accept()
+
+
 class ScoringTab(QWidget):
     def __init__(self):
         super().__init__()
@@ -692,6 +879,9 @@ class ScoringTab(QWidget):
         required_box.setProperty("elevated", True)
         required_form = QFormLayout(required_box)
         peptide_row, self.peptide_table_edit = _make_path_row("Browse", self._browse_peptide_table, accept_mode="file")
+        self.import_parquet_button = QPushButton("Import Parquet...")
+        self.import_parquet_button.setToolTip("Extract a TaxaSeeker peptide TSV from a DIA-NN parquet report.")
+        peptide_row.layout().addWidget(self.import_parquet_button)
         required_form.addRow("Observed peptide table", peptide_row)
         lineage_row, self.genome_lineage_table_edit = _make_path_row("Browse", self._browse_genome_lineage_table, accept_mode="file")
         required_form.addRow("Genome-Lineage table (optional)", lineage_row)
@@ -722,26 +912,30 @@ class ScoringTab(QWidget):
 
         mapping_box = QGroupBox("Column Mapping")
         mapping_box.setProperty("elevated", True)
-        mapping_form = QFormLayout(mapping_box)
+        mapping_layout = QVBoxLayout(mapping_box)
         self.peptide_seq_col_edit = _create_editable_combo("Sequence", "Choose or type the peptide sequence column")
         self.peptide_score_col_edit = _create_editable_combo("score", "Choose or type the peptide score column")
-        mapping_form.addRow("Sequence column", self.peptide_seq_col_edit)
-        mapping_form.addRow("Score column", self.peptide_score_col_edit)
+        mapping_grid = _create_compact_grid()
+        _add_compact_field(mapping_grid, 0, 0, "Sequence column", self.peptide_seq_col_edit, 240)
+        _add_compact_field(mapping_grid, 0, 1, "Score column", self.peptide_score_col_edit, 180)
+        mapping_layout.addLayout(mapping_grid)
         self.lineage_columns_box = QGroupBox("Genome-Lineage Columns")
         self.lineage_columns_box.setProperty("subtle", True)
-        lineage_columns_form = QFormLayout(self.lineage_columns_box)
+        lineage_columns_grid = _create_compact_grid()
         self.genome_lineage_genome_id_col_edit = _create_editable_combo(
             placeholder="Required if table is provided, e.g. Genome_id"
         )
         self.genome_lineage_lineage_col_edit = _create_editable_combo(
             placeholder="Required if table is provided, e.g. Lineage"
         )
-        lineage_columns_form.addRow("Lineage genome ID column", self.genome_lineage_genome_id_col_edit)
-        lineage_columns_form.addRow("Lineage column", self.genome_lineage_lineage_col_edit)
+        lineage_columns_grid.addWidget(QLabel("Lineage genome ID column"), 0, 0)
+        lineage_columns_grid.addWidget(self.genome_lineage_genome_id_col_edit, 0, 1)
+        lineage_columns_grid.addWidget(QLabel("Lineage column"), 0, 2)
+        lineage_columns_grid.addWidget(self.genome_lineage_lineage_col_edit, 0, 3)
         self.lineage_columns_box.setVisible(False)
-        _polish_form_layout(lineage_columns_form)
-        mapping_form.addRow(self.lineage_columns_box)
-        _polish_form_layout(mapping_form)
+        lineage_columns_box_layout = QVBoxLayout(self.lineage_columns_box)
+        lineage_columns_box_layout.addLayout(lineage_columns_grid)
+        mapping_layout.addWidget(self.lineage_columns_box)
         layout.addWidget(mapping_box)
 
         self.more_options = CollapsibleOptions()
@@ -749,19 +943,20 @@ class ScoringTab(QWidget):
 
         columns_box = QGroupBox("Peptide Table Columns")
         columns_box.setProperty("subtle", True)
-        columns_form = QFormLayout(columns_box)
+        columns_grid = _create_compact_grid()
         self.peptide_error_col_edit = QLineEdit("Q.Value")
         self.peptide_decoy_flag_col_edit = QLineEdit("Reverse")
         self.decoy_flag_value_edit = QLineEdit("+")
-        columns_form.addRow("Error column", self.peptide_error_col_edit)
-        columns_form.addRow("Decoy flag column", self.peptide_decoy_flag_col_edit)
-        columns_form.addRow("Decoy flag value", self.decoy_flag_value_edit)
-        _polish_form_layout(columns_form)
+        _add_compact_field(columns_grid, 0, 0, "Error column", self.peptide_error_col_edit, 150)
+        _add_compact_field(columns_grid, 0, 1, "Decoy flag column", self.peptide_decoy_flag_col_edit, 150)
+        _add_compact_field(columns_grid, 0, 2, "Decoy flag value", self.decoy_flag_value_edit, 80)
+        columns_layout = QVBoxLayout(columns_box)
+        columns_layout.addLayout(columns_grid)
         options_layout.addWidget(columns_box)
 
         runtime_box = QGroupBox("Runtime And Knockoff Settings")
         runtime_box.setProperty("subtle", True)
-        runtime_form = QFormLayout(runtime_box)
+        runtime_layout = QVBoxLayout(runtime_box)
         self.processes_spin = _create_process_spinbox()
         self.peptide_error_cutoff_edit = QLineEdit("0.05")
         self.knockoff_mc_iterations_edit = QLineEdit("500")
@@ -780,21 +975,18 @@ class ScoringTab(QWidget):
         self.export_peptide_contrib_topn_spin = QSpinBox()
         self.export_peptide_contrib_topn_spin.setRange(0, 1000000)
         self.export_peptide_contrib_topn_spin.setValue(0)
-        knockoff_limit_label = QLabel("Limit knockoff to top-ranked genomes (0 = all)")
-        knockoff_limit_label.setToolTip(
-            "Only run knockoff inference for the top N genomes ranked by evidence.\n"
-            "Use 0 to evaluate all candidate genomes.\n"
-            "This is mainly a speed optimization for very large runs."
-        )
-        runtime_form.addRow("Processes", self.processes_spin)
-        runtime_form.addRow("Peptide error cutoff", self.peptide_error_cutoff_edit)
-        runtime_form.addRow("Knockoff MC iterations", self.knockoff_mc_iterations_edit)
-        runtime_form.addRow("Stage 2 MC iterations", self.knockoff_stage2_mc_iterations_edit)
+        runtime_grid = _create_compact_grid()
+        _add_compact_field(runtime_grid, 0, 0, "Processes", self.processes_spin, 110)
+        _add_compact_field(runtime_grid, 0, 1, "Peptide error cutoff", self.peptide_error_cutoff_edit, 110)
+        _add_compact_field(runtime_grid, 0, 2, "Random seed", self.knockoff_random_seed_edit, 110)
+        _add_compact_field(runtime_grid, 1, 0, "Knockoff MC", self.knockoff_mc_iterations_edit, 110)
+        _add_compact_field(runtime_grid, 1, 1, "Stage 2 MC", self.knockoff_stage2_mc_iterations_edit, 110)
+        _add_compact_field(runtime_grid, 1, 2, "Top genomes", self.knockoff_top_n_targets_spin, 110)
+        _add_compact_field(runtime_grid, 2, 0, "Export contrib top-N", self.export_peptide_contrib_topn_spin, 110)
+        runtime_layout.addLayout(runtime_grid)
+        runtime_form = QFormLayout()
         runtime_form.addRow("Stage 2 p ranges", self.knockoff_stage2_ranges_edit)
-        runtime_form.addRow("Random seed", self.knockoff_random_seed_edit)
-        runtime_form.addRow(knockoff_limit_label, self.knockoff_top_n_targets_spin)
         runtime_form.addRow("Matched peptide cache", cache_row)
-        runtime_form.addRow("Export peptide contrib top-N", self.export_peptide_contrib_topn_spin)
         runtime_form.addRow(
             _make_wrapped_label(
                 f"Default processes = CPU cores minus one. Maximum allowed here is {MAX_PROCESS_COUNT}."
@@ -806,6 +998,7 @@ class ScoringTab(QWidget):
             )
         )
         _polish_form_layout(runtime_form)
+        runtime_layout.addLayout(runtime_form)
         options_layout.addWidget(runtime_box)
 
         exclude_box = QGroupBox("Excluded Genome IDs")
@@ -817,7 +1010,6 @@ class ScoringTab(QWidget):
             "Genome IDs should match digest TSV filenames without the .tsv suffix."
         )
         exclude_layout.addWidget(self.exclude_text)
-        options_layout.addWidget(exclude_box)
 
         selected_box = QGroupBox("Only Run Genome IDs")
         selected_box.setProperty("subtle", True)
@@ -837,7 +1029,7 @@ class ScoringTab(QWidget):
 
         flags_box = QGroupBox("Flags")
         flags_box.setProperty("subtle", True)
-        flags_layout = QVBoxLayout(flags_box)
+        flags_layout = QGridLayout(flags_box)
         self.save_cache_checkbox = QCheckBox("Save matched-peptide cache")
         self.save_cache_checkbox.setChecked(True)
         self.use_cache_if_exists_checkbox = QCheckBox("Reuse cache if it already exists")
@@ -847,12 +1039,12 @@ class ScoringTab(QWidget):
         self.export_temp_checkbox = QCheckBox("Export temp artifacts")
         self.export_temp_checkbox.setChecked(True)
         self.return_full_table_checkbox = QCheckBox("Return full internal table")
-        flags_layout.addWidget(self.save_cache_checkbox)
-        flags_layout.addWidget(self.use_cache_if_exists_checkbox)
-        flags_layout.addWidget(self.use_peptide_error_checkbox)
-        flags_layout.addWidget(self.compute_coverage_checkbox)
-        flags_layout.addWidget(self.export_temp_checkbox)
-        flags_layout.addWidget(self.return_full_table_checkbox)
+        flags_layout.addWidget(self.save_cache_checkbox, 0, 0)
+        flags_layout.addWidget(self.use_cache_if_exists_checkbox, 0, 1)
+        flags_layout.addWidget(self.use_peptide_error_checkbox, 1, 0)
+        flags_layout.addWidget(self.compute_coverage_checkbox, 1, 1)
+        flags_layout.addWidget(self.export_temp_checkbox, 2, 0)
+        flags_layout.addWidget(self.return_full_table_checkbox, 2, 1)
         options_layout.addWidget(flags_box)
         layout.addWidget(self.more_options)
         layout.addStretch(1)
@@ -1112,6 +1304,8 @@ class WorkflowWorker(QObject):
         try:
             if self.task_name == "digest":
                 result = run_digest_workflow(self.config, self.log_message.emit)
+            elif self.task_name == "parquet_extraction":
+                result = run_parquet_extraction_workflow(self.config, self.log_message.emit)
             else:
                 result = run_scoring_workflow(self.config, self.log_message.emit)
             self.finished.emit(self.task_name, result)
@@ -1130,6 +1324,8 @@ class MainWindow(QMainWindow):
 
         self.worker_thread: QThread | None = None
         self.worker: WorkflowWorker | None = None
+        self._stop_requested = False
+        self._task_result_handled = False
         self._last_config_dir = ""
         self._build_ui()
         self._apply_styles()
@@ -1150,6 +1346,10 @@ class MainWindow(QMainWindow):
         self.load_button = QPushButton("Load Config")
         self.save_button = QPushButton("Save Config")
         self.clear_log_button = QPushButton("Clear Log")
+        self.stop_button = QPushButton("Stop Task")
+        self.stop_button.setObjectName("StopTaskButton")
+        self.stop_button.setEnabled(False)
+        self.stop_button.setToolTip("Terminate the currently running task.")
         self.state_badge = QLabel("Idle")
         self.state_badge.setObjectName("StatusBadge")
         self.status_label = QLabel("Ready")
@@ -1162,6 +1362,7 @@ class MainWindow(QMainWindow):
         button_row.addWidget(self.load_button)
         button_row.addWidget(self.save_button)
         button_row.addWidget(self.clear_log_button)
+        button_row.addWidget(self.stop_button)
         button_row.addStretch(1)
         button_row.addWidget(self.busy_bar)
         button_row.addWidget(self.state_badge)
@@ -1207,7 +1408,9 @@ class MainWindow(QMainWindow):
         self.load_button.clicked.connect(self._load_config)
         self.save_button.clicked.connect(self._save_config)
         self.clear_log_button.clicked.connect(self.log_output.clear)
+        self.stop_button.clicked.connect(self._terminate_current_task)
         self.run_current_button.clicked.connect(self._run_current_tab)
+        self.scoring_tab.import_parquet_button.clicked.connect(self._open_parquet_import_dialog)
         self.tabs.currentChanged.connect(self._sync_primary_run_button)
         self._sync_primary_run_button()
 
@@ -1218,112 +1421,116 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(
             """
             QMainWindow {
-                background: #eef3f8;
-                color: #1f2a37;
+                background: #f4f6f8;
+                color: #1f2933;
+            }
+            QDialog {
+                background: #f4f6f8;
+                color: #1f2933;
             }
             QWidget#AppRoot {
-                background: qlineargradient(
-                    x1: 0, y1: 0, x2: 0, y2: 1,
-                    stop: 0 #f5f8fc,
-                    stop: 1 #eef3f8
-                );
+                background: #f4f6f8;
             }
             QWidget#TopBar {
-                background: rgba(255, 255, 255, 0.88);
-                border: 1px solid #dbe4ee;
-                border-radius: 14px;
+                background: #ffffff;
+                border: 1px solid #d6dce3;
+                border-radius: 3px;
             }
             QTabWidget#PrimaryTabs::pane {
-                border: 1px solid #dbe4ee;
-                border-radius: 16px;
-                background: rgba(252, 253, 255, 0.94);
+                border: 1px solid #d6dce3;
+                border-radius: 3px;
+                background: #ffffff;
                 top: 0px;
-                margin-top: 8px;
+                margin-top: 6px;
             }
             QTabWidget#PrimaryTabs::tab-bar {
-                left: 8px;
+                left: 6px;
             }
             QWidget#TabActions {
                 background: transparent;
                 margin-right: 10px;
             }
             QTabBar::tab {
-                background: #edf2f7;
-                color: #5b6776;
-                border: 1px solid #e1e7ef;
-                padding: 10px 18px;
-                margin-right: 8px;
+                background: #e9edf2;
+                color: #52606d;
+                border: 1px solid #d6dce3;
+                padding: 9px 16px;
+                margin-right: 4px;
                 margin-top: 2px;
-                border-radius: 10px;
+                border-top-left-radius: 3px;
+                border-top-right-radius: 3px;
+                border-bottom-left-radius: 0px;
+                border-bottom-right-radius: 0px;
             }
             QTabBar::tab:selected {
                 background: #ffffff;
-                color: #1b3148;
+                color: #1f2933;
                 font-weight: 600;
-                border-color: #d4dde8;
+                border-color: #c8d0da;
+                border-bottom-color: #ffffff;
             }
             QTabBar::tab:hover:!selected {
-                background: #f4f7fb;
-                color: #415264;
+                background: #f1f4f7;
+                color: #364452;
             }
             QGroupBox {
                 background: #ffffff;
-                border: 1px solid #dfe6ee;
-                border-radius: 14px;
+                border: 1px solid #d6dce3;
+                border-radius: 3px;
                 margin-top: 12px;
                 padding-top: 12px;
                 font-weight: 600;
             }
             QGroupBox[elevated="true"] {
-                border-color: #d7e0ea;
+                border-color: #cfd6df;
                 background: #ffffff;
             }
             QGroupBox[subtle="true"] {
-                background: #f7f9fc;
-                border-color: #e5ebf2;
-                border-radius: 12px;
+                background: #f8fafc;
+                border-color: #dde3ea;
+                border-radius: 3px;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 14px;
+                left: 10px;
                 padding: 0 8px;
-                color: #2a3c4d;
+                color: #334155;
             }
             QWidget#FormCanvas {
                 background: transparent;
             }
             QLabel#StatusBadge {
-                padding: 6px 12px;
-                border-radius: 9px;
+                padding: 5px 10px;
+                border-radius: 3px;
                 font-weight: 700;
-                background: #eef3f8;
-                color: #415366;
+                background: #edf1f5;
+                color: #455565;
             }
             QLabel#StatusBadge[statusState="running"] {
-                background: #e8f1ff;
-                color: #205fb4;
+                background: #e6f0ff;
+                color: #1d5fbf;
             }
             QLabel#StatusBadge[statusState="done"] {
-                background: #e7f5ec;
-                color: #1c7a43;
+                background: #e4f4ea;
+                color: #1b7a43;
             }
             QLabel#StatusBadge[statusState="failed"] {
-                background: #fcebec;
+                background: #fde8e8;
                 color: #b42318;
             }
             QLabel#StatusDetail {
-                color: #5b6a79;
+                color: #596879;
                 padding-left: 6px;
             }
             QLineEdit, QComboBox, QSpinBox, QTextEdit, QPlainTextEdit, QListWidget {
                 background: #ffffff;
-                border: 1px solid #cfd8e3;
-                border-radius: 10px;
-                padding: 7px 11px;
-                selection-background-color: #dbe8ff;
+                border: 1px solid #c7d0da;
+                border-radius: 3px;
+                padding: 6px 9px;
+                selection-background-color: #cfe0ff;
             }
             QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QTextEdit:focus, QPlainTextEdit:focus, QListWidget:focus {
-                border-color: #2d6cdf;
+                border-color: #2563eb;
                 background: #ffffff;
             }
             QComboBox QLineEdit {
@@ -1336,7 +1543,7 @@ class MainWindow(QMainWindow):
                 subcontrol-position: top right;
                 width: 30px;
                 border: none;
-                border-left: 1px solid #ebeff5;
+                border-left: 1px solid #e1e7ef;
             }
             QComboBox::down-arrow {
                 width: 9px;
@@ -1346,73 +1553,82 @@ class MainWindow(QMainWindow):
                 font-family: Consolas, "Courier New", monospace;
                 font-size: 12px;
                 line-height: 1.3;
-                background: #f8fafc;
-                color: #334155;
-                border-color: #d9e2ec;
+                background: #f9fafb;
+                color: #263545;
+                border-color: #d6dce3;
             }
             QPushButton {
-                background: #ffffff;
-                border: 1px solid #cfd7e2;
-                border-radius: 10px;
-                padding: 8px 16px;
-                color: #233548;
+                background: #f9fafb;
+                border: 1px solid #bdc7d2;
+                border-radius: 3px;
+                padding: 7px 14px;
+                color: #1f2933;
             }
             QPushButton:hover {
-                background: #f5f8fc;
-                border-color: #c4cedb;
+                background: #eef2f6;
+                border-color: #aeb9c6;
             }
             QPushButton[accent="true"] {
-                background: #2569d8;
+                background: #1f66d1;
                 color: white;
-                border: 1px solid #2569d8;
+                border: 1px solid #1f66d1;
                 font-weight: 700;
-                border-radius: 12px;
+                border-radius: 3px;
             }
             QPushButton#PrimaryRunButton {
                 padding-left: 18px;
                 padding-right: 18px;
             }
             QPushButton[accent="true"]:hover {
-                background: #1f5bb9;
-                border-color: #1f5bb9;
+                background: #1a58b5;
+                border-color: #1a58b5;
+            }
+            QPushButton#StopTaskButton {
+                color: #b42318;
+                border-color: #d7a3a0;
+                background: #fff7f7;
+            }
+            QPushButton#StopTaskButton:hover {
+                background: #fde8e8;
+                border-color: #c97b76;
             }
             QPushButton:disabled {
-                background: #eef2f6;
-                color: #90a0b0;
-                border-color: #d8e0e8;
+                background: #edf0f3;
+                color: #8a98a8;
+                border-color: #d3dae2;
             }
             QCheckBox#SectionToggle {
                 font-weight: 700;
-                color: #314456;
+                color: #334155;
                 spacing: 10px;
                 padding: 2px 0 2px 2px;
             }
             QCheckBox#SectionToggle::indicator {
                 width: 16px;
                 height: 16px;
-                border-radius: 5px;
-                border: 1px solid #c8d2de;
+                border-radius: 2px;
+                border: 1px solid #b8c3cf;
                 background: #ffffff;
             }
             QCheckBox#SectionToggle::indicator:checked {
-                background: #2569d8;
-                border-color: #2569d8;
+                background: #1f66d1;
+                border-color: #1f66d1;
             }
             QScrollArea {
                 border: none;
                 background: transparent;
             }
             QProgressBar {
-                background: #edf2f7;
-                border: 1px solid #d7e0ea;
-                border-radius: 8px;
+                background: #e9edf2;
+                border: 1px solid #cfd6df;
+                border-radius: 2px;
             }
             QProgressBar::chunk {
-                background: #2569d8;
-                border-radius: 8px;
+                background: #1f66d1;
+                border-radius: 2px;
             }
             QSplitter::handle {
-                background: #dde5ee;
+                background: #d7dde5;
                 height: 5px;
             }
             """
@@ -1436,6 +1652,7 @@ class MainWindow(QMainWindow):
         self._set_status_state("running" if is_busy else "idle", status_text)
         self.load_button.setEnabled(not is_busy)
         self.save_button.setEnabled(not is_busy)
+        self.stop_button.setEnabled(is_busy)
         self.tabs.setEnabled(not is_busy)
         self._set_run_buttons_enabled(not is_busy)
 
@@ -1467,6 +1684,34 @@ class MainWindow(QMainWindow):
                 return line
         return lines[-1]
 
+    def _open_parquet_import_dialog(self) -> None:
+        if self.worker_thread is not None:
+            QMessageBox.information(self, "Task Running", "A task is already running. Please wait for it to finish.")
+            return
+
+        dialog = ParquetExtractionDialog(self, initial_dir=self.scoring_tab._last_browse_dir)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        config = dialog.build_config(require_required_fields=True)
+        self._append_log("")
+        self._append_log("=== Starting parquet import task ===")
+        self._set_busy_state(True, "Parquet peptide extraction in progress")
+        self._stop_requested = False
+        self._task_result_handled = False
+
+        self.worker_thread = QThread(self)
+        self.worker = WorkflowWorker("parquet_extraction", config)
+        self.worker.moveToThread(self.worker_thread)
+        self.worker_thread.started.connect(self.worker.run)
+        self.worker.log_message.connect(self._append_log)
+        self.worker.finished.connect(self._on_task_finished)
+        self.worker.failed.connect(self._on_task_failed)
+        self.worker.finished.connect(self.worker_thread.quit)
+        self.worker.failed.connect(self.worker_thread.quit)
+        self.worker_thread.finished.connect(self._on_worker_thread_finished)
+        self.worker_thread.start()
+
     def _run_current_tab(self) -> None:
         if self.worker_thread is not None:
             QMessageBox.information(self, "Task Running", "A task is already running. Please wait for it to finish.")
@@ -1488,6 +1733,8 @@ class MainWindow(QMainWindow):
         self._append_log("")
         self._append_log(f"=== Starting {task_name} task ===")
         self._set_busy_state(True, busy_text)
+        self._stop_requested = False
+        self._task_result_handled = False
 
         self.worker_thread = QThread(self)
         self.worker = WorkflowWorker(task_name, config)
@@ -1498,23 +1745,36 @@ class MainWindow(QMainWindow):
         self.worker.failed.connect(self._on_task_failed)
         self.worker.finished.connect(self.worker_thread.quit)
         self.worker.failed.connect(self.worker_thread.quit)
-        self.worker_thread.finished.connect(self._cleanup_worker)
+        self.worker_thread.finished.connect(self._on_worker_thread_finished)
         self.worker_thread.start()
 
     @Slot(str, dict)
     def _on_task_finished(self, task_name: str, payload: dict) -> None:
+        if self._stop_requested:
+            return
+        self._task_result_handled = True
         summary = self._format_summary(task_name, payload)
+        if task_name == "parquet_extraction":
+            output_path = str(payload.get("output", ""))
+            if output_path:
+                self.scoring_tab.peptide_table_edit.setText(output_path)
+                self.scoring_tab._last_browse_dir = _remember_dialog_directory(output_path)
+                self.tabs.setCurrentWidget(self.scoring_tab)
         self.busy_bar.setVisible(False)
         self._set_status_state("done", summary)
         self._append_log(summary)
         QMessageBox.information(self, "Task Complete", summary)
         self.load_button.setEnabled(True)
         self.save_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
         self.tabs.setEnabled(True)
         self._set_run_buttons_enabled(True)
 
     @Slot(str, str)
     def _on_task_failed(self, task_name: str, error_text: str) -> None:
+        if self._stop_requested:
+            return
+        self._task_result_handled = True
         self._append_log(error_text)
         error_summary = self._summarize_error_text(error_text)
         self.busy_bar.setVisible(False)
@@ -1526,20 +1786,55 @@ class MainWindow(QMainWindow):
         )
         self.load_button.setEnabled(True)
         self.save_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
         self.tabs.setEnabled(True)
         self._set_run_buttons_enabled(True)
 
     @Slot()
-    def _cleanup_worker(self) -> None:
+    def _on_worker_thread_finished(self) -> None:
+        if self._stop_requested and not self._task_result_handled:
+            message = "Task terminated by user. Partial output files may remain."
+            self._append_log(message)
+            self.busy_bar.setVisible(False)
+            self._set_status_state("failed", message)
+            self.load_button.setEnabled(True)
+            self.save_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+            self.tabs.setEnabled(True)
+            self._set_run_buttons_enabled(True)
+            self._task_result_handled = True
+
         if self.worker is not None:
             self.worker.deleteLater()
             self.worker = None
         if self.worker_thread is not None:
             self.worker_thread.deleteLater()
             self.worker_thread = None
+        self._stop_requested = False
 
     def _set_run_buttons_enabled(self, enabled: bool) -> None:
         self.run_current_button.setEnabled(enabled)
+
+    def _terminate_current_task(self) -> None:
+        if self.worker_thread is None:
+            return
+
+        reply = QMessageBox.warning(
+            self,
+            "Terminate Task",
+            "Terminate the current task now?\n\nPartial output files may remain and should be checked before reuse.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self._stop_requested = True
+        self.stop_button.setEnabled(False)
+        self._set_status_state("running", "Terminating current task")
+        self._append_log("Termination requested by user.")
+        self.worker_thread.requestInterruption()
+        self.worker_thread.terminate()
 
     def _run_digest_tab(self) -> None:
         self.tabs.setCurrentWidget(self.digest_tab)
@@ -1550,6 +1845,12 @@ class MainWindow(QMainWindow):
         self._run_current_tab()
 
     def _format_summary(self, task_name: str, payload: dict) -> str:
+        if task_name == "parquet_extraction":
+            return (
+                f"Parquet extraction completed: {payload.get('rows', 0)} rows written to "
+                f"{payload.get('output', '')} in {payload.get('elapsed_seconds', 0)} s."
+            )
+
         if task_name == "digest":
             if payload.get("mode") == "file":
                 return (
@@ -1608,7 +1909,9 @@ class MainWindow(QMainWindow):
         self.scoring_tab.load_config(ScoringConfig(**payload.get("scoring", {})))
         selected_tab = payload.get("selected_tab", "scoring")
         if isinstance(selected_tab, int):
-            selected_tab = "digest" if selected_tab == 0 else "scoring"
+            selected_tab = "scoring" if selected_tab == 0 else "digest"
+        if selected_tab == "parquet_extraction":
+            selected_tab = "scoring"
         self._select_tab_by_key(str(selected_tab))
         self._last_config_dir = _remember_dialog_directory(path)
         self._set_status_state("idle", f"Loaded config: {path}")
@@ -1633,9 +1936,12 @@ class MainWindow(QMainWindow):
 
 def main() -> None:
     app = QApplication([])
+    wheel_guard = WheelChangeGuard(app)
+    app.installEventFilter(wheel_guard)
     if ICON_PATH.exists():
         app.setWindowIcon(QIcon(str(ICON_PATH)))
     window = MainWindow()
+    window._wheel_guard = wheel_guard
     window.show()
     app.exec()
 

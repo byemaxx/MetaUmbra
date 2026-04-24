@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import csv
 import importlib
 import io
 import logging
@@ -63,6 +64,20 @@ class ScoringConfig:
     export_temp: bool = True
     export_peptide_contrib_topN: int = 0
     return_full_table: bool = False
+
+
+@dataclass
+class ParquetExtractionConfig:
+    input_parquet_path: str = ""
+    output_tsv_path: str = ""
+    input_columns: list[str] = field(
+        default_factory=lambda: ["Run", "Stripped.Sequence", "Evidence", "Q.Value"]
+    )
+    output_columns: list[str] = field(
+        default_factory=lambda: ["Run", "Sequence", "score", "Q.Value"]
+    )
+    batch_size: int = 65536
+    force: bool = False
 
 
 class CallbackLogHandler(logging.Handler):
@@ -260,4 +275,112 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
         "output": saved_output,
         "rows": int(len(result_df)),
         "elapsed_seconds": round(time.time() - start, 2),
+    }
+
+
+def run_parquet_extraction_workflow(
+    config: ParquetExtractionConfig,
+    log_callback: Optional[LogCallback] = None,
+) -> dict:
+    def log(message: str) -> None:
+        if log_callback:
+            log_callback(message)
+
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise RuntimeError(
+            "pyarrow is required to read parquet files. Install it with: python -m pip install pyarrow"
+        ) from exc
+
+    start = time.time()
+    input_path = Path(config.input_parquet_path).expanduser()
+    output_path = Path(config.output_tsv_path).expanduser() if config.output_tsv_path else input_path.with_suffix(".tsv")
+    input_columns = list(config.input_columns)
+    output_columns = list(config.output_columns)
+    batch_size = int(config.batch_size)
+
+    log("Starting parquet peptide extraction")
+    log(f"Input parquet: {input_path}")
+    log(f"Output TSV: {output_path}")
+    log(f"Overwrite enabled: {'yes' if config.force else 'no'}")
+    log(f"Batch size: {batch_size}")
+    log("Column mapping:")
+    for source_column, output_column in zip(input_columns, output_columns):
+        log(f"  {source_column} -> {output_column}")
+
+    if not input_path.is_file():
+        raise FileNotFoundError(f"Input parquet file does not exist: {input_path}")
+    if len(input_columns) != len(output_columns):
+        raise ValueError("Input columns and output columns must have the same length.")
+    if batch_size <= 0:
+        raise ValueError("Batch size must be a positive integer.")
+    if output_path.exists() and not config.force:
+        raise FileExistsError(f"Output file already exists: {output_path}. Enable overwrite to replace it.")
+
+    log("Reading parquet schema")
+    schema = pq.read_schema(input_path)
+    missing = [column for column in input_columns if column not in schema.names]
+    if missing:
+        raise ValueError(
+            "Missing required parquet columns: "
+            + ", ".join(missing)
+            + "\nAvailable columns: "
+            + ", ".join(schema.names)
+        )
+    log(f"Schema check passed. Available columns: {len(schema.names)}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    parquet_file = pq.ParquetFile(input_path)
+    total_rows = int(parquet_file.metadata.num_rows) if parquet_file.metadata is not None else None
+    row_groups = int(parquet_file.metadata.num_row_groups) if parquet_file.metadata is not None else None
+    rows_written = 0
+    batches_written = 0
+    next_progress_row = batch_size * 10
+    if total_rows is not None:
+        log(f"Parquet metadata: {total_rows} rows across {row_groups} row groups")
+    else:
+        log("Parquet metadata row count is unavailable")
+
+    log("Writing TSV header")
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerow(output_columns)
+
+        log("Streaming parquet batches to TSV")
+        for batch in parquet_file.iter_batches(columns=input_columns, batch_size=batch_size):
+            batches_written += 1
+            batch_rows = int(batch.num_rows)
+            arrays = [batch.column(idx).to_pylist() for idx in range(batch.num_columns)]
+            for row in zip(*arrays):
+                writer.writerow(row)
+                rows_written += 1
+
+            should_log_batch = batches_written <= 3 or rows_written >= next_progress_row
+            if total_rows is not None and rows_written >= total_rows:
+                should_log_batch = True
+            if should_log_batch:
+                if total_rows:
+                    percent = (rows_written / total_rows) * 100
+                    log(
+                        f"Processed batch {batches_written}: {batch_rows} rows, "
+                        f"{rows_written}/{total_rows} total ({percent:.1f}%)"
+                    )
+                else:
+                    log(
+                        f"Processed batch {batches_written}: {batch_rows} rows, "
+                        f"{rows_written} total"
+                    )
+                while rows_written >= next_progress_row:
+                    next_progress_row += batch_size * 10
+
+    elapsed_seconds = round(time.time() - start, 2)
+    log(f"Finished parquet extraction: {rows_written} rows written in {elapsed_seconds} s")
+    log(f"Saved TSV: {output_path}")
+
+    return {
+        "input": str(input_path),
+        "output": str(output_path),
+        "rows": int(rows_written),
+        "elapsed_seconds": elapsed_seconds,
     }
