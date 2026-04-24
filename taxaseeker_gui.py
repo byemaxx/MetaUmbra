@@ -31,6 +31,7 @@ try:
         QProgressBar,
         QPushButton,
         QScrollArea,
+        QSizePolicy,
         QSplitter,
         QSpinBox,
         QTabWidget,
@@ -102,7 +103,7 @@ RPG_ENZYMES: list[tuple[str, str]] = [
 
 DEFAULT_PROCESS_COUNT = min(64, max(1, (os.cpu_count() or 1) - 1))
 MAX_PROCESS_COUNT = min(64, max(1, os.cpu_count() or 1))
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 ICON_PATH = Path(__file__).resolve().parent / "assets" / "taxaseeker_icon.png"
 FORM_LABEL_MIN_WIDTH = 150
 BROWSE_BUTTON_WIDTH = 96
@@ -151,6 +152,38 @@ class DropPathLineEdit(QLineEdit):
             event.acceptProposedAction()
             return
         super().dropEvent(event)
+
+
+class ElidedLabel(QLabel):
+    """A single-line label that elides long text instead of expanding the window."""
+
+    def __init__(self, text: str = ""):
+        super().__init__("")
+        self._full_text = ""
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(0)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:  # type: ignore[override]
+        self._full_text = text or ""
+        self.setToolTip(self._full_text)
+        self._refresh_elided_text()
+
+    def text(self) -> str:  # type: ignore[override]
+        return self._full_text
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._refresh_elided_text()
+
+    def _refresh_elided_text(self) -> None:
+        width = max(0, self.contentsRect().width())
+        elided = self.fontMetrics().elidedText(
+            self._full_text,
+            Qt.TextElideMode.ElideMiddle,
+            width,
+        )
+        super().setText(elided)
 
 
 class FileContentTextEdit(QTextEdit):
@@ -1406,7 +1439,7 @@ class MainWindow(QMainWindow):
         self.about_button.setMaximumWidth(72)
         self.state_badge = QLabel("Idle")
         self.state_badge.setObjectName("StatusBadge")
-        self.status_label = QLabel("Ready")
+        self.status_label = ElidedLabel("Ready")
         self.status_label.setObjectName("StatusDetail")
         self.busy_bar = QProgressBar()
         self.busy_bar.setRange(0, 0)
@@ -1421,7 +1454,7 @@ class MainWindow(QMainWindow):
         button_row.addStretch(1)
         button_row.addWidget(self.busy_bar)
         button_row.addWidget(self.state_badge)
-        button_row.addWidget(self.status_label)
+        button_row.addWidget(self.status_label, 1)
         button_row.addSpacing(8)
         button_row.addWidget(self.about_button)
         root_layout.addWidget(top_bar)
