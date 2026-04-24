@@ -102,6 +102,7 @@ RPG_ENZYMES: list[tuple[str, str]] = [
 
 DEFAULT_PROCESS_COUNT = min(64, max(1, (os.cpu_count() or 1) - 1))
 MAX_PROCESS_COUNT = min(64, max(1, os.cpu_count() or 1))
+APP_VERSION = "1.0.0"
 ICON_PATH = Path(__file__).resolve().parent / "assets" / "taxaseeker_icon.png"
 FORM_LABEL_MIN_WIDTH = 150
 BROWSE_BUTTON_WIDTH = 96
@@ -150,6 +151,57 @@ class DropPathLineEdit(QLineEdit):
             event.acceptProposedAction()
             return
         super().dropEvent(event)
+
+
+class FileContentTextEdit(QTextEdit):
+    def __init__(self):
+        super().__init__()
+        self.setAcceptDrops(True)
+
+    def _extract_local_files(self, event) -> list[str]:
+        mime_data = event.mimeData()
+        if not mime_data.hasUrls():
+            return []
+        files: list[str] = []
+        for url in mime_data.urls():
+            if not url.isLocalFile():
+                continue
+            local_path = url.toLocalFile()
+            if local_path and os.path.isfile(local_path):
+                files.append(local_path)
+        return files
+
+    def _read_text_file(self, path: str) -> str:
+        for encoding in ("utf-8-sig", "utf-16", "mbcs"):
+            try:
+                return Path(path).read_text(encoding=encoding)
+            except UnicodeError:
+                continue
+        return Path(path).read_text(encoding="utf-8-sig", errors="replace")
+
+    def dragEnterEvent(self, event) -> None:
+        if self._extract_local_files(event):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        if self._extract_local_files(event):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event) -> None:
+        files = self._extract_local_files(event)
+        if not files:
+            super().dropEvent(event)
+            return
+
+        try:
+            self.setPlainText("\n".join(self._read_text_file(path) for path in files))
+        except OSError as exc:
+            QMessageBox.warning(self, "Cannot Read File", str(exc))
+        event.acceptProposedAction()
 
 
 class DirectoryDropListWidget(QListWidget):
@@ -1004,7 +1056,7 @@ class ScoringTab(QWidget):
         exclude_box = QGroupBox("Excluded Genome IDs")
         exclude_box.setProperty("subtle", True)
         exclude_layout = QVBoxLayout(exclude_box)
-        self.exclude_text = QTextEdit()
+        self.exclude_text = FileContentTextEdit()
         self.exclude_text.setPlaceholderText(
             "One genome ID per line, or comma-separated.\n"
             "Genome IDs should match digest TSV filenames without the .tsv suffix."
@@ -1014,7 +1066,7 @@ class ScoringTab(QWidget):
         selected_box = QGroupBox("Only Run Genome IDs")
         selected_box.setProperty("subtle", True)
         selected_layout = QVBoxLayout(selected_box)
-        self.selected_genomes_text = QTextEdit()
+        self.selected_genomes_text = FileContentTextEdit()
         self.selected_genomes_text.setPlaceholderText(
             "Optional. If provided, TaxaSeeker will only run these genome IDs.\n"
             "One genome ID per line, or comma-separated.\n"
@@ -1317,7 +1369,7 @@ class WorkflowWorker(QObject):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("TaxaSeeker GUI")
+        self.setWindowTitle(f"TaxaSeeker GUI v{APP_VERSION}")
         self.resize(1200, 900)
         if ICON_PATH.exists():
             self.setWindowIcon(QIcon(str(ICON_PATH)))
@@ -1343,13 +1395,15 @@ class MainWindow(QMainWindow):
         button_row = QHBoxLayout(top_bar)
         button_row.setContentsMargins(14, 12, 14, 12)
         button_row.setSpacing(10)
+        self.app_title_label = QLabel(f"TaxaSeeker v{APP_VERSION}")
+        self.app_title_label.setObjectName("AppTitle")
         self.load_button = QPushButton("Load Config")
         self.save_button = QPushButton("Save Config")
         self.clear_log_button = QPushButton("Clear Log")
-        self.stop_button = QPushButton("Stop Task")
-        self.stop_button.setObjectName("StopTaskButton")
-        self.stop_button.setEnabled(False)
-        self.stop_button.setToolTip("Terminate the currently running task.")
+        self.about_button = QPushButton("About")
+        self.about_button.setObjectName("AboutButton")
+        self.about_button.setFixedHeight(28)
+        self.about_button.setMaximumWidth(72)
         self.state_badge = QLabel("Idle")
         self.state_badge.setObjectName("StatusBadge")
         self.status_label = QLabel("Ready")
@@ -1359,14 +1413,17 @@ class MainWindow(QMainWindow):
         self.busy_bar.setTextVisible(False)
         self.busy_bar.setVisible(False)
         self.busy_bar.setFixedWidth(180)
+        # button_row.addWidget(self.app_title_label)
+        button_row.addSpacing(8)
         button_row.addWidget(self.load_button)
         button_row.addWidget(self.save_button)
         button_row.addWidget(self.clear_log_button)
-        button_row.addWidget(self.stop_button)
         button_row.addStretch(1)
         button_row.addWidget(self.busy_bar)
         button_row.addWidget(self.state_badge)
         button_row.addWidget(self.status_label)
+        button_row.addSpacing(8)
+        button_row.addWidget(self.about_button)
         root_layout.addWidget(top_bar)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
@@ -1408,14 +1465,28 @@ class MainWindow(QMainWindow):
         self.load_button.clicked.connect(self._load_config)
         self.save_button.clicked.connect(self._save_config)
         self.clear_log_button.clicked.connect(self.log_output.clear)
-        self.stop_button.clicked.connect(self._terminate_current_task)
-        self.run_current_button.clicked.connect(self._run_current_tab)
+        self.about_button.clicked.connect(self._show_about_dialog)
+        self.run_current_button.clicked.connect(self._handle_run_button_clicked)
         self.scoring_tab.import_parquet_button.clicked.connect(self._open_parquet_import_dialog)
         self.tabs.currentChanged.connect(self._sync_primary_run_button)
         self._sync_primary_run_button()
 
     def _append_log(self, message: str) -> None:
         self.log_output.appendPlainText(message)
+
+    def _show_about_dialog(self) -> None:
+        QMessageBox.about(
+            self,
+            f"About TaxaSeeker v{APP_VERSION}",
+            (
+                f"<h2>TaxaSeeker GUI v{APP_VERSION}</h2>"
+                "<p>TaxaSeeker infers genome and taxa presence from observed "
+                "metaproteomics peptide lists.</p>"
+                "<p>The GUI provides workflows for in-silico FASTA digestion, "
+                "parquet peptide-table import, and genome presence scoring with "
+                "a peptide-space knockoff null model.</p>"
+            ),
+        )
 
     def _apply_styles(self) -> None:
         self.setStyleSheet(
@@ -1435,6 +1506,12 @@ class MainWindow(QMainWindow):
                 background: #ffffff;
                 border: 1px solid #d6dce3;
                 border-radius: 3px;
+            }
+            QLabel#AppTitle {
+                color: #1f2933;
+                font-size: 15px;
+                font-weight: 800;
+                padding-right: 2px;
             }
             QTabWidget#PrimaryTabs::pane {
                 border: 1px solid #d6dce3;
@@ -1583,14 +1660,26 @@ class MainWindow(QMainWindow):
                 background: #1a58b5;
                 border-color: #1a58b5;
             }
-            QPushButton#StopTaskButton {
+            QPushButton#PrimaryRunButton[stopAction="true"] {
                 color: #b42318;
                 border-color: #d7a3a0;
                 background: #fff7f7;
             }
-            QPushButton#StopTaskButton:hover {
+            QPushButton#PrimaryRunButton[stopAction="true"]:hover {
                 background: #fde8e8;
                 border-color: #c97b76;
+            }
+            QPushButton#AboutButton {
+                padding: 4px 10px;
+                color: #52606d;
+                background: #ffffff;
+                border-color: #d6dce3;
+                font-size: 12px;
+            }
+            QPushButton#AboutButton:hover {
+                background: #f1f4f7;
+                border-color: #c7d0da;
+                color: #334155;
             }
             QPushButton:disabled {
                 background: #edf0f3;
@@ -1652,20 +1741,33 @@ class MainWindow(QMainWindow):
         self._set_status_state("running" if is_busy else "idle", status_text)
         self.load_button.setEnabled(not is_busy)
         self.save_button.setEnabled(not is_busy)
-        self.stop_button.setEnabled(is_busy)
-        self.tabs.setEnabled(not is_busy)
-        self._set_run_buttons_enabled(not is_busy)
+        self.scoring_tab.setEnabled(not is_busy)
+        self.digest_tab.setEnabled(not is_busy)
+        self.tabs.tabBar().setEnabled(not is_busy)
+        self._sync_primary_run_button()
 
     def _current_tab_key(self) -> str:
         return "scoring" if self.tabs.currentWidget() is self.scoring_tab else "digest"
 
     def _sync_primary_run_button(self, index: int | None = None) -> None:
-        if self.tabs.currentWidget() is self.scoring_tab:
+        if self.worker_thread is not None:
+            self.run_current_button.setText("Stop Task")
+            self.run_current_button.setToolTip("Terminate the currently running task.")
+            self.run_current_button.setProperty("stopAction", True)
+            self.run_current_button.setProperty("accent", False)
+        elif self.tabs.currentWidget() is self.scoring_tab:
             self.run_current_button.setText("Run Genome Presence Scoring")
             self.run_current_button.setToolTip("Run genome presence scoring with the current inputs and mappings.")
+            self.run_current_button.setProperty("stopAction", False)
+            self.run_current_button.setProperty("accent", True)
         else:
             self.run_current_button.setText("Run Digest")
             self.run_current_button.setToolTip("Run FASTA digestion with the current inputs and settings.")
+            self.run_current_button.setProperty("stopAction", False)
+            self.run_current_button.setProperty("accent", True)
+        self.run_current_button.setEnabled(True)
+        self.run_current_button.style().unpolish(self.run_current_button)
+        self.run_current_button.style().polish(self.run_current_button)
 
     def _select_tab_by_key(self, tab_key: str) -> None:
         if tab_key == "scoring":
@@ -1696,7 +1798,6 @@ class MainWindow(QMainWindow):
         config = dialog.build_config(require_required_fields=True)
         self._append_log("")
         self._append_log("=== Starting parquet import task ===")
-        self._set_busy_state(True, "Parquet peptide extraction in progress")
         self._stop_requested = False
         self._task_result_handled = False
 
@@ -1710,7 +1811,14 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self.worker_thread.quit)
         self.worker.failed.connect(self.worker_thread.quit)
         self.worker_thread.finished.connect(self._on_worker_thread_finished)
+        self._set_busy_state(True, "Parquet peptide extraction in progress")
         self.worker_thread.start()
+
+    def _handle_run_button_clicked(self) -> None:
+        if self.worker_thread is not None:
+            self._terminate_current_task()
+            return
+        self._run_current_tab()
 
     def _run_current_tab(self) -> None:
         if self.worker_thread is not None:
@@ -1732,7 +1840,6 @@ class MainWindow(QMainWindow):
 
         self._append_log("")
         self._append_log(f"=== Starting {task_name} task ===")
-        self._set_busy_state(True, busy_text)
         self._stop_requested = False
         self._task_result_handled = False
 
@@ -1746,6 +1853,7 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self.worker_thread.quit)
         self.worker.failed.connect(self.worker_thread.quit)
         self.worker_thread.finished.connect(self._on_worker_thread_finished)
+        self._set_busy_state(True, busy_text)
         self.worker_thread.start()
 
     @Slot(str, dict)
@@ -1766,8 +1874,9 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Task Complete", summary)
         self.load_button.setEnabled(True)
         self.save_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
-        self.tabs.setEnabled(True)
+        self.scoring_tab.setEnabled(True)
+        self.digest_tab.setEnabled(True)
+        self.tabs.tabBar().setEnabled(True)
         self._set_run_buttons_enabled(True)
 
     @Slot(str, str)
@@ -1786,8 +1895,9 @@ class MainWindow(QMainWindow):
         )
         self.load_button.setEnabled(True)
         self.save_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
-        self.tabs.setEnabled(True)
+        self.scoring_tab.setEnabled(True)
+        self.digest_tab.setEnabled(True)
+        self.tabs.tabBar().setEnabled(True)
         self._set_run_buttons_enabled(True)
 
     @Slot()
@@ -1799,8 +1909,9 @@ class MainWindow(QMainWindow):
             self._set_status_state("failed", message)
             self.load_button.setEnabled(True)
             self.save_button.setEnabled(True)
-            self.stop_button.setEnabled(False)
-            self.tabs.setEnabled(True)
+            self.scoring_tab.setEnabled(True)
+            self.digest_tab.setEnabled(True)
+            self.tabs.tabBar().setEnabled(True)
             self._set_run_buttons_enabled(True)
             self._task_result_handled = True
 
@@ -1811,6 +1922,7 @@ class MainWindow(QMainWindow):
             self.worker_thread.deleteLater()
             self.worker_thread = None
         self._stop_requested = False
+        self._sync_primary_run_button()
 
     def _set_run_buttons_enabled(self, enabled: bool) -> None:
         self.run_current_button.setEnabled(enabled)
@@ -1830,7 +1942,7 @@ class MainWindow(QMainWindow):
             return
 
         self._stop_requested = True
-        self.stop_button.setEnabled(False)
+        self.run_current_button.setEnabled(False)
         self._set_status_state("running", "Terminating current task")
         self._append_log("Termination requested by user.")
         self.worker_thread.requestInterruption()
