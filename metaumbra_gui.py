@@ -42,7 +42,7 @@ try:
 except ImportError as exc:
     raise SystemExit("PySide6 is required to run the GUI. Install it with: pip install PySide6") from exc
 
-from taxaseeker_workflows import (
+from metaumbra_workflows import (
     DigestConfig,
     ParquetExtractionConfig,
     ScoringConfig,
@@ -104,7 +104,7 @@ RPG_ENZYMES: list[tuple[str, str]] = [
 DEFAULT_PROCESS_COUNT = min(64, max(1, (os.cpu_count() or 1) - 1))
 MAX_PROCESS_COUNT = min(64, max(1, os.cpu_count() or 1))
 APP_VERSION = "1.1.0"
-ICON_PATH = Path(__file__).resolve().parent / "assets" / "taxaseeker_icon.png"
+ICON_PATH = Path(__file__).resolve().parent / "assets" / "metaumbra_icon.png"
 FORM_LABEL_MIN_WIDTH = 150
 BROWSE_BUTTON_WIDTH = 96
 PRIMARY_BUTTON_MIN_WIDTH = 240
@@ -826,7 +826,7 @@ class ParquetExtractionDialog(QDialog):
         input_row, self.input_parquet_edit = _make_path_row("Browse", self._browse_input_parquet, accept_mode="file")
         output_row, self.output_tsv_edit = _make_path_row("Browse", self._browse_output_tsv, accept_mode="file")
         self.input_parquet_edit.setPlaceholderText("Drop a DIA-NN report.parquet file here or click Browse")
-        self.output_tsv_edit.setPlaceholderText("Auto-filled as <parquet_stem>_peptides_for_taxaseeker.tsv")
+        self.output_tsv_edit.setPlaceholderText("Auto-filled as <parquet_stem>_peptides_for_metaumbra.tsv")
         required_form.addRow("Input parquet report", input_row)
         required_form.addRow("Output peptide TSV", output_row)
         _polish_form_layout(required_form)
@@ -849,7 +849,7 @@ class ParquetExtractionDialog(QDialog):
         options_layout.addLayout(options_form)
         options_layout.addWidget(
             _make_wrapped_label(
-                "Default mapping converts DIA-NN Stripped.Sequence to TaxaSeeker Sequence and Evidence to score."
+                "Default mapping converts DIA-NN Stripped.Sequence to MetaUmbra Sequence and Evidence to score."
             )
         )
         layout.addWidget(self.more_options)
@@ -870,7 +870,7 @@ class ParquetExtractionDialog(QDialog):
         input_path = Path(parquet_path.strip())
         if not input_path.name:
             return ""
-        return str(input_path.with_name(f"{input_path.stem}_peptides_for_taxaseeker.tsv"))
+        return str(input_path.with_name(f"{input_path.stem}_peptides_for_metaumbra.tsv"))
 
     def _update_auto_output_tsv_from_input_parquet(self) -> None:
         parquet_path = self.input_parquet_edit.text().strip()
@@ -905,7 +905,7 @@ class ParquetExtractionDialog(QDialog):
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Select output peptide TSV",
-            _initial_dialog_path(self.output_tsv_edit.text(), self._last_browse_dir, "peptides_for_taxaseeker.tsv"),
+            _initial_dialog_path(self.output_tsv_edit.text(), self._last_browse_dir, "peptides_for_metaumbra.tsv"),
             "TSV files (*.tsv);;All files (*.*)",
         )
         if path:
@@ -965,7 +965,7 @@ class ScoringTab(QWidget):
         required_form = QFormLayout(required_box)
         peptide_row, self.peptide_table_edit = _make_path_row("Browse", self._browse_peptide_table, accept_mode="file")
         self.import_parquet_button = QPushButton("Import Parquet...")
-        self.import_parquet_button.setToolTip("Extract a TaxaSeeker peptide TSV from a DIA-NN parquet report.")
+        self.import_parquet_button.setToolTip("Extract a MetaUmbra peptide TSV from a DIA-NN parquet report.")
         peptide_row.layout().addWidget(self.import_parquet_button)
         required_form.addRow("Observed peptide table", peptide_row)
         lineage_row, self.genome_lineage_table_edit = _make_path_row("Browse", self._browse_genome_lineage_table, accept_mode="file")
@@ -1101,7 +1101,7 @@ class ScoringTab(QWidget):
         selected_layout = QVBoxLayout(selected_box)
         self.selected_genomes_text = FileContentTextEdit()
         self.selected_genomes_text.setPlaceholderText(
-            "Optional. If provided, TaxaSeeker will only run these genome IDs.\n"
+            "Optional. If provided, MetaUmbra will only run these genome IDs.\n"
             "One genome ID per line, or comma-separated.\n"
             "Genome IDs should match digest TSV filenames without the .tsv suffix."
         )
@@ -1402,7 +1402,7 @@ class WorkflowWorker(QObject):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"TaxaSeeker GUI v{APP_VERSION}")
+        self.setWindowTitle(f"MetaUmbra GUI v{APP_VERSION}")
         self.resize(1200, 900)
         if ICON_PATH.exists():
             self.setWindowIcon(QIcon(str(ICON_PATH)))
@@ -1428,7 +1428,7 @@ class MainWindow(QMainWindow):
         button_row = QHBoxLayout(top_bar)
         button_row.setContentsMargins(14, 12, 14, 12)
         button_row.setSpacing(10)
-        self.app_title_label = QLabel(f"TaxaSeeker v{APP_VERSION}")
+        self.app_title_label = QLabel(f"MetaUmbra v{APP_VERSION}")
         self.app_title_label.setObjectName("AppTitle")
         self.load_button = QPushButton("Load Config")
         self.save_button = QPushButton("Save Config")
@@ -1510,10 +1510,10 @@ class MainWindow(QMainWindow):
     def _show_about_dialog(self) -> None:
         QMessageBox.about(
             self,
-            f"About TaxaSeeker v{APP_VERSION}",
+            f"About MetaUmbra v{APP_VERSION}",
             (
-                f"<h2>TaxaSeeker GUI v{APP_VERSION}</h2>"
-                "<p>TaxaSeeker infers genome and taxa presence from observed "
+                f"<h2>MetaUmbra GUI v{APP_VERSION}</h2>"
+                "<p>MetaUmbra infers genome and taxa presence from observed "
                 "metaproteomics peptide lists.</p>"
                 "<p>The GUI provides workflows for in-silico FASTA digestion, "
                 "parquet peptide-table import, and genome presence scoring with "
@@ -2026,7 +2026,7 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save GUI config",
-            _initial_dialog_path("", self._last_config_dir, "taxaseeker_gui_config.json"),
+            _initial_dialog_path("", self._last_config_dir, "metaumbra_gui_config.json"),
             "JSON files (*.json);;All files (*.*)",
         )
         if not path:

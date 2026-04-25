@@ -1758,10 +1758,10 @@ if __name__ == "__main__":
         raise ValueError(f"Unknown test_proj: {test_proj}. Valid keys: {list(test_dict.keys())}")
 
     ### TEST for ONE project
-    # peptide_table_path = "C:/Users/max/OneDrive - University of Ottawa/code/TaxaSeeker/test_data/pro3/peptides.tsv"
+    # peptide_table_path = "C:/Users/max/OneDrive - University of Ottawa/code/MetaUmbra/test_data/pro3/peptides.tsv"
     # genome_digest_dirs = [
     #     r"C:/Users/max/Desktop/digested_genomes/UHGP_digested",]
-    # output_tsv_path = r"C:\Users\max\OneDrive - University of Ottawa\code\TaxaSeeker\test_data\pro3/genome_presence_results.tsv"
+    # output_tsv_path = r"C:\Users\max\OneDrive - University of Ottawa\code\MetaUmbra\test_data\pro3/genome_presence_results.tsv"
     # exclude_genome_ids = [] 
     # with open(r"test_data\removed_genomes.txt", "r", encoding="utf-8") as f:
     #     for line in f:

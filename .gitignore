@@ -8,3 +8,5 @@ test_data/
 build/
 dist/
 *.spec
+.uv-cache/
+.uv-python/
