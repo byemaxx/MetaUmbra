@@ -78,7 +78,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
+    if: ${{ inputs.publish_release }}
     needs: build
     runs-on: ubuntu-latest
     permissions:
