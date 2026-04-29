@@ -2,16 +2,24 @@
 
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files
-
-
-SPEC_DIR = Path(__file__).resolve().parent
+SPEC_DIR = Path(SPECPATH).resolve()
 ROOT_DIR = SPEC_DIR.parent
 ENTRY_SCRIPT = SPEC_DIR / "pyinstaller_gui_entry.py"
 SRC_DIR = ROOT_DIR / "src"
 ICON_PATH = ROOT_DIR / "src" / "metaumbra" / "assets" / "metaumbra_icon.png"
+ASSETS_DIR = ROOT_DIR / "src" / "metaumbra" / "assets"
 
-datas = collect_data_files("metaumbra", includes=["assets/*.png"])
+datas = [(str(ASSETS_DIR / "*.png"), "metaumbra/assets")]
+excludes = [
+    "IPython",
+    "ipykernel",
+    "jupyter_client",
+    "jupyter_core",
+    "matplotlib",
+    "pandas.plotting",
+    "tkinter",
+    "_tkinter",
+]
 
 
 a = Analysis(
@@ -23,7 +31,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=excludes,
     noarchive=False,
     optimize=0,
 )
