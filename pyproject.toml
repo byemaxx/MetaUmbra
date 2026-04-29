@@ -39,6 +39,11 @@ all = [
   "pyarrow",
 ]
 
+[project.urls]
+Homepage = "https://github.com/byemaxx/MetaUmbra"
+Repository = "https://github.com/byemaxx/MetaUmbra"
+Issues = "https://github.com/byemaxx/MetaUmbra/issues"
+
 [project.scripts]
 metaumbra = "metaumbra.cli:main"
 

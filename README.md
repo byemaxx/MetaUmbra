@@ -1,5 +1,7 @@
 # MetaUmbra
-[![MetaUmbra](src/metaumbra/assets/baner.png)](src/metaumbra/assets/baner.png)
+[![MetaUmbra](https://raw.githubusercontent.com/byemaxx/MetaUmbra/main/src/metaumbra/assets/baner.png)](https://github.com/byemaxx/MetaUmbra)
+
+[GitHub Homepage](https://github.com/byemaxx/MetaUmbra)
 
 ## Genome-level presence inference from metaproteomic peptides
 
@@ -16,7 +18,7 @@ MetaUmbra converts identified metaproteomic peptides into statistically supporte
 - Support peptide tables from common metaproteomics workflows such as DIA-NN and MaxQuant
 
 ## Workflow overview
-[![MetaUmbra](src/metaumbra/assets/workflow.png)](src/metaumbra/assets/workflow.png)
+[![MetaUmbra workflow](https://raw.githubusercontent.com/byemaxx/MetaUmbra/main/src/metaumbra/assets/workflow.png)](https://github.com/byemaxx/MetaUmbra)
 
 
 ## Installation
