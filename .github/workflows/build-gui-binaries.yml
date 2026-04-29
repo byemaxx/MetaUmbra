@@ -1,0 +1,110 @@
+name: Build GUI Binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Create or update a GitHub release with the built binaries
+        required: false
+        default: false
+        type: boolean
+      release_tag:
+        description: Release tag to create or update when publish_release is enabled
+        required: false
+        type: string
+      release_name:
+        description: Optional release name override
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - macos-latest
+          - ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Install GUI build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .[gui] pyinstaller
+
+      - name: Build GUI executable
+        run: pyinstaller --clean --noconfirm metaumbra-gui.spec
+
+      - name: Package GUI executable
+        shell: pwsh
+        run: |
+          $version = (python src/metaumbra/__version__.py).Trim()
+          $platform = "${{ runner.os }}".ToLowerInvariant()
+          $arch = "${{ runner.arch }}".ToLowerInvariant()
+
+          if ("${{ runner.os }}" -eq "Windows") {
+            $binaryName = "metaumbra-gui.exe"
+            $archiveName = "metaumbra-gui-v$version-$platform-$arch.zip"
+            Compress-Archive -LiteralPath "dist\$binaryName" -DestinationPath "dist\$archiveName" -Force
+          }
+          else {
+            $binaryName = "metaumbra-gui"
+            $archiveName = "metaumbra-gui-v$version-$platform-$arch.tar.gz"
+            tar -czf "dist/$archiveName" -C dist $binaryName
+          }
+
+          "ARCHIVE_NAME=$archiveName" >> $env:GITHUB_ENV
+
+      - name: Upload packaged GUI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_NAME }}
+          path: dist/${{ env.ARCHIVE_NAME }}
+          if-no-files-found: error
+
+  release:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Validate release inputs
+        shell: bash
+        run: |
+          if [ -z "${{ inputs.release_tag }}" ]; then
+            echo "release_tag is required when publish_release is true." >&2
+            exit 1
+          fi
+
+      - name: Download packaged GUI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create or update GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: ${{ inputs.release_name != '' && inputs.release_name || inputs.release_tag }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: |
+            release-assets/*
