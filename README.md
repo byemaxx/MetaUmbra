@@ -1,11 +1,10 @@
 # MetaUmbra
 [![MetaUmbra](https://raw.githubusercontent.com/byemaxx/MetaUmbra/main/src/metaumbra/assets/baner.png)](https://github.com/byemaxx/MetaUmbra)
 
-[GitHub Homepage](https://github.com/byemaxx/MetaUmbra)
 
 ## Genome-level presence inference from metaproteomic peptides
 
-MetaUmbra converts identified metaproteomic peptides into statistically supported genome presence calls. It evaluates each candidate genome using both unique and shared peptide evidence and reports genome-level p-values, BH-adjusted q-values, and presence scores.
+MetaUmbra performs genome-level presence inference from metaproteomic peptide lists. It combines unique peptide support with weighted shared peptide evidence to identify statistically supported microbial genomes and generate interpretable presence rankings.
 
 ## Main features
 
@@ -26,7 +25,7 @@ MetaUmbra converts identified metaproteomic peptides into statistically supporte
 MetaUmbra requires Python 3.10 or newer.
 
 ```bash
-pip install ".[all]"
+pip install metaumbra
 ```
 
 ## Usage
@@ -90,7 +89,7 @@ Key output columns include:
 
 If you use MetaUmbra, please cite:
 
-> Wu Q, Ning Z, Zhang A, Cheng K, Figeys D. MetaUmbra: Statistically Controlled Genome-Level Presence Inference from Metaproteomic Peptides.
+> Wu Q, Ning Z, Zhang A, Cheng K, Figeys D. MetaUmbra: Statistically Controlled Genome-Level Presence Inference from Metaproteomic Peptides.[J]. bioRxiv, 2026.
 
 A formal citation will be added after publication.
 
