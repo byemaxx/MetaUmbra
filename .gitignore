@@ -11,5 +11,6 @@ dist/
 .mypy_cache/
 .ruff_cache/
 *.spec
+!scripts/metaumbra-gui.spec
 .uv-cache/
 .uv-python/
