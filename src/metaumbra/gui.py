@@ -1522,9 +1522,11 @@ class MainWindow(QMainWindow):
         self.log_output.appendPlainText(message)
 
     def _show_about_dialog(self) -> None:
-        QMessageBox.about(
-            self,
-            f"About MetaUmbra v{APP_VERSION}",
+        about_box = QMessageBox(self)
+        about_box.setWindowTitle(f"About MetaUmbra v{APP_VERSION}")
+        about_box.setTextFormat(Qt.RichText)
+        about_box.setStandardButtons(QMessageBox.Ok)
+        about_box.setText(
             (
                 f"<h2>MetaUmbra GUI v{APP_VERSION}</h2>"
                 "<p>MetaUmbra infers genome and taxa presence from observed "
@@ -1532,8 +1534,14 @@ class MainWindow(QMainWindow):
                 "<p>The GUI provides workflows for in-silico FASTA digestion, "
                 "parquet peptide-table import, and genome presence scoring with "
                 "a peptide-space knockoff null model.</p>"
-            ),
+                '<p><a href="https://github.com/byemaxx/MetaUmbra">GitHub Repository</a></p>'
+            )
         )
+        about_label = about_box.findChild(QLabel, "qt_msgbox_label")
+        if about_label is not None:
+            about_label.setOpenExternalLinks(True)
+            about_label.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        about_box.exec()
 
     def _apply_styles(self) -> None:
         self.setStyleSheet(
