@@ -7,6 +7,10 @@ test_data/
 .venv/
 build/
 dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 *.spec
 .uv-cache/
 .uv-python/

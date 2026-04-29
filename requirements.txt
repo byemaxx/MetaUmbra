@@ -1,6 +1,1 @@
-rpg==2.0.5
-numpy
-pandas
-tqdm
-PySide6
-pyarrow
+.[all]

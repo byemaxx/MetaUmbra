@@ -4,9 +4,32 @@ import csv
 import json
 import multiprocessing as mp
 import os
+import sys
 import traceback
 from dataclasses import asdict
 from pathlib import Path
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from metaumbra import __version__
+    from metaumbra.workflows import (
+        DigestConfig,
+        ParquetExtractionConfig,
+        ScoringConfig,
+        run_digest_workflow,
+        run_parquet_extraction_workflow,
+        run_scoring_workflow,
+    )
+else:
+    from . import __version__
+    from .workflows import (
+        DigestConfig,
+        ParquetExtractionConfig,
+        ScoringConfig,
+        run_digest_workflow,
+        run_parquet_extraction_workflow,
+        run_scoring_workflow,
+    )
 
 try:
     from PySide6.QtCore import QEvent, QObject, Qt, QThread, Signal, Slot
@@ -41,15 +64,6 @@ try:
     )
 except ImportError as exc:
     raise SystemExit("PySide6 is required to run the GUI. Install it with: pip install PySide6") from exc
-
-from metaumbra_workflows import (
-    DigestConfig,
-    ParquetExtractionConfig,
-    ScoringConfig,
-    run_digest_workflow,
-    run_parquet_extraction_workflow,
-    run_scoring_workflow,
-)
 
 
 RPG_ENZYMES: list[tuple[str, str]] = [
@@ -103,7 +117,7 @@ RPG_ENZYMES: list[tuple[str, str]] = [
 
 DEFAULT_PROCESS_COUNT = min(64, max(1, (os.cpu_count() or 1) - 1))
 MAX_PROCESS_COUNT = min(64, max(1, os.cpu_count() or 1))
-APP_VERSION = "1.1.0"
+APP_VERSION = __version__
 ICON_PATH = Path(__file__).resolve().parent / "assets" / "metaumbra_icon.png"
 FORM_LABEL_MIN_WIDTH = 150
 BROWSE_BUTTON_WIDTH = 96

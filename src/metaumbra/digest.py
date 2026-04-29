@@ -760,23 +760,9 @@ def process_fasta(input_file, enzyme_id, output_file=None, min_length=7, max_len
 
 
 if __name__ == "__main__":
-    try:
-        with timer("Total directory processing time"):
-            results = process_directory(
-                input_dir=r"test_data\mix24x\protein_fasta",
-                output_dir=r"test_data\mix24x\protein_fasta_digested",
-                enzyme_id="42",
-                min_length=7,
-                max_length=30,
-                max_num_miscleavages=2,
-                processes=None,
-                short_header=True,
-                verbose=True,
-                skip_existing=True,
-            )
-
-        total_peptides = sum(results.values())
-        logger.info(f"Total peptides generated across all files: {total_peptides}")
-    except Exception as exc:
-        logger.error(f"Error: {exc}")
-        sys.exit(1)
+    if __package__ in {None, ""}:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from metaumbra.cli import main as cli_main
+    else:
+        from .cli import main as cli_main
+    raise SystemExit(cli_main(["digest", *sys.argv[1:]]))

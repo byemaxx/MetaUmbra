@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import contextlib
 import csv
-import importlib
 import io
 import logging
 import os
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -158,7 +158,9 @@ def _normalize_output_path(path_str: str) -> str:
 
 
 def run_digest_workflow(config: DigestConfig, log_callback: Optional[LogCallback] = None) -> dict:
-    digest_module = importlib.import_module("digest_fasta_to_peptides")
+    import importlib
+
+    digest_module = importlib.import_module("metaumbra.digest")
 
     start = time.time()
     target = config.input_file if config.input_mode == "file" else config.input_dir
@@ -211,7 +213,9 @@ def run_digest_workflow(config: DigestConfig, log_callback: Optional[LogCallback
 
 
 def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallback] = None) -> dict:
-    scoring_module = importlib.import_module("genome_presence_scoring")
+    import importlib
+
+    scoring_module = importlib.import_module("metaumbra.scoring")
 
     start = time.time()
     if log_callback:
@@ -384,3 +388,12 @@ def run_parquet_extraction_workflow(
         "rows": int(rows_written),
         "elapsed_seconds": elapsed_seconds,
     }
+
+
+if __name__ == "__main__":
+    if __package__ in {None, ""}:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from metaumbra.cli import main as cli_main
+    else:
+        from .cli import main as cli_main
+    raise SystemExit(cli_main(sys.argv[1:]))
