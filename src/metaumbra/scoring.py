@@ -41,6 +41,40 @@ import pandas as pd
 from tqdm import tqdm
 
 
+WINDOWS_MAX_PROCESS_POOL_WORKERS = 60
+
+
+def _resolve_worker_count(num_workers: Optional[int], logger: Optional[logging.Logger] = None) -> int:
+    """Clamp worker count to platform-supported and CPU-backed limits."""
+    cpu_count = mp.cpu_count() or 1
+
+    if num_workers is None:
+        resolved = max(1, cpu_count - 1)
+    else:
+        resolved = max(1, int(num_workers))
+
+    if sys.platform == "win32" and resolved > WINDOWS_MAX_PROCESS_POOL_WORKERS:
+        if logger is not None:
+            logger.warning(
+                "Windows system detected: num_workers=%s exceeds ProcessPoolExecutor limit; adjusted to %s",
+                resolved,
+                WINDOWS_MAX_PROCESS_POOL_WORKERS,
+            )
+        resolved = WINDOWS_MAX_PROCESS_POOL_WORKERS
+
+    if resolved > cpu_count:
+        if logger is not None:
+            logger.warning(
+                "num_workers=%s exceeds available CPU cores=%s; adjusted to %s",
+                resolved,
+                cpu_count,
+                cpu_count,
+            )
+        resolved = cpu_count
+
+    return resolved
+
+
 # =========================
 # Logging
 # =========================
@@ -179,8 +213,8 @@ class GenomePresenceScorer:
     """
 
     def __init__(self, num_workers: Optional[int] = None, log_file: Optional[str] = None):
-        self.num_workers = num_workers if num_workers is not None else max(1, (mp.cpu_count() or 1) - 1)
         self.logger = setup_logger("GenomePresenceScorer", log_file)
+        self.num_workers = _resolve_worker_count(num_workers, logger=self.logger)
 
         # Core states
         self.peptide_score: Dict[str, float] = {}  # peptide -> normalized score in [0,1] (or 1.0)

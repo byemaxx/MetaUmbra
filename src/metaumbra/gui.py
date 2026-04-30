@@ -115,8 +115,12 @@ RPG_ENZYMES: list[tuple[str, str]] = [
     ("46", "aLP"),
 ]
 
-DEFAULT_PROCESS_COUNT = min(64, max(1, (os.cpu_count() or 1) - 1))
-MAX_PROCESS_COUNT = min(64, max(1, os.cpu_count() or 1))
+WINDOWS_MAX_PROCESS_POOL_WORKERS = 60
+MAX_PROCESS_COUNT = min(
+    WINDOWS_MAX_PROCESS_POOL_WORKERS if sys.platform == "win32" else 64,
+    max(1, os.cpu_count() or 1),
+)
+DEFAULT_PROCESS_COUNT = min(MAX_PROCESS_COUNT, max(1, (os.cpu_count() or 1) - 1))
 APP_VERSION = __version__
 ICON_PATH = Path(__file__).resolve().parent / "assets" / "metaumbra_icon.png"
 FORM_LABEL_MIN_WIDTH = 150
