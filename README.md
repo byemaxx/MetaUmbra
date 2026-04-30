@@ -25,12 +25,20 @@ MetaUmbra performs genome-level presence inference from metaproteomic peptide li
 MetaUmbra requires Python 3.10 or newer.
 
 ```bash
+# Install with all features (GUI, parquet support)
+pip install metaumbra[all]
+```
+or
+```bash
+# Install with core features only
 pip install metaumbra
 ```
 
 ## Usage
 
 MetaUmbra can be used through either the graphical interface or the command line.
+
+For a detailed walkthrough, including input formats, CLI examples, output interpretation, and troubleshooting, see the [MetaUmbra Usage Guide](docs/usage.md).
 
 ### Graphical interface
 
@@ -79,10 +87,10 @@ Key output columns include:
 | `genome_id` | Candidate genome identifier |
 | `num_peptides_matched` | Number of observed peptides matched to the genome |
 | `num_peptides_unique` | Number of matched peptides unique to the genome |
-| `weighted_evidence` | Total degeneracy-weighted peptide evidence |
-| `weighted_evidence_shared` | Weighted evidence from shared peptides |
-| `p_presence` | Genome-level p-value |
-| `q_presence` | BH-adjusted genome-level q-value |
+| `shared_fraction` | Fraction of matched peptides that are shared with other genomes |
+| `mean_degeneracy` | Mean number of genomes containing the matched peptides |
+| `pvalue` | Genome-level p-value |
+| `qvalue` | BH-adjusted genome-level q-value |
 | `presence_score` | Ranking score based on q-value |
 
 ## Citation
