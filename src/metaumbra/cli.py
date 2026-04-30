@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,7 @@ def _print_result(payload: dict[str, Any]) -> None:
 
 DEFAULT_PARQUET_INPUT_COLUMNS = ["Run", "Stripped.Sequence", "Evidence", "Q.Value"]
 DEFAULT_PARQUET_OUTPUT_COLUMNS = ["Run", "Sequence", "score", "Q.Value"]
+LIST_VALUE_SEPARATOR_RE = re.compile(r"[,;，；]")
 
 
 class MetaUmbraHelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
@@ -82,6 +84,30 @@ def _add_common_version_flag(parser: argparse.ArgumentParser) -> None:
         action="version",
         version=f"%(prog)s {__version__}",
     )
+
+
+def _split_delimited_value(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in LIST_VALUE_SEPARATOR_RE.split(value) if item.strip()]
+
+
+def _parse_id_list_argument(value: str | None, option_name: str) -> list[str]:
+    if not value:
+        return []
+    cleaned = value.strip()
+    if not cleaned.startswith("@"):
+        return _split_delimited_value(cleaned)
+
+    path_text = cleaned[1:].strip()
+    if not path_text:
+        raise SystemExit(f"{option_name}: expected a file path after '@'.")
+    path = Path(path_text).expanduser()
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except OSError as exc:
+        raise SystemExit(f"{option_name}: failed to read '{path}': {exc}") from exc
+    return [line.strip() for line in text.splitlines() if line.strip()]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -182,10 +208,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_argument(score_required, "--peptide-table", required=True, help="Observed peptide TSV path.")
     _add_argument(
         score_required,
-        "--genome-digest-dir",
-        action="append",
+        "--genome-digest-dirs",
         required=True,
-        help="Directory containing digested genome TSV files. Repeat for multiple directories.",
+        help="Directory or comma/semicolon-separated directories containing digested genome TSV files.",
     )
     _add_argument(score_required, "--output", required=True, help="Output TSV path.")
     _add_argument(score_optional, "--peptide-seq-col", default="Sequence", help="Peptide sequence column name.")
@@ -208,17 +233,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_argument(
         score_optional,
-        "--selected-genome-id",
-        action="append",
-        default=[],
-        help="Restrict scoring to specific genome IDs. Repeat as needed.",
+        "--selected-genome-ids",
+        default="",
+        display_default="none",
+        help="Restrict scoring to genome IDs separated by commas/semicolons, or pass @file with one ID per line.",
     )
     _add_argument(
         score_optional,
-        "--exclude-genome-id",
-        action="append",
-        default=[],
-        help="Genome IDs to exclude. Repeat as needed.",
+        "--exclude-genome-ids",
+        default="",
+        display_default="none",
+        help="Genome IDs to exclude, separated by commas/semicolons, or pass @file with one ID per line.",
     )
     _add_argument(
         score_optional,
@@ -347,13 +372,19 @@ def _run_digest(args: argparse.Namespace) -> int:
 
 
 def _run_score(args: argparse.Namespace) -> int:
+    genome_digest_dirs = _split_delimited_value(args.genome_digest_dirs)
+    if not genome_digest_dirs:
+        raise SystemExit("--genome-digest-dirs requires at least one directory.")
+    selected_genome_ids = _parse_id_list_argument(args.selected_genome_ids, "--selected-genome-ids")
+    exclude_genome_ids = _parse_id_list_argument(args.exclude_genome_ids, "--exclude-genome-ids")
+
     config = ScoringConfig(
         peptide_table_path=args.peptide_table,
         genome_lineage_table_path=args.lineage_table,
         genome_lineage_genome_id_col=args.lineage_genome_id_col,
         genome_lineage_lineage_col=args.lineage_lineage_col,
-        genome_digest_dirs=args.genome_digest_dir,
-        selected_genome_ids=args.selected_genome_id,
+        genome_digest_dirs=genome_digest_dirs,
+        selected_genome_ids=selected_genome_ids,
         output_tsv_path=args.output,
         peptide_seq_col=args.peptide_seq_col,
         peptide_score_col=args.peptide_score_col,
@@ -361,7 +392,7 @@ def _run_score(args: argparse.Namespace) -> int:
         peptide_error_cutoff=args.peptide_error_cutoff,
         peptide_decoy_flag_col=args.peptide_decoy_flag_col,
         decoy_flag_value=args.decoy_flag_value,
-        exclude_genome_ids=args.exclude_genome_id,
+        exclude_genome_ids=exclude_genome_ids,
         num_workers=args.num_workers,
         matched_peptides_cache_path=args.cache_path,
         save_matched_peptides_cache=not args.no_save_cache,

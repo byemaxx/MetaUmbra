@@ -74,7 +74,7 @@ metaumbra extract-parquet \
 
 metaumbra score \
   --peptide-table results/observed_peptides.tsv \
-  --genome-digest-dir results/genome_digests \
+  --genome-digest-dirs results/genome_digests \
   --output results/genome_presence.tsv
 ```
 
@@ -216,17 +216,16 @@ Run scoring with default column names:
 ```bash
 metaumbra score \
   --peptide-table results/observed_peptides.tsv \
-  --genome-digest-dir results/genome_digests \
+  --genome-digest-dirs results/genome_digests \
   --output results/genome_presence.tsv
 ```
 
-Use multiple digest directories by repeating `--genome-digest-dir`:
+Use multiple digest directories with a comma- or semicolon-separated list:
 
 ```bash
 metaumbra score \
   --peptide-table results/observed_peptides.tsv \
-  --genome-digest-dir results/isolate_digests \
-  --genome-digest-dir results/mag_digests \
+  --genome-digest-dirs "results/isolate_digests;results/mag_digests" \
   --output results/genome_presence.tsv
 ```
 
@@ -235,7 +234,7 @@ Use custom peptide-table columns:
 ```bash
 metaumbra score \
   --peptide-table results/observed_peptides.tsv \
-  --genome-digest-dir results/genome_digests \
+  --genome-digest-dirs results/genome_digests \
   --output results/genome_presence.tsv \
   --peptide-seq-col Sequence \
   --peptide-score-col score \
@@ -248,7 +247,7 @@ Disable decoy filtering if your table has no decoy flag column:
 ```bash
 metaumbra score \
   --peptide-table results/observed_peptides.tsv \
-  --genome-digest-dir results/genome_digests \
+  --genome-digest-dirs results/genome_digests \
   --output results/genome_presence.tsv \
   --peptide-decoy-flag-col ""
 ```
@@ -258,11 +257,29 @@ Restrict or exclude genomes by genome ID:
 ```bash
 metaumbra score \
   --peptide-table results/observed_peptides.tsv \
-  --genome-digest-dir results/genome_digests \
+  --genome-digest-dirs results/genome_digests \
   --output results/genome_presence_subset.tsv \
-  --selected-genome-id Genome_001 \
-  --selected-genome-id Genome_002 \
-  --exclude-genome-id Genome_contaminant
+  --selected-genome-ids "Genome_001;Genome_002" \
+  --exclude-genome-ids Genome_contaminant
+```
+
+For large ID lists, put one genome ID per line in a text file:
+
+```text
+Genome_001
+Genome_002
+Genome_003
+```
+
+Then pass the file to the matching include or exclude option with `@`:
+
+```bash
+metaumbra score \
+  --peptide-table results/observed_peptides.tsv \
+  --genome-digest-dirs results/genome_digests \
+  --output results/genome_presence_subset.tsv \
+  --selected-genome-ids @selected_genomes.txt \
+  --exclude-genome-ids @excluded_genomes.txt
 ```
 
 Add lineage annotations:
@@ -270,7 +287,7 @@ Add lineage annotations:
 ```bash
 metaumbra score \
   --peptide-table results/observed_peptides.tsv \
-  --genome-digest-dir results/genome_digests \
+  --genome-digest-dirs results/genome_digests \
   --output results/genome_presence.tsv \
   --lineage-table data/genome_lineage.tsv \
   --lineage-genome-id-col genome_id \
@@ -282,7 +299,7 @@ Use a matched-peptide cache for repeated scoring over the same observed peptides
 ```bash
 metaumbra score \
   --peptide-table results/observed_peptides.tsv \
-  --genome-digest-dir results/genome_digests \
+  --genome-digest-dirs results/genome_digests \
   --output results/genome_presence.tsv \
   --cache-path results/matched_peptides.pkl \
   --use-cache-if-exists
@@ -299,8 +316,8 @@ Important scoring options:
 | `--peptide-decoy-flag-col` | `Reverse` | Decoy flag column. Pass an empty string to disable. |
 | `--decoy-flag-value` | `+` | Value treated as a decoy marker. |
 | `--num-workers` | `max(1, cpu_count - 1)` | Worker process count for genome scanning. On Windows, use 60 or fewer workers because `ProcessPoolExecutor` has a platform worker limit. |
-| `--selected-genome-id` | none | Restrict analysis to listed genome IDs. Repeat for multiple IDs. |
-| `--exclude-genome-id` | none | Exclude listed genome IDs. Repeat for multiple IDs. |
+| `--selected-genome-ids` | none | Restrict analysis to listed genome IDs. Separate multiple IDs with commas/semicolons, or pass `@file` with one ID per line. |
+| `--exclude-genome-ids` | none | Exclude listed genome IDs. Separate multiple IDs with commas/semicolons, or pass `@file` with one ID per line. |
 | `--lineage-table` | none | Optional TSV table for adding a `Lineage` column to results. |
 | `--cache-path` | none | Explicit matched-peptide cache path. |
 | `--use-cache-if-exists` | off | Reuse an existing matched-peptide cache if available. |
@@ -443,7 +460,7 @@ When cache saving is enabled, MetaUmbra writes a pickle file containing matched 
 <output_directory>/matched_peptides.pkl
 ```
 
-Use `--use-cache-if-exists` for repeated analyses with the same observed peptide table and genome digest directories. The cache can still be combined with `--selected-genome-id` and `--exclude-genome-id`; filters are applied after loading the cache.
+Use `--use-cache-if-exists` for repeated analyses with the same observed peptide table and genome digest directories. The cache can still be combined with `--selected-genome-ids` and `--exclude-genome-ids`; filters are applied after loading the cache.
 
 ## Interpreting results
 
@@ -487,7 +504,7 @@ For repeated scoring over the same observed peptides and genome digest files:
 ```bash
 metaumbra score \
   --peptide-table results/observed_peptides.tsv \
-  --genome-digest-dir results/genome_digests \
+  --genome-digest-dirs results/genome_digests \
   --output results/genome_presence.tsv \
   --cache-path results/matched_peptides.pkl \
   --use-cache-if-exists
@@ -521,7 +538,7 @@ Your observed peptide table does not contain the default sequence column. Pass t
 ```bash
 metaumbra score \
   --peptide-table observed.tsv \
-  --genome-digest-dir genome_digests \
+  --genome-digest-dirs genome_digests \
   --output genome_presence.tsv \
   --peptide-seq-col "Stripped.Sequence"
 ```
@@ -544,7 +561,7 @@ On Windows, `ProcessPoolExecutor` cannot start very high numbers of worker proce
 
 ### `No valid genome folders found`
 
-At least one `--genome-digest-dir` path must exist and contain digest TSV files.
+At least one `--genome-digest-dirs` path must exist and contain digest TSV files. When passing multiple directories in one argument, separate them with commas or semicolons.
 
 ### `No genome peptide TSV files found`
 
@@ -552,10 +569,10 @@ The digest directory exists but contains no `.tsv` files. Run `metaumbra digest`
 
 ### `No genome peptide TSV files matched the Only Run Genome IDs list`
 
-Values passed with `--selected-genome-id` must match digest TSV filename stems exactly. For example, `Genome_001.tsv` is selected with:
+Values passed with `--selected-genome-ids` must match digest TSV filename stems exactly. For example, `Genome_001.tsv` is selected with:
 
 ```bash
---selected-genome-id Genome_001
+--selected-genome-ids Genome_001
 ```
 
 ### Parquet extraction says a column is missing
