@@ -1062,6 +1062,11 @@ class ScoringTab(QWidget):
         runtime_layout = QVBoxLayout(runtime_box)
         self.processes_spin = _create_process_spinbox()
         self.peptide_error_cutoff_edit = QLineEdit("0.05")
+        self.single_peptide_error_rate_upper_bound_edit = QLineEdit("0.3")
+        self.peptide_error_cutoff_edit.setToolTip("Filters input peptide rows by the selected error/FDR column.")
+        self.single_peptide_error_rate_upper_bound_edit.setToolTip(
+            "Alpha used by default unique evidence p-value bound: alpha^U."
+        )
         self.knockoff_mc_iterations_edit = QLineEdit("500")
         self.knockoff_stage2_mc_iterations_edit = QLineEdit("2000")
         self.knockoff_stage2_ranges_edit = QLineEdit("0.005-0.02, 0.02-0.08")
@@ -1081,11 +1086,19 @@ class ScoringTab(QWidget):
         runtime_grid = _create_compact_grid()
         _add_compact_field(runtime_grid, 0, 0, "Processes", self.processes_spin, 110)
         _add_compact_field(runtime_grid, 0, 1, "Peptide error cutoff", self.peptide_error_cutoff_edit, 110)
-        _add_compact_field(runtime_grid, 0, 2, "Random seed", self.knockoff_random_seed_edit, 110)
-        _add_compact_field(runtime_grid, 1, 0, "Knockoff MC", self.knockoff_mc_iterations_edit, 110)
-        _add_compact_field(runtime_grid, 1, 1, "Stage 2 MC", self.knockoff_stage2_mc_iterations_edit, 110)
-        _add_compact_field(runtime_grid, 1, 2, "Top genomes", self.knockoff_top_n_targets_spin, 110)
-        _add_compact_field(runtime_grid, 2, 0, "Export contrib top-N", self.export_peptide_contrib_topn_spin, 110)
+        _add_compact_field(
+            runtime_grid,
+            0,
+            2,
+            "Unique alpha upper bound",
+            self.single_peptide_error_rate_upper_bound_edit,
+            130,
+        )
+        _add_compact_field(runtime_grid, 1, 0, "Random seed", self.knockoff_random_seed_edit, 110)
+        _add_compact_field(runtime_grid, 1, 1, "Knockoff MC", self.knockoff_mc_iterations_edit, 110)
+        _add_compact_field(runtime_grid, 1, 2, "Stage 2 MC", self.knockoff_stage2_mc_iterations_edit, 110)
+        _add_compact_field(runtime_grid, 2, 0, "Top genomes", self.knockoff_top_n_targets_spin, 110)
+        _add_compact_field(runtime_grid, 2, 1, "Export contrib top-N", self.export_peptide_contrib_topn_spin, 110)
         runtime_layout.addLayout(runtime_grid)
         runtime_form = QFormLayout()
         runtime_form.addRow("Stage 2 p ranges", self.knockoff_stage2_ranges_edit)
@@ -1294,6 +1307,10 @@ class ScoringTab(QWidget):
             peptide_error_cutoff=_parse_required_float(
                 self.peptide_error_cutoff_edit.text(), "Peptide error cutoff"
             ),
+            single_peptide_error_rate_upper_bound=_parse_required_float(
+                self.single_peptide_error_rate_upper_bound_edit.text(),
+                "Unique alpha upper bound",
+            ),
             peptide_decoy_flag_col=self.peptide_decoy_flag_col_edit.text().strip(),
             decoy_flag_value=self.decoy_flag_value_edit.text().strip(),
             exclude_genome_ids=_parse_text_list(self.exclude_text.toPlainText()),
@@ -1357,6 +1374,9 @@ class ScoringTab(QWidget):
         self.peptide_score_col_edit.setEditText(config.peptide_score_col)
         self.peptide_error_col_edit.setText(config.peptide_error_col)
         self.peptide_error_cutoff_edit.setText(str(config.peptide_error_cutoff))
+        self.single_peptide_error_rate_upper_bound_edit.setText(
+            str(config.single_peptide_error_rate_upper_bound)
+        )
         self.peptide_decoy_flag_col_edit.setText(config.peptide_decoy_flag_col)
         self.decoy_flag_value_edit.setText(config.decoy_flag_value)
         self.processes_spin.setValue(config.num_workers if config.num_workers is not None else DEFAULT_PROCESS_COUNT)

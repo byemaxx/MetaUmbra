@@ -45,6 +45,7 @@ class ScoringConfig:
     peptide_score_col: str = "score"
     peptide_error_col: str = "Q.Value"
     peptide_error_cutoff: float = 0.05
+    single_peptide_error_rate_upper_bound: float = 0.3
     peptide_decoy_flag_col: str = "Reverse"
     decoy_flag_value: str = "+"
     exclude_genome_ids: list[str] = field(default_factory=list)
@@ -248,6 +249,7 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
             peptide_table_sep="\t",
             peptide_error_col=_none_if_blank(config.peptide_error_col),
             peptide_error_cutoff=float(config.peptide_error_cutoff),
+            single_peptide_error_rate_upper_bound=float(config.single_peptide_error_rate_upper_bound),
         )
 
         result_df = calc.analyze_genomes(

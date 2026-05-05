@@ -15,7 +15,7 @@
 #    - Build pools of shared peptide contributions (w*s) stratified by degeneracy (and optional length).
 #    - For each genome, sample from these pools according to that genome's shared-stratum counts to get
 #      an empirical null for weighted_evidence_shared, yielding p_shared_knock.
-#    - Unique evidence p-value upper bound (conservative): p_unique_upper = (peptide_error_cutoff) ** U.
+#    - Unique evidence p-value upper bound (conservative): p_unique_upper = (single_peptide_error_rate_upper_bound) ** U.
 #    - Combine with Fisher (2 p-values) => p_presence; BH => q_presence (per-genome existence q-value).
 #
 # Outputs:
@@ -218,7 +218,7 @@ class GenomePresenceScorer:
 
         # Core states
         self.peptide_score: Dict[str, float] = {}  # peptide -> normalized score in [0,1] (or 1.0)
-        self.peptide_error_cutoff: float = 0.05    # stored from read_peptide_file()
+        self.peptide_error_cutoff: float = 0.05    # input peptide error/FDR filtering threshold
         # Upper bound on per-peptide false match probability used for unique-evidence p-value bound.
         self.single_peptide_error_rate_upper_bound: float = 1.0
         self.peptide_table_dir: Optional[str] = None
@@ -349,6 +349,7 @@ class GenomePresenceScorer:
         peptide_table_sep: str = "\t",
         peptide_error_col: Optional[str] = None, # ["PEP", "FDR", "AUTO", None, "Q.Value", ...]
         peptide_error_cutoff: float = 0.05,
+        single_peptide_error_rate_upper_bound: float = 0.3,
     ) -> bool:
         """Read a peptide table and build peptide->score dictionary."""
         if peptide_table_path is None and peptide_table_df is None:
@@ -429,6 +430,9 @@ class GenomePresenceScorer:
         self.run_stats["peptide_score_col"] = peptide_score_col if peptide_score_col else None
         self.run_stats["peptide_error_col"] = peptide_error_col if peptide_error_col else None
         self.run_stats["peptide_error_cutoff"] = float(peptide_error_cutoff)
+        self.run_stats["single_peptide_error_rate_upper_bound_configured"] = float(
+            single_peptide_error_rate_upper_bound
+        )
         self.run_stats["peptide_decoy_flag_col"] = peptide_decoy_flag_col if peptide_decoy_flag_col else None
         self.run_stats["decoy_flag_value"] = decoy_flag_value
 
@@ -449,17 +453,15 @@ class GenomePresenceScorer:
             error_filter_applied = True
 
         # Interpret unique-evidence bound as an upper bound on single-peptide false match probability.
-        # Keep backward-compatible behavior: if peptide-level error filtering was not applied,
-        # still use peptide_error_cutoff as the assumed per-peptide upper bound.
-        if error_filter_applied:
-            self.single_peptide_error_rate_upper_bound = float(min(max(peptide_error_cutoff, 1e-12), 1.0))
-            self.run_stats["single_peptide_error_rate_upper_bound_source"] = "peptide_error_cutoff"
-        else:
-            self.single_peptide_error_rate_upper_bound = float(min(max(peptide_error_cutoff, 1e-12), 1.0))
-            self.run_stats["single_peptide_error_rate_upper_bound_source"] = "assumed_from_peptide_error_cutoff_without_filter"
+        # This is intentionally separate from peptide_error_cutoff, which only filters input peptide rows.
+        self.single_peptide_error_rate_upper_bound = float(
+            min(max(single_peptide_error_rate_upper_bound, 1e-12), 1.0)
+        )
+        self.run_stats["single_peptide_error_rate_upper_bound_source"] = "single_peptide_error_rate_upper_bound"
+        if not error_filter_applied:
             self.logger.warning(
                 "No peptide-level error filter was applied; assuming single_peptide_error_rate_upper_bound="
-                f"{self.single_peptide_error_rate_upper_bound:.4g} from peptide_error_cutoff."
+                f"{self.single_peptide_error_rate_upper_bound:.4g} from single_peptide_error_rate_upper_bound."
             )
         self.run_stats["single_peptide_error_rate_upper_bound"] = float(self.single_peptide_error_rate_upper_bound)
 

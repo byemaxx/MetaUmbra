@@ -216,7 +216,20 @@ def build_parser() -> argparse.ArgumentParser:
     _add_argument(score_optional, "--peptide-seq-col", default="Sequence", help="Peptide sequence column name.")
     _add_argument(score_optional, "--peptide-score-col", default="score", help="Peptide score column name.")
     _add_argument(score_optional, "--peptide-error-col", default="Q.Value", help="Peptide error or FDR column name.")
-    _add_argument(score_optional, "--peptide-error-cutoff", type=float, default=0.05, help="Peptide error cutoff.")
+    _add_argument(
+        score_optional,
+        "--peptide-error-cutoff",
+        type=float,
+        default=0.05,
+        help="Peptide error/FDR cutoff used only to filter input peptide rows.",
+    )
+    _add_argument(
+        score_optional,
+        "--single-peptide-error-rate-upper-bound",
+        type=float,
+        default=0.3,
+        help="Per-peptide false-match probability upper bound used for unique evidence p-value alpha^U.",
+    )
     _add_argument(
         score_optional,
         "--peptide-decoy-flag-col",
@@ -390,6 +403,7 @@ def _run_score(args: argparse.Namespace) -> int:
         peptide_score_col=args.peptide_score_col,
         peptide_error_col=args.peptide_error_col,
         peptide_error_cutoff=args.peptide_error_cutoff,
+        single_peptide_error_rate_upper_bound=args.single_peptide_error_rate_upper_bound,
         peptide_decoy_flag_col=args.peptide_decoy_flag_col,
         decoy_flag_value=args.decoy_flag_value,
         exclude_genome_ids=exclude_genome_ids,
