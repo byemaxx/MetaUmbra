@@ -284,7 +284,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--cache-path",
         default="",
         display_default="none",
-        help="Matched peptide cache file path. Leave unset to disable explicit cache output.",
+        help=(
+            "Matched peptide cache file path. When unset, writes '<stem>_artifacts/matched_peptides.pkl' "
+            "under the output directory (unless --no-export-temp)."
+        ),
     )
     _add_argument(
         score_optional,

@@ -301,7 +301,7 @@ metaumbra score \
   --peptide-table results/observed_peptides.tsv \
   --genome-digest-dirs results/genome_digests \
   --output results/genome_presence.tsv \
-  --cache-path results/matched_peptides.pkl \
+  --cache-path results/genome_presence_artifacts/matched_peptides.pkl \
   --use-cache-if-exists
 ```
 
@@ -457,7 +457,7 @@ Common artifacts:
 When cache saving is enabled, MetaUmbra writes a pickle file containing matched peptide sets and theoretical peptide counts. If `--cache-path` is not provided, the default cache is:
 
 ```text
-<output_directory>/matched_peptides.pkl
+<output_directory>/<output_stem>_artifacts/matched_peptides.pkl
 ```
 
 Use `--use-cache-if-exists` for repeated analyses with the same observed peptide table and genome digest directories. The cache can still be combined with `--selected-genome-ids` and `--exclude-genome-ids`; filters are applied after loading the cache.
@@ -506,7 +506,7 @@ metaumbra score \
   --peptide-table results/observed_peptides.tsv \
   --genome-digest-dirs results/genome_digests \
   --output results/genome_presence.tsv \
-  --cache-path results/matched_peptides.pkl \
+  --cache-path results/genome_presence_artifacts/matched_peptides.pkl \
   --use-cache-if-exists
 ```
 

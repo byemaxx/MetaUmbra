@@ -1323,6 +1323,10 @@ class GenomePresenceScorer:
             out_dir = os.path.dirname(output_tsv_path) or "."
             os.makedirs(out_dir, exist_ok=True)
 
+        stem = Path(output_tsv_path).stem
+        default_cache_dir = os.path.join(out_dir, f"{stem}_artifacts") if export_temp else out_dir
+        default_cache_pkl_path = os.path.join(default_cache_dir, "matched_peptides.pkl")
+
         if genome_lineage_table_path:
             if not genome_lineage_genome_id_col or not genome_lineage_lineage_col:
                 raise ValueError(
@@ -1348,11 +1352,16 @@ class GenomePresenceScorer:
         t_all0 = time.time()
         self.timing_stats = {}
 
-        # Normalize cache path (if provided)
+        # Normalize cache path (if provided); otherwise use the default.
         cache_pkl_path: Optional[str] = None
         if matched_peptides_cache_path:
             cache_path = str(matched_peptides_cache_path)
             cache_pkl_path = cache_path if cache_path.lower().endswith(".pkl") else f"{cache_path}.pkl"
+        else:
+            cache_pkl_path = default_cache_pkl_path
+
+        self.run_stats["matched_peptides_cache_path"] = str(cache_pkl_path) if cache_pkl_path else None
+        self.run_stats["matched_peptides_cache_is_default"] = bool(not matched_peptides_cache_path)
 
         # Prefer using existing matched-peptides cache if allowed and available.
         if use_cache_if_exists and all_matched_peptides is None and cache_pkl_path and os.path.exists(cache_pkl_path):
@@ -1513,11 +1522,8 @@ class GenomePresenceScorer:
                 )
 
             if save_matched_peptides_cache:
-                if cache_pkl_path:
-                    pkl_path = cache_pkl_path
-                else:
-                    pkl_path = os.path.join(out_dir, "matched_peptides.pkl")
-
+                pkl_path = cache_pkl_path or os.path.join(out_dir, "matched_peptides.pkl")
+                os.makedirs(os.path.dirname(pkl_path) or ".", exist_ok=True)
                 with open(pkl_path, "wb") as f:
                     pickle.dump(all_matched_peptides, f)
                 self.logger.info(f"Saved matched peptides cache: {pkl_path}")
@@ -1653,7 +1659,6 @@ class GenomePresenceScorer:
         # --- NEW: export extra artifacts for paper figures ---
         if export_temp:
             try:
-                stem = Path(output_tsv_path).stem
                 self._export_temp_artifacts(
                     out_dir=out_dir,
                     stem=stem,

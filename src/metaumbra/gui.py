@@ -1173,7 +1173,7 @@ class ScoringTab(QWidget):
         peptide_path = Path(peptide_table_path.strip())
         if not peptide_path.name:
             return ""
-        return str(peptide_path.with_name(f"{peptide_path.stem}_genome_presence.tsv"))
+        return str(peptide_path.with_name(f"{peptide_path.stem}_MetaUmbra_Genome_Presence.tsv"))
 
     def _update_auto_output_tsv_from_peptide_table(self) -> None:
         peptide_table_path = self.peptide_table_edit.text().strip()
@@ -1234,8 +1234,6 @@ class ScoringTab(QWidget):
         if path:
             self.peptide_table_edit.setText(path)
             self._last_browse_dir = _remember_dialog_directory(path)
-            if not self.cache_path_edit.text().strip():
-                self.cache_path_edit.setText(str(Path(path).with_name("matched_peptides.pkl")))
 
     def _browse_output_tsv(self) -> None:
         current_value = self.output_tsv_edit.text().strip()
@@ -1249,6 +1247,10 @@ class ScoringTab(QWidget):
         if path:
             self.output_tsv_edit.setText(path)
             self._last_browse_dir = _remember_dialog_directory(path)
+            if not self.cache_path_edit.text().strip():
+                out_path = Path(path)
+                suggested = out_path.with_name(f"{out_path.stem}_artifacts") / "matched_peptides.pkl"
+                self.cache_path_edit.setText(str(suggested))
 
     def _browse_genome_lineage_table(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
