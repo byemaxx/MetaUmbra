@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+
 SPEC_DIR = Path(SPECPATH).resolve()
 ROOT_DIR = SPEC_DIR.parent
 ENTRY_SCRIPT = SPEC_DIR / "pyinstaller_gui_entry.py"
@@ -10,6 +12,16 @@ ICON_PATH = ROOT_DIR / "src" / "metaumbra" / "assets" / "metaumbra_icon.png"
 ASSETS_DIR = ROOT_DIR / "src" / "metaumbra" / "assets"
 
 datas = [(str(ASSETS_DIR / "*.png"), "metaumbra/assets")]
+
+# `pyarrow` is imported at runtime (inside workflow functions), so PyInstaller's
+# static analysis may miss it unless we declare it explicitly.
+hiddenimports = ["pyarrow", "pyarrow.parquet"]
+
+# Bundle Arrow/Parquet native libraries required on Windows.
+binaries = collect_dynamic_libs("pyarrow")
+
+# Include non-code package data that some pyarrow builds rely on.
+datas += collect_data_files("pyarrow", include_py_files=False)
 excludes = [
     "IPython",
     "ipykernel",
@@ -25,9 +37,9 @@ excludes = [
 a = Analysis(
     [str(ENTRY_SCRIPT)],
     pathex=[str(SRC_DIR)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
-    hiddenimports=[],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
