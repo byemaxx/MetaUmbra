@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
 SPEC_DIR = Path(SPECPATH).resolve()
 ROOT_DIR = SPEC_DIR.parent
@@ -14,8 +14,20 @@ ASSETS_DIR = ROOT_DIR / "src" / "metaumbra" / "assets"
 datas = [(str(ASSETS_DIR / "*.png"), "metaumbra/assets")]
 
 # `pyarrow` is imported at runtime (inside workflow functions), so PyInstaller's
-# static analysis may miss it unless we declare it explicitly.
-hiddenimports = ["pyarrow", "pyarrow.parquet"]
+# static analysis may miss parts of it unless we declare them explicitly.
+def _pyarrow_submodule_filter(name: str) -> bool:
+    return not (
+        name.startswith("pyarrow.tests")
+        or name.startswith("pyarrow.benchmark")
+        or name.startswith("pyarrow.conftest")
+    )
+
+
+hiddenimports = collect_submodules(
+    "pyarrow",
+    filter=_pyarrow_submodule_filter,
+    on_error="ignore",
+)
 
 # Bundle Arrow/Parquet native libraries required on Windows.
 binaries = collect_dynamic_libs("pyarrow")
