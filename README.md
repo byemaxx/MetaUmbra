@@ -97,7 +97,7 @@ Key output columns include:
 
 If you use MetaUmbra, please cite:
 
-> Wu Q, Ning Z, Zhang A, Cheng K, Figeys D. MetaUmbra: Statistically Controlled Genome-Level Presence Inference from Metaproteomic Peptides.[J]. bioRxiv, 2026.
+> Wu Q, Ning Z, Zhang A, Cheng K, Figeys D. MetaUmbra: Statistically Controlled Genome-Level Presence Inference from Metaproteomic Peptides.[J]. [bioRxiv, 2026.04.29.721689.](https://doi.org/10.64898/2026.04.29.721689)
 
 A formal citation will be added after publication.
 
