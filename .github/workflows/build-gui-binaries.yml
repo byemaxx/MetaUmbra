@@ -34,10 +34,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: "3.14"
           cache: pip
@@ -50,7 +50,8 @@ jobs:
       - name: Build GUI executable
         run: pyinstaller --clean --noconfirm scripts/metaumbra-gui.spec
 
-      - name: Package GUI executable
+      - name: Prepare GUI release asset
+        id: prep_asset
         shell: pwsh
         run: |
           $version = (python src/metaumbra/__version__.py).Trim()
@@ -58,23 +59,24 @@ jobs:
           $arch = "${{ runner.arch }}".ToLowerInvariant()
 
           if ("${{ runner.os }}" -eq "Windows") {
-            $binaryName = "metaumbra-gui.exe"
-            $archiveName = "metaumbra-gui-v$version-$platform-$arch.zip"
-            Compress-Archive -LiteralPath "dist\$binaryName" -DestinationPath "dist\$archiveName" -Force
+            $sourcePath = Join-Path "dist" "metaumbra-gui.exe"
+            $assetName = "metaumbra-gui-v$version-$platform-$arch.exe"
           }
           else {
-            $binaryName = "metaumbra-gui"
-            $archiveName = "metaumbra-gui-v$version-$platform-$arch.tar.gz"
-            tar -czf "dist/$archiveName" -C dist $binaryName
+            $sourcePath = Join-Path "dist" "metaumbra-gui"
+            $assetName = "metaumbra-gui-v$version-$platform-$arch"
           }
 
-          "ARCHIVE_NAME=$archiveName" >> $env:GITHUB_ENV
+          $destPath = Join-Path "dist" $assetName
+          Copy-Item -LiteralPath $sourcePath -Destination $destPath -Force
 
-      - name: Upload packaged GUI artifact
+          "asset_name=$assetName" >> $env:GITHUB_OUTPUT
+
+      - name: Upload GUI artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ARCHIVE_NAME }}
-          path: dist/${{ env.ARCHIVE_NAME }}
+          name: ${{ steps.prep_asset.outputs.asset_name }}
+          path: dist/${{ steps.prep_asset.outputs.asset_name }}
           if-no-files-found: error
 
   release:
@@ -93,7 +95,7 @@ jobs:
             exit 1
           fi
 
-      - name: Download packaged GUI artifacts
+      - name: Download GUI artifacts
         uses: actions/download-artifact@v4
         with:
           path: release-assets
