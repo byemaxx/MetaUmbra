@@ -23,7 +23,11 @@ def _pyarrow_submodule_filter(name: str) -> bool:
     )
 
 
-hiddenimports = collect_submodules(
+hiddenimports = [
+    "metaumbra.digest",
+    "metaumbra.scoring",
+]
+hiddenimports += collect_submodules(
     "pyarrow",
     filter=_pyarrow_submodule_filter,
     on_error="ignore",
