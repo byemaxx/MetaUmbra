@@ -6,6 +6,7 @@ import multiprocessing as mp
 import os
 import sys
 import traceback
+import warnings
 from dataclasses import asdict
 from pathlib import Path
 
@@ -62,8 +63,85 @@ try:
         QVBoxLayout,
         QWidget,
     )
-except ImportError as exc:
-    raise SystemExit("PySide6 is required to run the GUI. Install it with: pip install PySide6") from exc
+    QT_BINDING = "PySide6"
+except ImportError:
+    try:
+        from PyQt5.QtCore import QEvent, QObject, Qt, QThread, pyqtSignal as Signal, pyqtSlot as Slot
+        from PyQt5.QtGui import QIcon
+        from PyQt5.QtWidgets import (
+            QApplication,
+            QCheckBox,
+            QComboBox,
+            QDialog,
+            QDialogButtonBox,
+            QFileDialog,
+            QFormLayout,
+            QGridLayout,
+            QGroupBox,
+            QHBoxLayout,
+            QLabel,
+            QLineEdit,
+            QListWidget,
+            QMainWindow,
+            QMessageBox,
+            QPlainTextEdit,
+            QProgressBar,
+            QPushButton,
+            QScrollArea,
+            QSizePolicy,
+            QSplitter,
+            QSpinBox,
+            QTabWidget,
+            QTextEdit,
+            QVBoxLayout,
+            QWidget,
+        )
+        QT_BINDING = "PyQt5"
+    except ImportError as exc:
+        raise SystemExit(
+            "PySide6 or PyQt5 is required to run the GUI. Install one with: "
+            "pip install PySide6 or pip install PyQt5"
+        ) from exc
+
+
+def _qt_value(owner, scoped_name: str, member_name: str):
+    namespace = getattr(owner, scoped_name, owner)
+    return getattr(namespace, member_name)
+
+
+def _exec_qt_object(obj) -> int:
+    exec_method = getattr(obj, "exec", None) or getattr(obj, "exec_", None)
+    return exec_method()
+
+
+QT_ALIGN_LEFT = _qt_value(Qt, "AlignmentFlag", "AlignLeft")
+QT_ALIGN_TOP = _qt_value(Qt, "AlignmentFlag", "AlignTop")
+QT_ALIGN_VCENTER = _qt_value(Qt, "AlignmentFlag", "AlignVCenter")
+QT_ELIDE_MIDDLE = _qt_value(Qt, "TextElideMode", "ElideMiddle")
+QT_RICH_TEXT = _qt_value(Qt, "TextFormat", "RichText")
+QT_TEXT_BROWSER_INTERACTION = _qt_value(Qt, "TextInteractionFlag", "TextBrowserInteraction")
+QT_TOP_RIGHT_CORNER = _qt_value(Qt, "Corner", "TopRightCorner")
+QT_VERTICAL = _qt_value(Qt, "Orientation", "Vertical")
+QEVENT_WHEEL = _qt_value(QEvent, "Type", "Wheel")
+QSIZE_IGNORED = _qt_value(QSizePolicy, "Policy", "Ignored")
+QSIZE_PREFERRED = _qt_value(QSizePolicy, "Policy", "Preferred")
+QSCROLL_NO_FRAME = _qt_value(QScrollArea, "Shape", "NoFrame")
+QFORM_LABEL_ROLE = _qt_value(QFormLayout, "ItemRole", "LabelRole")
+QDIALOG_ACCEPTED = _qt_value(QDialog, "DialogCode", "Accepted")
+QDIALOG_BUTTON_OK = _qt_value(QDialogButtonBox, "StandardButton", "Ok")
+QDIALOG_BUTTON_CANCEL = _qt_value(QDialogButtonBox, "StandardButton", "Cancel")
+QMSG_OK = _qt_value(QMessageBox, "StandardButton", "Ok")
+QMSG_YES = _qt_value(QMessageBox, "StandardButton", "Yes")
+QMSG_NO = _qt_value(QMessageBox, "StandardButton", "No")
+
+if QT_BINDING == "PyQt5":
+    # PyQt5/sip emits this while creating Python subclasses of Qt classes.
+    # It is internal to the binding, not a deprecated API call in this module.
+    warnings.filterwarnings(
+        "ignore",
+        message=r"sipPyTypeDict\(\) is deprecated, the extension module should use sipPyTypeDictRef\(\) instead",
+        category=DeprecationWarning,
+    )
 
 
 RPG_ENZYMES: list[tuple[str, str]] = [
@@ -178,7 +256,7 @@ class ElidedLabel(QLabel):
     def __init__(self, text: str = ""):
         super().__init__("")
         self._full_text = ""
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setSizePolicy(QSIZE_IGNORED, QSIZE_PREFERRED)
         self.setMinimumWidth(0)
         self.setText(text)
 
@@ -198,7 +276,7 @@ class ElidedLabel(QLabel):
         width = max(0, self.contentsRect().width())
         elided = self.fontMetrics().elidedText(
             self._full_text,
-            Qt.TextElideMode.ElideMiddle,
+            QT_ELIDE_MIDDLE,
             width,
         )
         super().setText(elided)
@@ -300,7 +378,7 @@ class DirectoryDropListWidget(QListWidget):
 
 class WheelChangeGuard(QObject):
     def eventFilter(self, watched, event) -> bool:
-        if event.type() != QEvent.Type.Wheel:
+        if event.type() != QEVENT_WHEEL:
             return super().eventFilter(watched, event)
         if isinstance(watched, (QComboBox, QSpinBox)):
             event.ignore()
@@ -412,14 +490,14 @@ def _make_wrapped_label(text: str) -> QLabel:
 def _create_scroll_form_host() -> tuple[QScrollArea, QVBoxLayout]:
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
-    scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+    scroll.setFrameShape(QSCROLL_NO_FRAME)
 
     content = QWidget()
     content.setObjectName("FormCanvas")
     layout = QVBoxLayout(content)
     layout.setContentsMargins(20, 14, 20, 16)
     layout.setSpacing(14)
-    layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+    layout.setAlignment(QT_ALIGN_TOP)
 
     scroll.setWidget(content)
     return scroll, layout
@@ -429,13 +507,13 @@ def _polish_form_layout(form: QFormLayout) -> None:
     form.setHorizontalSpacing(14)
     form.setVerticalSpacing(10)
     for row in range(form.rowCount()):
-        item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+        item = form.itemAt(row, QFORM_LABEL_ROLE)
         if item is None:
             continue
         widget = item.widget()
         if isinstance(widget, QLabel):
             widget.setMinimumWidth(FORM_LABEL_MIN_WIDTH)
-            widget.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            widget.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_TOP)
 
 
 def _set_compact_control_width(widget: QWidget, width: int = 150) -> None:
@@ -459,7 +537,7 @@ def _add_compact_field(
     widget_width: int = 150,
 ) -> None:
     label = QLabel(label_text)
-    label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
     _set_compact_control_width(widget, widget_width)
     grid.addWidget(label, row, column * 2)
     grid.addWidget(widget, row, column * 2 + 1)
@@ -874,10 +952,8 @@ class ParquetExtractionDialog(QDialog):
         layout.addStretch(1)
         outer_layout.addWidget(scroll, 1)
 
-        self.button_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        self.button_box.button(QDialogButtonBox.StandardButton.Ok).setText("Extract")
+        self.button_box = QDialogButtonBox(QDIALOG_BUTTON_OK | QDIALOG_BUTTON_CANCEL)
+        self.button_box.button(QDIALOG_BUTTON_OK).setText("Extract")
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
         outer_layout.addWidget(self.button_box)
@@ -1499,7 +1575,7 @@ class MainWindow(QMainWindow):
         button_row.addWidget(self.about_button)
         root_layout.addWidget(top_bar)
 
-        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter = QSplitter(QT_VERTICAL)
         self.tabs = QTabWidget()
         self.tabs.setObjectName("PrimaryTabs")
         self.digest_tab = DigestTab()
@@ -1517,7 +1593,7 @@ class MainWindow(QMainWindow):
         self.run_current_button.setMinimumHeight(38)
         self.run_current_button.setMinimumWidth(PRIMARY_BUTTON_MIN_WIDTH)
         tab_actions_layout.addWidget(self.run_current_button)
-        self.tabs.setCornerWidget(self.tab_actions, Qt.Corner.TopRightCorner)
+        self.tabs.setCornerWidget(self.tab_actions, QT_TOP_RIGHT_CORNER)
 
         log_panel = QGroupBox("Run Log")
         log_panel.setProperty("elevated", True)
@@ -1550,8 +1626,8 @@ class MainWindow(QMainWindow):
     def _show_about_dialog(self) -> None:
         about_box = QMessageBox(self)
         about_box.setWindowTitle(f"About MetaUmbra v{APP_VERSION}")
-        about_box.setTextFormat(Qt.RichText)
-        about_box.setStandardButtons(QMessageBox.Ok)
+        about_box.setTextFormat(QT_RICH_TEXT)
+        about_box.setStandardButtons(QMSG_OK)
         about_box.setText(
             (
                 f"<h2>MetaUmbra GUI v{APP_VERSION}</h2>"
@@ -1566,8 +1642,8 @@ class MainWindow(QMainWindow):
         about_label = about_box.findChild(QLabel, "qt_msgbox_label")
         if about_label is not None:
             about_label.setOpenExternalLinks(True)
-            about_label.setTextInteractionFlags(Qt.TextBrowserInteraction)
-        about_box.exec()
+            about_label.setTextInteractionFlags(QT_TEXT_BROWSER_INTERACTION)
+        _exec_qt_object(about_box)
 
     def _apply_styles(self) -> None:
         self.setStyleSheet(
@@ -1873,7 +1949,7 @@ class MainWindow(QMainWindow):
             return
 
         dialog = ParquetExtractionDialog(self, initial_dir=self.scoring_tab._last_browse_dir)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        if _exec_qt_object(dialog) != QDIALOG_ACCEPTED:
             return
 
         config = dialog.build_config(require_required_fields=True)
@@ -2016,10 +2092,10 @@ class MainWindow(QMainWindow):
             self,
             "Terminate Task",
             "Terminate the current task now?\n\nPartial output files may remain and should be checked before reuse.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+            QMSG_YES | QMSG_NO,
+            QMSG_NO,
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        if reply != QMSG_YES:
             return
 
         self._stop_requested = True
@@ -2118,10 +2194,10 @@ class MainWindow(QMainWindow):
             self,
             "Task Running",
             "A task is still running. Close anyway?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+            QMSG_YES | QMSG_NO,
+            QMSG_NO,
         )
-        if reply == QMessageBox.StandardButton.Yes:
+        if reply == QMSG_YES:
             event.accept()
         else:
             event.ignore()
@@ -2136,7 +2212,7 @@ def main() -> None:
     window = MainWindow()
     window._wheel_guard = wheel_guard
     window.show()
-    app.exec()
+    _exec_qt_object(app)
 
 
 if __name__ == "__main__":

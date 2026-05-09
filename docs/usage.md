@@ -32,6 +32,7 @@ Minimal and modular installations are also available:
 ```bash
 pip install metaumbra              # command-line tools only
 pip install "metaumbra[gui]"      # command-line tools plus GUI support
+pip install "metaumbra[gui-pyqt5]" # command-line tools plus PyQt5 GUI support
 pip install "metaumbra[parquet]"  # command-line tools plus parquet extraction support
 ```
 

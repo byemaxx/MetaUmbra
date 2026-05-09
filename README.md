@@ -23,11 +23,14 @@ MetaUmbra performs genome-level presence inference from metaproteomic peptide li
 ## Installation
 
 MetaUmbra requires Python 3.10 or newer.
+Installation is available via pip from [PyPI](https://pypi.org/project/metaumbra/).
 
 ```bash
 # Install with all features (GUI, parquet support)
 pip install metaumbra[all]
 ```
+The default GUI extra uses PySide6. To run the GUI with PyQt5 instead, install `metaumbra[gui-pyqt5]`.
+
 or
 ```bash
 # Install with core features only
