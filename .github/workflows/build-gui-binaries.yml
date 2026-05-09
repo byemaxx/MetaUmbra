@@ -55,6 +55,17 @@ jobs:
       - name: Build GUI executable
         run: pyinstaller --clean --noconfirm scripts/metaumbra-gui.spec
 
+      - name: Smoke test GUI executable imports
+        shell: pwsh
+        run: |
+          $env:METAUMBRA_GUI_SMOKE_IMPORTS = "1"
+          if ("${{ runner.os }}" -eq "Windows") {
+            & ".\dist\metaumbra-gui.exe"
+          }
+          else {
+            & "./dist/metaumbra-gui"
+          }
+
       - name: Prepare GUI release asset
         id: prep_asset
         shell: pwsh

@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
@@ -23,10 +24,56 @@ def _pyarrow_submodule_filter(name: str) -> bool:
     )
 
 
+def _package_submodule_filter(name: str) -> bool:
+    return not (
+        ".tests" in name
+        or ".testing" in name
+        or ".bench" in name
+        or ".benchmarks" in name
+        or name.endswith(".tests")
+        or name.endswith(".testing")
+    )
+
+
+def _collect_conda_runtime_dlls() -> list[tuple[str, str]]:
+    conda_bin = Path(sys.prefix) / "Library" / "bin"
+    if not conda_bin.is_dir():
+        return []
+
+    dll_names = {
+        "ffi.dll",
+        "ffi-7.dll",
+        "ffi-8.dll",
+        "libbz2.dll",
+        "libcrypto-3-x64.dll",
+        "libexpat.dll",
+        "liblzma.dll",
+        "libmpdec-4.dll",
+        "libssl-3-x64.dll",
+        "sqlite3.dll",
+        "zstd.dll",
+    }
+    return [
+        (str(conda_bin / name), ".")
+        for name in sorted(dll_names)
+        if (conda_bin / name).is_file()
+    ]
+
+
 hiddenimports = [
     "metaumbra.digest",
     "metaumbra.scoring",
 ]
+hiddenimports += collect_submodules(
+    "pandas",
+    filter=_package_submodule_filter,
+    on_error="ignore",
+)
+hiddenimports += collect_submodules(
+    "rpg",
+    filter=_package_submodule_filter,
+    on_error="ignore",
+)
 hiddenimports += collect_submodules(
     "pyarrow",
     filter=_pyarrow_submodule_filter,
@@ -35,6 +82,7 @@ hiddenimports += collect_submodules(
 
 # Bundle Arrow/Parquet native libraries required on Windows.
 binaries = collect_dynamic_libs("pyarrow")
+binaries += _collect_conda_runtime_dlls()
 
 # Include non-code package data that some pyarrow builds rely on.
 datas += collect_data_files("pyarrow", include_py_files=False)
@@ -44,7 +92,6 @@ excludes = [
     "jupyter_client",
     "jupyter_core",
     "matplotlib",
-    "pandas.plotting",
     "tkinter",
     "_tkinter",
 ]
