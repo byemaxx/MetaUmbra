@@ -96,6 +96,7 @@ excludes = [
     "jupyter_client",
     "jupyter_core",
     "matplotlib",
+    "PyQt5",
     "tkinter",
     "_tkinter",
 ]
