@@ -1630,17 +1630,32 @@ class MainWindow(QMainWindow):
         about_box.setStandardButtons(QMSG_OK)
         about_box.setText(
             (
-                f"<h2>MetaUmbra GUI v{APP_VERSION}</h2>"
-                "<p>MetaUmbra infers genome and taxa presence from observed "
-                "metaproteomics peptide lists.</p>"
-                "<p>The GUI provides workflows for in-silico FASTA digestion, "
-                "parquet peptide-table import, and genome presence scoring with "
-                "a peptide-space knockoff null model.</p>"
-                '<p><a href="https://github.com/byemaxx/MetaUmbra">GitHub Repository</a></p>'
+                f'<div style="min-width: 520px;">'
+                f'<h2 style="margin-bottom: 4px;">MetaUmbra GUI v{APP_VERSION}</h2>'
+                '<p style="margin-top: 0; color: #52606d;">'
+                "Statistically controlled genome-level presence inference from "
+                "metaproteomic peptides.</p>"
+                "<hr>"
+                "<p><b>Workflows</b></p>"
+                "<p>In-silico FASTA digestion, DIA-NN parquet peptide-table import, "
+                "and genome presence scoring with a peptide-space knockoff null model.</p>"
+                "<p><b>Publication</b></p>"
+                "<p>Wu Q, Ning Z, Zhang A, et al.<br>"
+                '<a href="https://www.biorxiv.org/content/10.64898/2026.04.29.721689">'
+                "MetaUmbra: Statistically Controlled Genome-Level Presence Inference "
+                "from Metaproteomic Peptides</a><br>"
+                "bioRxiv, 2026: 2026.04.29.721689.</p>"
+                "<p><b>Links</b></p>"
+                '<a href="https://github.com/byemaxx/MetaUmbra">GitHub Repository</a></p>'
+                '<p><a href="https://github.com/byemaxx/MetaUmbra/blob/main/docs/usage.md">'
+                "Open Document</a><br>"
+                "</div>"
             )
         )
         about_label = about_box.findChild(QLabel, "qt_msgbox_label")
         if about_label is not None:
+            about_label.setMinimumWidth(520)
+            about_label.setWordWrap(True)
             about_label.setOpenExternalLinks(True)
             about_label.setTextInteractionFlags(QT_TEXT_BROWSER_INTERACTION)
         _exec_qt_object(about_box)
@@ -1689,8 +1704,10 @@ class MainWindow(QMainWindow):
                 color: #52606d;
                 border: 1px solid #d6dce3;
                 padding: 9px 16px;
+                min-width: 220px;
                 margin-right: 4px;
                 margin-top: 2px;
+                font-weight: 600;
                 border-top-left-radius: 3px;
                 border-top-right-radius: 3px;
                 border-bottom-left-radius: 0px;
@@ -1699,7 +1716,6 @@ class MainWindow(QMainWindow):
             QTabBar::tab:selected {
                 background: #ffffff;
                 color: #1f2933;
-                font-weight: 600;
                 border-color: #c8d0da;
                 border-bottom-color: #ffffff;
             }
