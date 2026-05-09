@@ -63,6 +63,10 @@ def _collect_conda_runtime_dlls() -> list[tuple[str, str]]:
 hiddenimports = [
     "metaumbra.digest",
     "metaumbra.scoring",
+    "PySide6.QtCore",
+    "PySide6.QtGui",
+    "PySide6.QtWidgets",
+    "shiboken6",
 ]
 hiddenimports += collect_submodules(
     "pandas",
