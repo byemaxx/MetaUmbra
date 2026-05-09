@@ -8,12 +8,17 @@ on:
         required: false
         default: false
         type: boolean
+      prerelease:
+        description: Mark the GitHub release as a prerelease (only used when publish_release is enabled)
+        required: false
+        default: false
+        type: boolean
       release_tag:
-        description: Release tag to create or update when publish_release is enabled
+        description: Optional release tag override (defaults to <package version>)
         required: false
         type: string
       release_name:
-        description: Optional release name override
+        description: Optional release name override (defaults to the resolved tag)
         required: false
         type: string
 
@@ -87,13 +92,35 @@ jobs:
       contents: write
 
     steps:
-      - name: Validate release inputs
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Resolve release tag and name
+        id: resolve_release
         shell: bash
         run: |
-          if [ -z "${{ inputs.release_tag }}" ]; then
-            echo "release_tag is required when publish_release is true." >&2
+          set -euo pipefail
+
+          version="$(python src/metaumbra/__version__.py | tr -d '\r\n')"
+          if [ -z "${version}" ]; then
+            echo "Failed to read package version from src/metaumbra/__version__.py" >&2
             exit 1
           fi
+
+          if [ -n "${{ inputs.release_tag }}" ]; then
+            tag="${{ inputs.release_tag }}"
+          else
+            tag="${version}"
+          fi
+
+          if [ -n "${{ inputs.release_name }}" ]; then
+            name="${{ inputs.release_name }}"
+          else
+            name="${tag}"
+          fi
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
 
       - name: Download GUI artifacts
         uses: actions/download-artifact@v4
@@ -104,9 +131,10 @@ jobs:
       - name: Create or update GitHub release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ inputs.release_tag }}
-          name: ${{ inputs.release_name != '' && inputs.release_name || inputs.release_tag }}
+          tag_name: ${{ steps.resolve_release.outputs.tag }}
+          name: ${{ steps.resolve_release.outputs.name }}
           target_commitish: ${{ github.sha }}
           generate_release_notes: true
+          prerelease: ${{ inputs.prerelease }}
           files: |
             release-assets/*
