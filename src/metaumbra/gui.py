@@ -64,7 +64,7 @@ try:
         QWidget,
     )
     QT_BINDING = "PySide6"
-except ImportError:
+except ImportError as pyside_exc:
     try:
         from PyQt5.QtCore import QEvent, QObject, Qt, QThread, pyqtSignal as Signal, pyqtSlot as Slot
         from PyQt5.QtGui import QIcon
@@ -97,11 +97,13 @@ except ImportError:
             QWidget,
         )
         QT_BINDING = "PyQt5"
-    except ImportError as exc:
+    except ImportError as pyqt_exc:
         raise SystemExit(
             "PySide6 or PyQt5 is required to run the GUI. Install one with: "
-            "pip install PySide6 or pip install PyQt5"
-        ) from exc
+            "pip install PySide6 or pip install PyQt5\n"
+            f"PySide6 import error: {pyside_exc}\n"
+            f"PyQt5 import error: {pyqt_exc}"
+        ) from pyqt_exc
 
 
 def _qt_value(owner, scoped_name: str, member_name: str):

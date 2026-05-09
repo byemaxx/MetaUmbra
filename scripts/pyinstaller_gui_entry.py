@@ -3,8 +3,6 @@ from __future__ import annotations
 import multiprocessing as mp
 import os
 
-from metaumbra.gui import main
-
 
 def _run_smoke_imports() -> None:
     import bz2
@@ -14,6 +12,9 @@ def _run_smoke_imports() -> None:
     import metaumbra.digest
     import metaumbra.scoring
     import pandas.plotting
+    import PySide6.QtCore
+    import PySide6.QtGui
+    import PySide6.QtWidgets
     import pyarrow.parquet
     import sqlite3
     import ssl
@@ -24,4 +25,6 @@ if __name__ == "__main__":
     if os.environ.get("METAUMBRA_GUI_SMOKE_IMPORTS") == "1":
         _run_smoke_imports()
         raise SystemExit(0)
+    from metaumbra.gui import main
+
     main()
