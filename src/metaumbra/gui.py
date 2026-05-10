@@ -933,7 +933,7 @@ class ParquetExtractionDialog(QDialog):
         self.more_options = CollapsibleOptions()
         options_layout = QVBoxLayout(self.more_options.body)
         self.input_columns_edit = QLineEdit("Run, Stripped.Sequence, Evidence, Q.Value")
-        self.output_columns_edit = QLineEdit("Run, Sequence, score, Q.Value")
+        self.output_columns_edit = QLineEdit("Run, Sequence, Evidence, Q.Value")
         self.batch_size_edit = QLineEdit("65536")
         self.force_checkbox = QCheckBox("Overwrite output TSV if it already exists")
         batch_grid = _create_compact_grid()
@@ -947,7 +947,7 @@ class ParquetExtractionDialog(QDialog):
         options_layout.addLayout(options_form)
         options_layout.addWidget(
             _make_wrapped_label(
-                "Default mapping converts DIA-NN Stripped.Sequence to MetaUmbra Sequence and Evidence to score."
+                "Default mapping converts DIA-NN Stripped.Sequence to MetaUmbra Sequence."
             )
         )
         layout.addWidget(self.more_options)
@@ -1095,7 +1095,7 @@ class ScoringTab(QWidget):
         mapping_box.setProperty("elevated", True)
         mapping_layout = QVBoxLayout(mapping_box)
         self.peptide_seq_col_edit = _create_editable_combo("Sequence", "Choose or type the peptide sequence column")
-        self.peptide_score_col_edit = _create_editable_combo("score", "Choose or type the peptide score column")
+        self.peptide_score_col_edit = _create_editable_combo("Evidence", "Choose or type the peptide score column")
         mapping_grid = _create_compact_grid()
         _add_compact_field(mapping_grid, 0, 0, "Sequence column", self.peptide_seq_col_edit, 240)
         _add_compact_field(mapping_grid, 0, 1, "Score column", self.peptide_score_col_edit, 180)
@@ -1275,10 +1275,13 @@ class ScoringTab(QWidget):
         columns = _read_table_columns(self.peptide_table_edit.text())
         if not columns:
             _clear_editable_combo_items(self.peptide_seq_col_edit, "Sequence")
-            _clear_editable_combo_items(self.peptide_score_col_edit, "score")
+            _clear_editable_combo_items(self.peptide_score_col_edit, "Evidence")
             return
         _set_editable_combo_items(self.peptide_seq_col_edit, columns, preferred_text="Sequence")
-        preferred_score = "score" if "score" in columns else "Score"
+        preferred_score = next(
+            (candidate for candidate in ("Evidence", "score", "Score") if candidate in columns),
+            "Evidence",
+        )
         _set_editable_combo_items(self.peptide_score_col_edit, columns, preferred_text=preferred_score)
 
     def _update_genome_lineage_column_options(self) -> None:

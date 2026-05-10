@@ -343,7 +343,7 @@ class GenomePresenceScorer:
         peptide_table_path: Optional[str] = None,
         peptide_table_df: Optional[pd.DataFrame] = None,
         peptide_seq_col: str = "Base Sequence",
-        peptide_score_col: Optional[str] = "Score",
+        peptide_score_col: Optional[str] = "Evidence",
         peptide_decoy_flag_col: Optional[str] = "Target/Decoy",
         decoy_flag_value: str = "decoy",
         peptide_table_sep: str = "\t",
@@ -388,6 +388,7 @@ class GenomePresenceScorer:
             if peptide_score_col and peptide_score_col in available_columns:
                 cols.append(peptide_score_col)
                 dtype[peptide_score_col] = "float32"
+                self.logger.info(f"Using peptide score column: '{peptide_score_col}'.")
             else:
                 self.logger.warning(f"Score column '{peptide_score_col}' not found; setting all scores=1.")
                 peptide_score_col = None

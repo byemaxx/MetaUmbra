@@ -35,7 +35,7 @@ def _print_result(payload: dict[str, Any]) -> None:
 
 
 DEFAULT_PARQUET_INPUT_COLUMNS = ["Run", "Stripped.Sequence", "Evidence", "Q.Value"]
-DEFAULT_PARQUET_OUTPUT_COLUMNS = ["Run", "Sequence", "score", "Q.Value"]
+DEFAULT_PARQUET_OUTPUT_COLUMNS = ["Run", "Sequence", "Evidence", "Q.Value"]
 LIST_VALUE_SEPARATOR_RE = re.compile(r"[,;，；]")
 
 
@@ -214,7 +214,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_argument(score_required, "--output", required=True, help="Output TSV path.")
     _add_argument(score_optional, "--peptide-seq-col", default="Sequence", help="Peptide sequence column name.")
-    _add_argument(score_optional, "--peptide-score-col", default="score", help="Peptide score column name.")
+    _add_argument(score_optional, "--peptide-score-col", default="Evidence", help="Peptide score column name.")
     _add_argument(score_optional, "--peptide-error-col", default="Q.Value", help="Peptide error or FDR column name.")
     _add_argument(
         score_optional,

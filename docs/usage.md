@@ -118,7 +118,7 @@ The scoring tab also includes `Import Parquet...`, which converts a DIA-NN-style
 | --- | --- |
 | `Run` | `Run` |
 | `Stripped.Sequence` | `Sequence` |
-| `Evidence` | `score` |
+| `Evidence` | `Evidence` |
 | `Q.Value` | `Q.Value` |
 
 The GUI can save and load its run configuration. Use this for repeated analyses where the same digest directories, column names, and runtime settings should be reused. Advanced GUI options allow users to adjust Monte Carlo iterations, stage-2 refinement, random seed, cache behavior, genome inclusion or exclusion lists, and diagnostic artifact export.
@@ -190,7 +190,7 @@ Default column mapping:
 | --- | --- |
 | `Run` | `Run` |
 | `Stripped.Sequence` | `Sequence` |
-| `Evidence` | `score` |
+| `Evidence` | `Evidence` |
 | `Q.Value` | `Q.Value` |
 
 To customize columns, repeat `--input-column` and `--output-column` in the same order:
@@ -205,7 +205,7 @@ metaumbra extract-parquet \
   --input-column Q.Value \
   --output-column Run \
   --output-column Sequence \
-  --output-column score \
+  --output-column Evidence \
   --output-column Q.Value \
   --force
 ```
@@ -311,7 +311,7 @@ Important scoring options:
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `--peptide-seq-col` | `Sequence` | Observed peptide sequence column. |
-| `--peptide-score-col` | `score` | Peptide score column. If missing, all peptides receive score `1`. |
+| `--peptide-score-col` | `Evidence` | Peptide score column. If missing, all peptides receive score `1`. |
 | `--peptide-error-col` | `Q.Value` | Peptide error, FDR, PEP, or q-value column used for filtering. |
 | `--peptide-error-cutoff` | `0.05` | Keep peptides with error values less than or equal to this cutoff. |
 | `--peptide-decoy-flag-col` | `Reverse` | Decoy flag column. Pass an empty string to disable. |
@@ -357,14 +357,14 @@ The observed peptide table must be a tab-separated file. The default expected co
 | Column | Required | Description |
 | --- | --- | --- |
 | `Sequence` | yes | Observed peptide sequence. |
-| `score` | no | Peptide-level score. If present, values are normalized to `[0, 1]` and the maximum score per peptide is used. If absent, all peptides are scored as `1`. |
+| `Evidence` | no | Peptide-level score. If present, values are normalized to `[0, 1]` and the maximum score per peptide is used. If absent, all peptides are scored as `1`. |
 | `Q.Value` | no | Peptide-level error or q-value used for filtering. Rows with values greater than `--peptide-error-cutoff` are removed. |
 | `Reverse` | no | Decoy flag column. Rows with `Reverse == "+"` are removed by default. |
 
 Example:
 
 ```text
-Run	Sequence	score	Q.Value	Reverse
+Run	Sequence	Evidence	Q.Value	Reverse
 sample_01	PEPTIDER	0.93	0.002	
 sample_01	ACDEFGHIK	0.81	0.018	
 sample_01	DECOYPEP	0.70	0.001	+
@@ -544,12 +544,12 @@ metaumbra score \
   --peptide-seq-col "Stripped.Sequence"
 ```
 
-### `Score column 'score' not found; setting all scores=1`
+### `Score column 'Evidence' not found; setting all scores=1`
 
 This is a warning, not a fatal error. MetaUmbra will score each unique observed peptide equally. To use scores, provide the correct score column:
 
 ```bash
---peptide-score-col Evidence
+--peptide-score-col score
 ```
 
 ### `Error column 'Q.Value' not found; skipping peptide-level error filtering`

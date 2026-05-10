@@ -42,7 +42,7 @@ class ScoringConfig:
     selected_genome_ids: list[str] = field(default_factory=list)
     output_tsv_path: str = ""
     peptide_seq_col: str = "Sequence"
-    peptide_score_col: str = "score"
+    peptide_score_col: str = "Evidence"
     peptide_error_col: str = "Q.Value"
     peptide_error_cutoff: float = 0.05
     single_peptide_error_rate_upper_bound: float = 0.3
@@ -75,7 +75,7 @@ class ParquetExtractionConfig:
         default_factory=lambda: ["Run", "Stripped.Sequence", "Evidence", "Q.Value"]
     )
     output_columns: list[str] = field(
-        default_factory=lambda: ["Run", "Sequence", "score", "Q.Value"]
+        default_factory=lambda: ["Run", "Sequence", "Evidence", "Q.Value"]
     )
     batch_size: int = 65536
     force: bool = False
