@@ -232,6 +232,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_argument(
         score_optional,
+        "--unique-pvalue-mode",
+        choices=("upper-bound", "peptide-column"),
+        default="upper-bound",
+        help=(
+            "Unique peptide p-value source. 'upper-bound' uses "
+            "--single-peptide-error-rate-upper-bound as alpha in alpha^U. "
+            "'peptide-column' multiplies values from --peptide-error-col, "
+            "falling back to the upper bound when a peptide value is missing."
+        ),
+    )
+    _add_argument(
+        score_optional,
         "--peptide-decoy-flag-col",
         default="Reverse",
         help="Optional decoy flag column. Pass an empty string to disable it.",
@@ -407,6 +419,7 @@ def _run_score(args: argparse.Namespace) -> int:
         peptide_error_col=args.peptide_error_col,
         peptide_error_cutoff=args.peptide_error_cutoff,
         single_peptide_error_rate_upper_bound=args.single_peptide_error_rate_upper_bound,
+        unique_pvalue_mode=args.unique_pvalue_mode,
         peptide_decoy_flag_col=args.peptide_decoy_flag_col,
         decoy_flag_value=args.decoy_flag_value,
         exclude_genome_ids=exclude_genome_ids,
