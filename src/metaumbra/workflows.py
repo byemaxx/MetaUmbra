@@ -46,6 +46,7 @@ class ScoringConfig:
     peptide_error_col: str = "Q.Value"
     peptide_error_cutoff: float = 0.05
     single_peptide_error_rate_upper_bound: float = 0.3
+    unique_pvalue_mode: str = "upper-bound"
     peptide_decoy_flag_col: str = "Reverse"
     decoy_flag_value: str = "+"
     exclude_genome_ids: list[str] = field(default_factory=list)
@@ -60,7 +61,6 @@ class ScoringConfig:
     matched_peptides_cache_path: str = ""
     save_matched_peptides_cache: bool = True
     use_cache_if_exists: bool = False
-    use_peptide_error_for_unique_pvalue: bool = False
     compute_coverage: bool = True
     export_temp: bool = True
     export_peptide_contrib_topN: int = 0
@@ -267,7 +267,7 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
             export_temp=bool(config.export_temp),
             export_peptide_contrib_topN=int(config.export_peptide_contrib_topN),
             use_cache_if_exists=bool(config.use_cache_if_exists),
-            use_peptide_error_for_unique_pvalue=bool(config.use_peptide_error_for_unique_pvalue),
+            unique_pvalue_mode=str(config.unique_pvalue_mode),
             return_full_table=bool(config.return_full_table),
         )
 

@@ -314,6 +314,8 @@ Important scoring options:
 | `--peptide-score-col` | `Evidence` | Peptide score column. If missing, all peptides receive score `1`. |
 | `--peptide-error-col` | `Q.Value` | Peptide error, FDR, PEP, or q-value column used for filtering. |
 | `--peptide-error-cutoff` | `0.05` | Keep peptides with error values less than or equal to this cutoff. |
+| `--single-peptide-error-rate-upper-bound` | `0.3` | Alpha used by `--unique-pvalue-mode upper-bound` for `alpha^U`. This is separate from peptide filtering. |
+| `--unique-pvalue-mode` | `upper-bound` | Unique peptide p-value source. Use `upper-bound` for `alpha^U`, or `peptide-column` to multiply values from `--peptide-error-col`. |
 | `--peptide-decoy-flag-col` | `Reverse` | Decoy flag column. Pass an empty string to disable. |
 | `--decoy-flag-value` | `+` | Value treated as a decoy marker. |
 | `--num-workers` | `max(1, cpu_count - 1)` | Worker process count for genome scanning. On Windows, use 60 or fewer workers because `ProcessPoolExecutor` has a platform worker limit. |

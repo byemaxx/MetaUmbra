@@ -1141,9 +1141,15 @@ class ScoringTab(QWidget):
         self.processes_spin = _create_process_spinbox()
         self.peptide_error_cutoff_edit = QLineEdit("0.05")
         self.single_peptide_error_rate_upper_bound_edit = QLineEdit("0.3")
+        self.unique_pvalue_mode_combo = QComboBox()
+        self.unique_pvalue_mode_combo.addItem("Upper bound alpha^U", "upper-bound")
+        self.unique_pvalue_mode_combo.addItem("Peptide column product", "peptide-column")
         self.peptide_error_cutoff_edit.setToolTip("Filters input peptide rows by the selected error/FDR column.")
         self.single_peptide_error_rate_upper_bound_edit.setToolTip(
             "Alpha used by default unique evidence p-value bound: alpha^U."
+        )
+        self.unique_pvalue_mode_combo.setToolTip(
+            "Choose whether unique peptide p-values use the configured alpha upper bound or values from the peptide error column."
         )
         self.knockoff_mc_iterations_edit = QLineEdit("500")
         self.knockoff_stage2_mc_iterations_edit = QLineEdit("2000")
@@ -1177,6 +1183,7 @@ class ScoringTab(QWidget):
         _add_compact_field(runtime_grid, 1, 2, "Stage 2 MC", self.knockoff_stage2_mc_iterations_edit, 110)
         _add_compact_field(runtime_grid, 2, 0, "Top genomes", self.knockoff_top_n_targets_spin, 110)
         _add_compact_field(runtime_grid, 2, 1, "Export contrib top-N", self.export_peptide_contrib_topn_spin, 110)
+        _add_compact_field(runtime_grid, 2, 2, "Unique p-value mode", self.unique_pvalue_mode_combo, 160)
         runtime_layout.addLayout(runtime_grid)
         runtime_form = QFormLayout()
         runtime_form.addRow("Stage 2 p ranges", self.knockoff_stage2_ranges_edit)
@@ -1227,7 +1234,6 @@ class ScoringTab(QWidget):
         self.save_cache_checkbox = QCheckBox("Save matched-peptide cache")
         self.save_cache_checkbox.setChecked(True)
         self.use_cache_if_exists_checkbox = QCheckBox("Reuse cache if it already exists")
-        self.use_peptide_error_checkbox = QCheckBox("Use peptide-level error for unique evidence p-value")
         self.compute_coverage_checkbox = QCheckBox("Compute coverage columns")
         self.compute_coverage_checkbox.setChecked(True)
         self.export_temp_checkbox = QCheckBox("Export temp artifacts")
@@ -1235,10 +1241,9 @@ class ScoringTab(QWidget):
         self.return_full_table_checkbox = QCheckBox("Return full internal table")
         flags_layout.addWidget(self.save_cache_checkbox, 0, 0)
         flags_layout.addWidget(self.use_cache_if_exists_checkbox, 0, 1)
-        flags_layout.addWidget(self.use_peptide_error_checkbox, 1, 0)
-        flags_layout.addWidget(self.compute_coverage_checkbox, 1, 1)
-        flags_layout.addWidget(self.export_temp_checkbox, 2, 0)
-        flags_layout.addWidget(self.return_full_table_checkbox, 2, 1)
+        flags_layout.addWidget(self.compute_coverage_checkbox, 1, 0)
+        flags_layout.addWidget(self.export_temp_checkbox, 1, 1)
+        flags_layout.addWidget(self.return_full_table_checkbox, 2, 0)
         options_layout.addWidget(flags_box)
         layout.addWidget(self.more_options)
         layout.addStretch(1)
@@ -1394,6 +1399,7 @@ class ScoringTab(QWidget):
                 self.single_peptide_error_rate_upper_bound_edit.text(),
                 "Unique alpha upper bound",
             ),
+            unique_pvalue_mode=str(self.unique_pvalue_mode_combo.currentData() or "upper-bound"),
             peptide_decoy_flag_col=self.peptide_decoy_flag_col_edit.text().strip(),
             decoy_flag_value=self.decoy_flag_value_edit.text().strip(),
             exclude_genome_ids=_parse_text_list(self.exclude_text.toPlainText()),
@@ -1414,7 +1420,6 @@ class ScoringTab(QWidget):
             matched_peptides_cache_path=self.cache_path_edit.text().strip(),
             save_matched_peptides_cache=self.save_cache_checkbox.isChecked(),
             use_cache_if_exists=self.use_cache_if_exists_checkbox.isChecked(),
-            use_peptide_error_for_unique_pvalue=self.use_peptide_error_checkbox.isChecked(),
             compute_coverage=self.compute_coverage_checkbox.isChecked(),
             export_temp=self.export_temp_checkbox.isChecked(),
             export_peptide_contrib_topN=int(self.export_peptide_contrib_topn_spin.value()),
@@ -1460,6 +1465,8 @@ class ScoringTab(QWidget):
         self.single_peptide_error_rate_upper_bound_edit.setText(
             str(config.single_peptide_error_rate_upper_bound)
         )
+        mode_index = self.unique_pvalue_mode_combo.findData(config.unique_pvalue_mode)
+        self.unique_pvalue_mode_combo.setCurrentIndex(max(mode_index, 0))
         self.peptide_decoy_flag_col_edit.setText(config.peptide_decoy_flag_col)
         self.decoy_flag_value_edit.setText(config.decoy_flag_value)
         self.processes_spin.setValue(config.num_workers if config.num_workers is not None else DEFAULT_PROCESS_COUNT)
@@ -1476,7 +1483,6 @@ class ScoringTab(QWidget):
         self.export_peptide_contrib_topn_spin.setValue(int(config.export_peptide_contrib_topN))
         self.save_cache_checkbox.setChecked(config.save_matched_peptides_cache)
         self.use_cache_if_exists_checkbox.setChecked(config.use_cache_if_exists)
-        self.use_peptide_error_checkbox.setChecked(config.use_peptide_error_for_unique_pvalue)
         self.compute_coverage_checkbox.setChecked(config.compute_coverage)
         self.export_temp_checkbox.setChecked(config.export_temp)
         self.return_full_table_checkbox.setChecked(config.return_full_table)

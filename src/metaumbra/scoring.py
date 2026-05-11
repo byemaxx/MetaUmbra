@@ -886,7 +886,7 @@ class GenomePresenceScorer:
     def _add_knockoff_existence_stats(
         self,
         df_scored: pd.DataFrame,
-        use_peptide_error_for_unique_pvalue: bool = True,
+        unique_pvalue_mode: str = "upper-bound",
     ) -> pd.DataFrame:
         """Add per-genome knockoff existence p/q-values."""
         def _p_unique_upper_for_genome(gid: str) -> float:
@@ -905,7 +905,7 @@ class GenomePresenceScorer:
 
             # Product of per-peptide upper bounds; fallback to peptide_error_upper if missing
             errs = [self.peptide_error_upper_by_peptide.get(p, peptide_error_upper) for p in uniq]
-            return float(np.prod(np.clip(errs, 1e-12, 0.5)))
+            return float(np.prod(np.clip(errs, 1e-12, 1.0)))
         
         out = df_scored.copy()
         # Conservative defaults for genomes with no match / skipped inference.
@@ -940,14 +940,19 @@ class GenomePresenceScorer:
         K2 = None
         if self.knockoff_stage2_mc_iterations is not None:
             K2 = int(max(50, self.knockoff_stage2_mc_iterations))
-        peptide_error_upper = float(min(max(self.single_peptide_error_rate_upper_bound, 1e-12), 0.5))
+        peptide_error_upper = float(min(max(self.single_peptide_error_rate_upper_bound, 1e-12), 1.0))
+        mode = str(unique_pvalue_mode or "upper-bound").strip().lower()
+        if mode not in {"upper-bound", "peptide-column"}:
+            raise ValueError(
+                "unique_pvalue_mode must be 'upper-bound' or 'peptide-column', "
+                f"got {unique_pvalue_mode!r}."
+            )
         error_col = self.run_stats.get("peptide_error_col", None)
         has_per_peptide_error = bool(self.peptide_error_upper_by_peptide)
-        use_per_peptide_error = bool(use_peptide_error_for_unique_pvalue and has_per_peptide_error)
+        use_per_peptide_error = bool(mode == "peptide-column" and has_per_peptide_error)
         uses_pep_column = bool(use_per_peptide_error and isinstance(error_col, str) and error_col.upper() == "PEP")
         source_col_display = str(error_col) if error_col is not None else "none"
-        self.run_stats["unique_pvalue_use_peptide_error_switch"] = bool(use_peptide_error_for_unique_pvalue)
-        self.run_stats["unique_pvalue_use_peptide_error_for_unique_pvalue"] = bool(use_peptide_error_for_unique_pvalue)
+        self.run_stats["unique_pvalue_mode"] = mode
         self.run_stats["unique_pvalue_uses_per_peptide_error"] = bool(use_per_peptide_error)
         self.run_stats["unique_pvalue_error_source_col"] = str(error_col) if use_per_peptide_error and error_col is not None else None
         self.run_stats["unique_pvalue_uses_pep_column"] = bool(uses_pep_column)
@@ -959,7 +964,7 @@ class GenomePresenceScorer:
                 f"global_fallback={peptide_error_upper:.4g}"
             )
         else:
-            reason = "disabled_by_switch" if not bool(use_peptide_error_for_unique_pvalue) else "per_peptide_error_not_available"
+            reason = "upper_bound_mode" if mode == "upper-bound" else "per_peptide_error_not_available"
             self.logger.info(
                 f"Unique p-value mode: [(alpha={peptide_error_upper:.4g})^U] "
                 f"reason={reason}"
@@ -1312,7 +1317,7 @@ class GenomePresenceScorer:
         export_temp: bool = True,
         export_peptide_contrib_topN: int = 0,
         use_cache_if_exists: bool = True,
-        use_peptide_error_for_unique_pvalue: bool = False,
+        unique_pvalue_mode: str = "upper-bound",
         return_full_table: bool = False,
     ) -> pd.DataFrame:
         """End-to-end analysis producing a genome-level q-value (q_presence)."""
@@ -1607,7 +1612,7 @@ class GenomePresenceScorer:
         self.logger.info("Computing per-genome existence q-values via knockoff...")
         df_scored = self._add_knockoff_existence_stats(
             df_scored,
-            use_peptide_error_for_unique_pvalue=use_peptide_error_for_unique_pvalue,
+            unique_pvalue_mode=unique_pvalue_mode,
         )
         self.timing_stats["knockoff_pvalues"] = float(time.time() - t_knock0)
 
