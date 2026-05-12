@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import multiprocessing as mp
 import os
 import sys
@@ -207,6 +208,14 @@ ICON_PATH = Path(__file__).resolve().parent / "assets" / "metaumbra_icon.png"
 FORM_LABEL_MIN_WIDTH = 150
 BROWSE_BUTTON_WIDTH = 96
 PRIMARY_BUTTON_MIN_WIDTH = 240
+
+
+def _default_user_config_dir() -> Path:
+    return Path.home() / "MetaUmbra" / "config"
+
+
+def _default_gui_state_path() -> Path:
+    return _default_user_config_dir() / "gui_state.json"
 
 
 class DropPathLineEdit(QLineEdit):
@@ -1652,6 +1661,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._apply_styles()
         self._set_status_state("idle", "Ready")
+        self._load_gui_state()
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -1669,6 +1679,7 @@ class MainWindow(QMainWindow):
         self.app_title_label.setObjectName("AppTitle")
         self.load_button = QPushButton("Load Config")
         self.save_button = QPushButton("Save Config")
+        self.clear_settings_button = QPushButton("Clear Settings")
         self.clear_log_button = QPushButton("Clear Log")
         self.about_button = QPushButton("About")
         self.about_button.setObjectName("AboutButton")
@@ -1687,6 +1698,7 @@ class MainWindow(QMainWindow):
         button_row.addSpacing(8)
         button_row.addWidget(self.load_button)
         button_row.addWidget(self.save_button)
+        button_row.addWidget(self.clear_settings_button)
         button_row.addWidget(self.clear_log_button)
         button_row.addStretch(1)
         button_row.addWidget(self.busy_bar)
@@ -1734,6 +1746,7 @@ class MainWindow(QMainWindow):
 
         self.load_button.clicked.connect(self._load_config)
         self.save_button.clicked.connect(self._save_config)
+        self.clear_settings_button.clicked.connect(self._clear_gui_settings)
         self.clear_log_button.clicked.connect(self.log_output.clear)
         self.about_button.clicked.connect(self._show_about_dialog)
         self.run_current_button.clicked.connect(self._handle_run_button_clicked)
@@ -2154,6 +2167,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Invalid Input", str(exc))
             return
 
+        self._save_gui_state()
+
         self._append_log("")
         self._append_log(f"=== Starting {task_name} task ===")
         self._stop_requested = False
@@ -2345,6 +2360,7 @@ class MainWindow(QMainWindow):
         self._set_status_state("idle", f"Loaded config: {path}")
 
     def closeEvent(self, event) -> None:
+        self._save_gui_state()
         if self.worker_thread is None:
             event.accept()
             return
@@ -2360,6 +2376,187 @@ class MainWindow(QMainWindow):
             event.accept()
         else:
             event.ignore()
+
+    def _save_gui_state(self) -> None:
+        try:
+            state_dir = _default_user_config_dir()
+            state_dir.mkdir(parents=True, exist_ok=True)
+            
+            try:
+                ko_mc = int(self.scoring_tab.knockoff_mc_iterations_edit.text() or 500)
+            except ValueError:
+                ko_mc = 500
+                
+            try:
+                ko_stage2_mc = int(self.scoring_tab.knockoff_stage2_mc_iterations_edit.text()) if self.scoring_tab.knockoff_stage2_mc_iterations_edit.text().strip() else None
+            except ValueError:
+                ko_stage2_mc = None
+                
+            try:
+                ko_seed = int(self.scoring_tab.knockoff_random_seed_edit.text() or 1)
+            except ValueError:
+                ko_seed = 1
+
+            try:
+                ko_ranges = _parse_range_pairs(self.scoring_tab.knockoff_stage2_ranges_edit.text())
+            except Exception:
+                ko_ranges = []
+
+            try:
+                err_cutoff = float(self.scoring_tab.peptide_error_cutoff_edit.text() or 0.05)
+            except ValueError:
+                err_cutoff = 0.05
+
+            try:
+                single_err_bound = float(self.scoring_tab.single_peptide_error_rate_upper_bound_edit.text() or 0.3)
+            except ValueError:
+                single_err_bound = 0.3
+
+            state = {
+                "version": 1,
+                "last_browse_dir": self.scoring_tab._last_browse_dir,
+                "last_peptide_table_dir": _remember_dialog_directory(self.scoring_tab.peptide_table_edit.text()),
+                "last_output_dir": _remember_dialog_directory(self.scoring_tab.output_tsv_edit.text()),
+
+                "genome_digest_dirs": [self.scoring_tab.genome_dir_list.item(i).text() for i in range(self.scoring_tab.genome_dir_list.count())],
+                "genome_lineage_table_path": self.scoring_tab.genome_lineage_table_edit.text().strip(),
+                "genome_lineage_genome_id_col": self.scoring_tab.genome_lineage_genome_id_col_edit.currentText().strip(),
+                "genome_lineage_lineage_col": self.scoring_tab.genome_lineage_lineage_col_edit.currentText().strip(),
+
+                "peptide_seq_col": self.scoring_tab.peptide_seq_col_edit.currentText().strip(),
+                "peptide_score_col": self.scoring_tab.peptide_score_col_edit.currentText().strip(),
+                "peptide_error_col": self.scoring_tab.peptide_error_col_edit.currentText().strip(),
+                "peptide_error_cutoff": err_cutoff,
+                "single_peptide_error_rate_upper_bound": single_err_bound,
+                "unique_pvalue_mode": str(self.scoring_tab.unique_pvalue_mode_combo.currentData() or "upper-bound"),
+                "peptide_decoy_flag_col": self.scoring_tab.peptide_decoy_flag_col_edit.currentText().strip(),
+                "decoy_flag_value": self.scoring_tab.decoy_flag_value_edit.currentText().strip(),
+
+                "num_workers": self.scoring_tab.processes_spin.value(),
+                "knockoff_mc_iterations": ko_mc,
+                "knockoff_stage2_mc_iterations": ko_stage2_mc,
+                "knockoff_stage2_p_exist_ranges": ko_ranges,
+                "knockoff_random_seed": ko_seed,
+                "knockoff_top_n_targets": self.scoring_tab.knockoff_top_n_targets_spin.value() if self.scoring_tab.knockoff_top_n_targets_spin.value() > 0 else None,
+
+                "use_cache_if_exists": self.scoring_tab.use_cache_if_exists_checkbox.isChecked(),
+                "save_matched_peptides_cache": self.scoring_tab.save_cache_checkbox.isChecked(),
+                "compute_coverage": self.scoring_tab.compute_coverage_checkbox.isChecked(),
+                "export_temp": self.scoring_tab.export_temp_checkbox.isChecked(),
+                "export_peptide_contrib_topN": self.scoring_tab.export_peptide_contrib_topn_spin.value(),
+                "return_full_table": self.scoring_tab.return_full_table_checkbox.isChecked()
+            }
+            with open(_default_gui_state_path(), "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2)
+        except Exception as exc:
+            logging.warning(f"Failed to save GUI state: {exc}")
+            self._append_log(f"Warning: Failed to save GUI state: {exc}")
+
+    def _load_gui_state(self) -> None:
+        state_path = _default_gui_state_path()
+        if not state_path.exists():
+            return
+        
+        try:
+            with open(state_path, "r", encoding="utf-8") as f:
+                state = json.load(f)
+        except Exception as exc:
+            logging.warning(f"Failed to load GUI state: {exc}")
+            self._append_log(f"Warning: Failed to load GUI state: {exc}")
+            return
+
+        try:
+            if "last_browse_dir" in state:
+                path = state["last_browse_dir"]
+                if path and Path(path).exists():
+                    self.scoring_tab._last_browse_dir = path
+            
+            if "genome_digest_dirs" in state:
+                self.scoring_tab._clear_genome_dirs()
+                for d in state["genome_digest_dirs"]:
+                    if Path(d).exists() and Path(d).is_dir():
+                        self.scoring_tab.genome_dir_list.addItem(d)
+
+            if "genome_lineage_table_path" in state:
+                p = state["genome_lineage_table_path"]
+                if p and Path(p).exists() and Path(p).is_file():
+                    self.scoring_tab.genome_lineage_table_edit.setText(p)
+
+            def _set_combo(combo, val):
+                if val is not None:
+                    combo.setEditText(str(val))
+                    
+            _set_combo(self.scoring_tab.genome_lineage_genome_id_col_edit, state.get("genome_lineage_genome_id_col"))
+            _set_combo(self.scoring_tab.genome_lineage_lineage_col_edit, state.get("genome_lineage_lineage_col"))
+            _set_combo(self.scoring_tab.peptide_seq_col_edit, state.get("peptide_seq_col", "Sequence"))
+            _set_combo(self.scoring_tab.peptide_score_col_edit, state.get("peptide_score_col", "Evidence"))
+            _set_combo(self.scoring_tab.peptide_error_col_edit, state.get("peptide_error_col", "Q.Value"))
+            _set_combo(self.scoring_tab.peptide_decoy_flag_col_edit, state.get("peptide_decoy_flag_col", "Reverse"))
+            _set_combo(self.scoring_tab.decoy_flag_value_edit, state.get("decoy_flag_value", "+"))
+
+            if "peptide_error_cutoff" in state:
+                self.scoring_tab.peptide_error_cutoff_edit.setText(str(state["peptide_error_cutoff"]))
+            if "single_peptide_error_rate_upper_bound" in state:
+                self.scoring_tab.single_peptide_error_rate_upper_bound_edit.setText(str(state["single_peptide_error_rate_upper_bound"]))
+            
+            if "unique_pvalue_mode" in state:
+                mode_index = self.scoring_tab.unique_pvalue_mode_combo.findData(state["unique_pvalue_mode"])
+                self.scoring_tab.unique_pvalue_mode_combo.setCurrentIndex(max(mode_index, 0))
+
+            if "num_workers" in state and state["num_workers"] is not None:
+                self.scoring_tab.processes_spin.setValue(state["num_workers"])
+            
+            if "knockoff_mc_iterations" in state:
+                self.scoring_tab.knockoff_mc_iterations_edit.setText(str(state["knockoff_mc_iterations"]))
+            
+            if "knockoff_stage2_mc_iterations" in state:
+                val = state["knockoff_stage2_mc_iterations"]
+                self.scoring_tab.knockoff_stage2_mc_iterations_edit.setText("" if val is None else str(val))
+            
+            if "knockoff_stage2_p_exist_ranges" in state:
+                self.scoring_tab.knockoff_stage2_ranges_edit.setText(_format_range_pairs(state["knockoff_stage2_p_exist_ranges"]))
+
+            if "knockoff_random_seed" in state:
+                self.scoring_tab.knockoff_random_seed_edit.setText(str(state["knockoff_random_seed"]))
+                
+            if "knockoff_top_n_targets" in state:
+                val = state["knockoff_top_n_targets"]
+                self.scoring_tab.knockoff_top_n_targets_spin.setValue(val if val is not None else 0)
+
+            if "use_cache_if_exists" in state:
+                self.scoring_tab.use_cache_if_exists_checkbox.setChecked(bool(state["use_cache_if_exists"]))
+            if "save_matched_peptides_cache" in state:
+                self.scoring_tab.save_cache_checkbox.setChecked(bool(state["save_matched_peptides_cache"]))
+            if "compute_coverage" in state:
+                self.scoring_tab.compute_coverage_checkbox.setChecked(bool(state["compute_coverage"]))
+            if "export_temp" in state:
+                self.scoring_tab.export_temp_checkbox.setChecked(bool(state["export_temp"]))
+            if "export_peptide_contrib_topN" in state:
+                self.scoring_tab.export_peptide_contrib_topn_spin.setValue(int(state["export_peptide_contrib_topN"]))
+            if "return_full_table" in state:
+                self.scoring_tab.return_full_table_checkbox.setChecked(bool(state["return_full_table"]))
+            
+            self.scoring_tab._sync_genome_lineage_column_visibility()
+        except Exception as exc:
+            logging.warning(f"Error applying GUI state: {exc}")
+            self._append_log(f"Warning: Error applying GUI state: {exc}")
+
+    def _clear_gui_settings(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Clear Settings",
+            "Are you sure you want to clear all GUI settings? This will delete the saved state and cannot be undone.",
+            QMSG_YES | QMSG_NO,
+            QMSG_NO
+        )
+        if reply == QMSG_YES:
+            state_path = _default_gui_state_path()
+            if state_path.exists():
+                try:
+                    state_path.unlink()
+                except Exception as exc:
+                    logging.warning(f"Failed to delete GUI state file: {exc}")
+            QMessageBox.information(self, "Settings Cleared", "Saved GUI settings have been cleared. Please close and re-open the application for it to take effect.")
 
 
 def main() -> None:
