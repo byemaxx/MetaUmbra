@@ -287,6 +287,58 @@ def _load_parquet_peptide_table(
     return df, resolved
 
 
+def _clean_parquet_peptide_table(
+    peptide_table_df: "pd.DataFrame",
+    resolved_columns: dict[str, Optional[str]],
+    log_callback: Optional[LogCallback] = None,
+) -> "pd.DataFrame":
+    seq_col = resolved_columns.get("peptide_seq_col")
+    if not seq_col or seq_col not in peptide_table_df.columns:
+        return peptide_table_df.copy()
+
+    df = peptide_table_df.copy()
+    before = int(len(df))
+    df[seq_col] = df[seq_col].astype("string").str.strip()
+    df = df[df[seq_col].notna() & (df[seq_col] != "")].copy()
+    dropped = before - int(len(df))
+    if dropped and log_callback:
+        log_callback(f"Dropped {dropped} parquet row(s) with missing or empty peptide sequences.")
+    return df
+
+
+def _infer_decoy_flag_value(
+    peptide_table_df: "pd.DataFrame",
+    resolved_columns: dict[str, Optional[str]],
+    configured_value: str,
+    log_callback: Optional[LogCallback] = None,
+) -> str:
+    decoy_col = resolved_columns.get("peptide_decoy_flag_col")
+    configured = str(configured_value)
+    if not decoy_col or decoy_col not in peptide_table_df.columns or configured == "":
+        return configured
+
+    values = [str(value).strip() for value in peptide_table_df[decoy_col].dropna().unique()[:50]]
+    value_set = set(values)
+    if configured in value_set:
+        return configured
+
+    # Common parquet encodings for decoys include boolean True, integer 1, and string labels.
+    # Only auto-adjust from the historical '+' default; explicit user choices are preserved.
+    if configured != "+":
+        return configured
+
+    for candidate in ("True", "true", "1", "decoy", "Decoy", "DECOY", "T", "t"):
+        if candidate in value_set:
+            if log_callback:
+                log_callback(
+                    f"Auto-detected parquet decoy marker for column '{decoy_col}': "
+                    f"using '{candidate}' instead of '+'."
+                )
+            return candidate
+
+    return configured
+
+
 def run_digest_workflow(config: DigestConfig, log_callback: Optional[LogCallback] = None) -> dict:
     import importlib
 
@@ -354,6 +406,7 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
     peptide_table_path = str(Path(config.peptide_table_path).expanduser())
     peptide_table_df = None
     resolved_columns: dict[str, Optional[str]] | None = None
+    effective_decoy_flag_value = config.decoy_flag_value
     if _is_parquet_path(peptide_table_path):
         if not os.path.isfile(peptide_table_path):
             raise FileNotFoundError(f"Peptide parquet file does not exist: {peptide_table_path}")
@@ -363,6 +416,17 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
             peptide_score_col=_none_if_blank(config.peptide_score_col),
             peptide_error_col=_none_if_blank(config.peptide_error_col),
             peptide_decoy_flag_col=_none_if_blank(config.peptide_decoy_flag_col),
+            log_callback=log_callback,
+        )
+        peptide_table_df = _clean_parquet_peptide_table(
+            peptide_table_df=peptide_table_df,
+            resolved_columns=resolved_columns,
+            log_callback=log_callback,
+        )
+        effective_decoy_flag_value = _infer_decoy_flag_value(
+            peptide_table_df=peptide_table_df,
+            resolved_columns=resolved_columns,
+            configured_value=config.decoy_flag_value,
             log_callback=log_callback,
         )
 
@@ -405,7 +469,7 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
                 peptide_seq_col=effective_seq_col,
                 peptide_score_col=resolved_columns.get("peptide_score_col") if resolved_columns else None,
                 peptide_decoy_flag_col=resolved_columns.get("peptide_decoy_flag_col") if resolved_columns else None,
-                decoy_flag_value=config.decoy_flag_value,
+                decoy_flag_value=effective_decoy_flag_value,
                 peptide_table_sep="\t",
                 peptide_error_col=resolved_columns.get("peptide_error_col") if resolved_columns else None,
                 peptide_error_cutoff=float(config.peptide_error_cutoff),
