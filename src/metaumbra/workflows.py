@@ -158,6 +158,134 @@ def _normalize_output_path(path_str: str) -> str:
     return str(Path(path_str).expanduser())
 
 
+PARQUET_EXTENSIONS = {".parquet", ".pq"}
+
+
+def _is_parquet_path(path_str: str) -> bool:
+    return Path(path_str).suffix.lower() in PARQUET_EXTENSIONS
+
+
+def _normalize_parquet_column_key(name: str) -> str:
+    return "".join(char.lower() for char in str(name) if char.isalnum())
+
+
+def _resolve_parquet_column(
+    schema_names: list[str],
+    normalized_lookup: dict[str, str],
+    preferred: Optional[str],
+    candidates: list[str],
+    used: set[str],
+) -> tuple[Optional[str], bool]:
+    if preferred:
+        if preferred in schema_names and preferred not in used:
+            used.add(preferred)
+            return preferred, False
+        key = _normalize_parquet_column_key(preferred)
+        match = normalized_lookup.get(key)
+        if match and match not in used:
+            used.add(match)
+            return match, True
+
+    for candidate in candidates:
+        key = _normalize_parquet_column_key(candidate)
+        match = normalized_lookup.get(key)
+        if match and match not in used:
+            used.add(match)
+            return match, True
+
+    return None, False
+
+
+def _load_parquet_peptide_table(
+    parquet_path: str,
+    peptide_seq_col: str,
+    peptide_score_col: Optional[str],
+    peptide_error_col: Optional[str],
+    peptide_decoy_flag_col: Optional[str],
+    log_callback: Optional[LogCallback] = None,
+) -> tuple["pd.DataFrame", dict[str, Optional[str]]]:
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise RuntimeError(
+            "pyarrow is required to read parquet files. Install it with: python -m pip install pyarrow"
+        ) from exc
+
+    import pandas as pd
+
+    parquet_path = str(Path(parquet_path).expanduser())
+    schema = pq.read_schema(parquet_path)
+    schema_names = list(schema.names)
+    normalized_lookup: dict[str, str] = {}
+    for name in schema_names:
+        key = _normalize_parquet_column_key(name)
+        if key and key not in normalized_lookup:
+            normalized_lookup[key] = name
+
+    used: set[str] = set()
+    seq_col, seq_auto = _resolve_parquet_column(
+        schema_names,
+        normalized_lookup,
+        peptide_seq_col,
+        ["Stripped.Sequence", "StrippedSequence", "Sequence", "Peptide.Sequence", "PeptideSequence"],
+        used,
+    )
+    if not seq_col:
+        expected = "Stripped.Sequence or Sequence"
+        available = ", ".join(schema_names)
+        raise ValueError(
+            "Unable to locate a peptide sequence column in the parquet file. "
+            f"Expected {expected}. Available columns: {available}"
+        )
+
+    score_col, score_auto = _resolve_parquet_column(
+        schema_names,
+        normalized_lookup,
+        peptide_score_col,
+        ["Evidence", "Score", "CScore"],
+        used,
+    )
+    error_col, error_auto = _resolve_parquet_column(
+        schema_names,
+        normalized_lookup,
+        peptide_error_col,
+        ["Q.Value", "QValue", "Qval", "QVal", "PEP", "FDR"],
+        used,
+    )
+    decoy_col, _ = _resolve_parquet_column(
+        schema_names,
+        normalized_lookup,
+        peptide_decoy_flag_col,
+        ["Reverse", "Target/Decoy", "TargetDecoy", "Decoy"],
+        used,
+    )
+
+    columns_to_read = [seq_col]
+    for candidate in (score_col, error_col, decoy_col):
+        if candidate and candidate not in columns_to_read:
+            columns_to_read.append(candidate)
+
+    if log_callback:
+        log_callback("Detected parquet peptide table; loading required columns.")
+        log_callback(
+            "Parquet columns: "
+            f"sequence={seq_col} ({'auto' if seq_auto else 'config'}), "
+            f"score={score_col or 'none'} ({'auto' if score_auto else 'config'}), "
+            f"error={error_col or 'none'} ({'auto' if error_auto else 'config'})"
+        )
+
+    table = pq.read_table(parquet_path, columns=columns_to_read)
+    df = table.to_pandas()
+
+    resolved = {
+        "peptide_seq_col": seq_col,
+        "peptide_score_col": score_col,
+        "peptide_error_col": error_col,
+        "peptide_decoy_flag_col": decoy_col,
+    }
+    return df, resolved
+
+
 def run_digest_workflow(config: DigestConfig, log_callback: Optional[LogCallback] = None) -> dict:
     import importlib
 
@@ -222,6 +350,21 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
     if log_callback:
         log_callback(f"Starting genome presence scoring for: {config.peptide_table_path}")
 
+    peptide_table_path = str(Path(config.peptide_table_path).expanduser())
+    peptide_table_df = None
+    resolved_columns: dict[str, Optional[str]] | None = None
+    if _is_parquet_path(peptide_table_path):
+        if not os.path.isfile(peptide_table_path):
+            raise FileNotFoundError(f"Peptide parquet file does not exist: {peptide_table_path}")
+        peptide_table_df, resolved_columns = _load_parquet_peptide_table(
+            parquet_path=peptide_table_path,
+            peptide_seq_col=config.peptide_seq_col,
+            peptide_score_col=_none_if_blank(config.peptide_score_col),
+            peptide_error_col=_none_if_blank(config.peptide_error_col),
+            peptide_decoy_flag_col=_none_if_blank(config.peptide_decoy_flag_col),
+            log_callback=log_callback,
+        )
+
     normalized_ranges = [
         (float(bounds[0]), float(bounds[1]))
         for bounds in config.knockoff_stage2_p_exist_ranges
@@ -240,17 +383,34 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
         calc.knockoff_random_seed = int(config.knockoff_random_seed)
         calc.knockoff_top_n_targets = config.knockoff_top_n_targets
 
-        calc.read_peptide_file(
-            peptide_table_path=str(Path(config.peptide_table_path).expanduser()),
-            peptide_seq_col=config.peptide_seq_col,
-            peptide_score_col=_none_if_blank(config.peptide_score_col),
-            peptide_decoy_flag_col=_none_if_blank(config.peptide_decoy_flag_col),
-            decoy_flag_value=config.decoy_flag_value,
-            peptide_table_sep="\t",
-            peptide_error_col=_none_if_blank(config.peptide_error_col),
-            peptide_error_cutoff=float(config.peptide_error_cutoff),
-            single_peptide_error_rate_upper_bound=float(config.single_peptide_error_rate_upper_bound),
-        )
+        if peptide_table_df is None:
+            calc.read_peptide_file(
+                peptide_table_path=peptide_table_path,
+                peptide_seq_col=config.peptide_seq_col,
+                peptide_score_col=_none_if_blank(config.peptide_score_col),
+                peptide_decoy_flag_col=_none_if_blank(config.peptide_decoy_flag_col),
+                decoy_flag_value=config.decoy_flag_value,
+                peptide_table_sep="\t",
+                peptide_error_col=_none_if_blank(config.peptide_error_col),
+                peptide_error_cutoff=float(config.peptide_error_cutoff),
+                single_peptide_error_rate_upper_bound=float(config.single_peptide_error_rate_upper_bound),
+            )
+        else:
+            effective_seq_col = resolved_columns.get("peptide_seq_col") if resolved_columns else None
+            if not effective_seq_col:
+                raise RuntimeError("Unable to resolve a peptide sequence column for parquet scoring.")
+            calc.read_peptide_file(
+                peptide_table_df=peptide_table_df,
+                peptide_seq_col=effective_seq_col,
+                peptide_score_col=resolved_columns.get("peptide_score_col") if resolved_columns else None,
+                peptide_decoy_flag_col=resolved_columns.get("peptide_decoy_flag_col") if resolved_columns else None,
+                decoy_flag_value=config.decoy_flag_value,
+                peptide_table_sep="\t",
+                peptide_error_col=resolved_columns.get("peptide_error_col") if resolved_columns else None,
+                peptide_error_cutoff=float(config.peptide_error_cutoff),
+                single_peptide_error_rate_upper_bound=float(config.single_peptide_error_rate_upper_bound),
+            )
+            calc.peptide_table_dir = os.path.dirname(peptide_table_path)
 
         result_df = calc.analyze_genomes(
             genome_digest_dirs=[str(Path(p).expanduser()) for p in config.genome_digest_dirs],
@@ -277,7 +437,7 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
         saved_output = os.path.join(output_dir, "genome_presence.tsv")
 
     return {
-        "input": str(Path(config.peptide_table_path).expanduser()),
+        "input": peptide_table_path,
         "output": saved_output,
         "rows": int(len(result_df)),
         "elapsed_seconds": round(time.time() - start, 2),

@@ -126,6 +126,7 @@ QT_TOP_RIGHT_CORNER = _qt_value(Qt, "Corner", "TopRightCorner")
 QT_VERTICAL = _qt_value(Qt, "Orientation", "Vertical")
 QEVENT_WHEEL = _qt_value(QEvent, "Type", "Wheel")
 QSIZE_IGNORED = _qt_value(QSizePolicy, "Policy", "Ignored")
+QSIZE_EXPANDING = _qt_value(QSizePolicy, "Policy", "Expanding")
 QSIZE_PREFERRED = _qt_value(QSizePolicy, "Policy", "Preferred")
 QSCROLL_NO_FRAME = _qt_value(QScrollArea, "Shape", "NoFrame")
 QFORM_LABEL_ROLE = _qt_value(QFormLayout, "ItemRole", "LabelRole")
@@ -536,11 +537,12 @@ def _add_compact_field(
     column: int,
     label_text: str,
     widget: QWidget,
-    widget_width: int = 150,
+    widget_width: int | None = 150,
 ) -> None:
     label = QLabel(label_text)
     label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
-    _set_compact_control_width(widget, widget_width)
+    if widget_width is not None:
+        _set_compact_control_width(widget, widget_width)
     grid.addWidget(label, row, column * 2)
     grid.addWidget(widget, row, column * 2 + 1)
 
@@ -588,9 +590,54 @@ def _clear_editable_combo_items(combo: QComboBox, fallback_text: str = "") -> No
     combo.blockSignals(False)
 
 
+PARQUET_EXTENSIONS = {".parquet", ".pq"}
+
+
+def _is_parquet_path(path_value: str) -> bool:
+    return Path(path_value.strip()).suffix.lower() in PARQUET_EXTENSIONS
+
+
+def _suggest_parquet_output_tsv_path(parquet_path: str) -> str:
+    input_path = Path(parquet_path.strip())
+    if not input_path.name:
+        return ""
+    return str(input_path.with_name(f"{input_path.stem}_peptides_for_metaumbra.tsv"))
+
+
+def _read_parquet_schema_columns(parquet_path: str) -> list[str]:
+    path = parquet_path.strip()
+    if not path or not os.path.isfile(path):
+        return []
+    try:
+        import pyarrow.parquet as pq
+    except ImportError:
+        return []
+
+    try:
+        schema = pq.read_schema(Path(path).expanduser())
+    except Exception:
+        return []
+
+    return list(schema.names)
+
+
+def _pick_preferred_column(columns: list[str], candidates: list[str]) -> str:
+    lower_map = {col.lower(): col for col in columns}
+    for candidate in candidates:
+        if candidate in columns:
+            return candidate
+        resolved = lower_map.get(candidate.lower())
+        if resolved:
+            return resolved
+    return ""
+
+
 def _read_table_columns(table_path: str) -> list[str]:
     path = table_path.strip()
     if not path or not os.path.isfile(path):
+        return []
+
+    if _is_parquet_path(path):
         return []
 
     with open(path, "r", encoding="utf-8-sig", newline="") as handle:
@@ -963,10 +1010,7 @@ class ParquetExtractionDialog(QDialog):
         self.input_parquet_edit.textChanged.connect(self._update_auto_output_tsv_from_input_parquet)
 
     def _suggest_output_tsv_path(self, parquet_path: str) -> str:
-        input_path = Path(parquet_path.strip())
-        if not input_path.name:
-            return ""
-        return str(input_path.with_name(f"{input_path.stem}_peptides_for_metaumbra.tsv"))
+        return _suggest_parquet_output_tsv_path(parquet_path)
 
     def _update_auto_output_tsv_from_input_parquet(self) -> None:
         parquet_path = self.input_parquet_edit.text().strip()
@@ -1060,6 +1104,7 @@ class ScoringTab(QWidget):
         required_box.setProperty("elevated", True)
         required_form = QFormLayout(required_box)
         peptide_row, self.peptide_table_edit = _make_path_row("Browse", self._browse_peptide_table, accept_mode="file")
+        self.peptide_table_edit.setPlaceholderText("Drop a peptide TSV or DIA-NN report.parquet")
         self.import_parquet_button = QPushButton("Import Parquet...")
         self.import_parquet_button.setToolTip("Extract a MetaUmbra peptide TSV from a DIA-NN parquet report.")
         peptide_row.layout().addWidget(self.import_parquet_button)
@@ -1096,9 +1141,11 @@ class ScoringTab(QWidget):
         mapping_layout = QVBoxLayout(mapping_box)
         self.peptide_seq_col_edit = _create_editable_combo("Sequence", "Choose or type the peptide sequence column")
         self.peptide_score_col_edit = _create_editable_combo("Evidence", "Choose or type the peptide score column")
+        self.peptide_seq_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
+        self.peptide_score_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
         mapping_grid = _create_compact_grid()
-        _add_compact_field(mapping_grid, 0, 0, "Sequence column", self.peptide_seq_col_edit, 240)
-        _add_compact_field(mapping_grid, 0, 1, "Score column", self.peptide_score_col_edit, 180)
+        _add_compact_field(mapping_grid, 0, 0, "Sequence column", self.peptide_seq_col_edit, None)
+        _add_compact_field(mapping_grid, 0, 1, "Score column", self.peptide_score_col_edit, None)
         mapping_layout.addLayout(mapping_grid)
         self.lineage_columns_box = QGroupBox("Genome-Lineage Columns")
         self.lineage_columns_box.setProperty("subtle", True)
@@ -1109,6 +1156,8 @@ class ScoringTab(QWidget):
         self.genome_lineage_lineage_col_edit = _create_editable_combo(
             placeholder="Required if table is provided, e.g. Lineage"
         )
+        self.genome_lineage_genome_id_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
+        self.genome_lineage_lineage_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
         lineage_columns_grid.addWidget(QLabel("Lineage genome ID column"), 0, 0)
         lineage_columns_grid.addWidget(self.genome_lineage_genome_id_col_edit, 0, 1)
         lineage_columns_grid.addWidget(QLabel("Lineage column"), 0, 2)
@@ -1125,11 +1174,15 @@ class ScoringTab(QWidget):
         columns_box = QGroupBox("Peptide Table Columns")
         columns_box.setProperty("subtle", True)
         columns_grid = _create_compact_grid()
-        self.peptide_error_col_edit = QLineEdit("Q.Value")
-        self.peptide_decoy_flag_col_edit = QLineEdit("Reverse")
-        self.decoy_flag_value_edit = QLineEdit("+")
-        _add_compact_field(columns_grid, 0, 0, "Error column", self.peptide_error_col_edit, 150)
-        _add_compact_field(columns_grid, 0, 1, "Decoy flag column", self.peptide_decoy_flag_col_edit, 150)
+        self.peptide_error_col_edit = _create_editable_combo("Q.Value")
+        self.peptide_decoy_flag_col_edit = _create_editable_combo("Reverse")
+        self.decoy_flag_value_edit = _create_editable_combo("+", "Decoy flag value")
+        self.decoy_flag_value_edit.addItems(["+", "decoy", "1", "True", "FALSE", "T", "F"])
+        self.decoy_flag_value_edit.setEditText("+")
+        self.peptide_error_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
+        self.peptide_decoy_flag_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
+        _add_compact_field(columns_grid, 0, 0, "Error column", self.peptide_error_col_edit, None)
+        _add_compact_field(columns_grid, 0, 1, "Decoy flag column", self.peptide_decoy_flag_col_edit, None)
         _add_compact_field(columns_grid, 0, 2, "Decoy flag value", self.decoy_flag_value_edit, 80)
         columns_layout = QVBoxLayout(columns_box)
         columns_layout.addLayout(columns_grid)
@@ -1277,17 +1330,74 @@ class ScoringTab(QWidget):
         self._last_auto_output_tsv = suggested_output
 
     def _update_peptide_table_column_options(self) -> None:
-        columns = _read_table_columns(self.peptide_table_edit.text())
+        path_value = self.peptide_table_edit.text()
+        if _is_parquet_path(path_value):
+            columns = _read_parquet_schema_columns(path_value)
+            if not columns:
+                _clear_editable_combo_items(self.peptide_seq_col_edit, "Sequence")
+                _clear_editable_combo_items(self.peptide_score_col_edit, "Evidence")
+                _clear_editable_combo_items(self.peptide_error_col_edit, "Q.Value")
+                _clear_editable_combo_items(self.peptide_decoy_flag_col_edit, "Reverse")
+                return
+            preferred_seq = _pick_preferred_column(
+                columns,
+                ["Stripped.Sequence", "StrippedSequence", "Sequence", "Peptide.Sequence", "PeptideSequence"],
+            )
+            preferred_score = _pick_preferred_column(columns, ["Evidence", "Score", "CScore"])
+            preferred_error = _pick_preferred_column(
+                columns,
+                ["Q.Value", "QValue", "Qval", "QVal", "FDR", "PEP"],
+            )
+            preferred_decoy = _pick_preferred_column(
+                columns,
+                ["Reverse", "Target/Decoy", "TargetDecoy", "Decoy"],
+            )
+            _set_editable_combo_items(
+                self.peptide_seq_col_edit,
+                columns,
+                preferred_text=preferred_seq or "Sequence",
+            )
+            _set_editable_combo_items(
+                self.peptide_score_col_edit,
+                columns,
+                preferred_text=preferred_score or "Evidence",
+            )
+            _set_editable_combo_items(
+                self.peptide_error_col_edit,
+                columns,
+                preferred_text=preferred_error or "Q.Value",
+            )
+            _set_editable_combo_items(
+                self.peptide_decoy_flag_col_edit,
+                columns,
+                preferred_text=preferred_decoy or "Reverse",
+            )
+            return
+        columns = _read_table_columns(path_value)
         if not columns:
             _clear_editable_combo_items(self.peptide_seq_col_edit, "Sequence")
             _clear_editable_combo_items(self.peptide_score_col_edit, "Evidence")
+            _clear_editable_combo_items(self.peptide_error_col_edit, "Q.Value")
+            _clear_editable_combo_items(self.peptide_decoy_flag_col_edit, "Reverse")
             return
         _set_editable_combo_items(self.peptide_seq_col_edit, columns, preferred_text="Sequence")
-        preferred_score = next(
-            (candidate for candidate in ("Evidence", "score", "Score") if candidate in columns),
-            "Evidence",
+        preferred_score = _pick_preferred_column(columns, ["Evidence", "score", "Score"]) or "Evidence"
+        preferred_error = _pick_preferred_column(columns, ["Q.Value", "QValue", "Qval", "QVal", "FDR", "PEP"])
+        preferred_decoy = _pick_preferred_column(
+            columns,
+            ["Reverse", "Target/Decoy", "TargetDecoy", "Decoy"],
         )
         _set_editable_combo_items(self.peptide_score_col_edit, columns, preferred_text=preferred_score)
+        _set_editable_combo_items(
+            self.peptide_error_col_edit,
+            columns,
+            preferred_text=preferred_error or "Q.Value",
+        )
+        _set_editable_combo_items(
+            self.peptide_decoy_flag_col_edit,
+            columns,
+            preferred_text=preferred_decoy or "Reverse",
+        )
 
     def _update_genome_lineage_column_options(self) -> None:
         columns = _read_table_columns(self.genome_lineage_table_edit.text())
@@ -1315,7 +1425,7 @@ class ScoringTab(QWidget):
             self,
             "Select peptide table",
             _initial_dialog_path(self.peptide_table_edit.text(), self._last_browse_dir),
-            "TSV files (*.tsv *.txt);;All files (*.*)",
+            "TSV files (*.tsv *.txt);;Parquet files (*.parquet *.pq);;All files (*.*)",
         )
         if path:
             self.peptide_table_edit.setText(path)
@@ -1391,7 +1501,7 @@ class ScoringTab(QWidget):
             output_tsv_path=self.output_tsv_edit.text().strip(),
             peptide_seq_col=self.peptide_seq_col_edit.currentText().strip(),
             peptide_score_col=self.peptide_score_col_edit.currentText().strip(),
-            peptide_error_col=self.peptide_error_col_edit.text().strip(),
+            peptide_error_col=self.peptide_error_col_edit.currentText().strip(),
             peptide_error_cutoff=_parse_required_float(
                 self.peptide_error_cutoff_edit.text(), "Peptide error cutoff"
             ),
@@ -1400,8 +1510,8 @@ class ScoringTab(QWidget):
                 "Unique alpha upper bound",
             ),
             unique_pvalue_mode=str(self.unique_pvalue_mode_combo.currentData() or "upper-bound"),
-            peptide_decoy_flag_col=self.peptide_decoy_flag_col_edit.text().strip(),
-            decoy_flag_value=self.decoy_flag_value_edit.text().strip(),
+            peptide_decoy_flag_col=self.peptide_decoy_flag_col_edit.currentText().strip(),
+            decoy_flag_value=self.decoy_flag_value_edit.currentText().strip(),
             exclude_genome_ids=_parse_text_list(self.exclude_text.toPlainText()),
             num_workers=int(self.processes_spin.value()),
             knockoff_mc_iterations=_parse_required_int(
@@ -1460,15 +1570,15 @@ class ScoringTab(QWidget):
         self.output_tsv_edit.setText(config.output_tsv_path)
         self.peptide_seq_col_edit.setEditText(config.peptide_seq_col)
         self.peptide_score_col_edit.setEditText(config.peptide_score_col)
-        self.peptide_error_col_edit.setText(config.peptide_error_col)
+        self.peptide_error_col_edit.setEditText(config.peptide_error_col)
         self.peptide_error_cutoff_edit.setText(str(config.peptide_error_cutoff))
         self.single_peptide_error_rate_upper_bound_edit.setText(
             str(config.single_peptide_error_rate_upper_bound)
         )
         mode_index = self.unique_pvalue_mode_combo.findData(config.unique_pvalue_mode)
         self.unique_pvalue_mode_combo.setCurrentIndex(max(mode_index, 0))
-        self.peptide_decoy_flag_col_edit.setText(config.peptide_decoy_flag_col)
-        self.decoy_flag_value_edit.setText(config.decoy_flag_value)
+        self.peptide_decoy_flag_col_edit.setEditText(config.peptide_decoy_flag_col)
+        self.decoy_flag_value_edit.setEditText(config.decoy_flag_value)
         self.processes_spin.setValue(config.num_workers if config.num_workers is not None else DEFAULT_PROCESS_COUNT)
         self.knockoff_mc_iterations_edit.setText(str(config.knockoff_mc_iterations))
         self.knockoff_stage2_mc_iterations_edit.setText(
@@ -1970,18 +2080,24 @@ class MainWindow(QMainWindow):
                 return line
         return lines[-1]
 
-    def _open_parquet_import_dialog(self) -> None:
+    def _start_parquet_extraction_task(
+        self,
+        config: ParquetExtractionConfig,
+        status_text: str,
+        log_header: str,
+        extra_log_lines: list[str] | None = None,
+    ) -> None:
         if self.worker_thread is not None:
             QMessageBox.information(self, "Task Running", "A task is already running. Please wait for it to finish.")
             return
 
-        dialog = ParquetExtractionDialog(self, initial_dir=self.scoring_tab._last_browse_dir)
-        if _exec_qt_object(dialog) != QDIALOG_ACCEPTED:
-            return
-
-        config = dialog.build_config(require_required_fields=True)
         self._append_log("")
-        self._append_log("=== Starting parquet import task ===")
+        if log_header:
+            self._append_log(log_header)
+        if extra_log_lines:
+            for line in extra_log_lines:
+                self._append_log(line)
+
         self._stop_requested = False
         self._task_result_handled = False
 
@@ -1995,8 +2111,24 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self.worker_thread.quit)
         self.worker.failed.connect(self.worker_thread.quit)
         self.worker_thread.finished.connect(self._on_worker_thread_finished)
-        self._set_busy_state(True, "Parquet peptide extraction in progress")
+        self._set_busy_state(True, status_text)
         self.worker_thread.start()
+
+    def _open_parquet_import_dialog(self) -> None:
+        if self.worker_thread is not None:
+            QMessageBox.information(self, "Task Running", "A task is already running. Please wait for it to finish.")
+            return
+
+        dialog = ParquetExtractionDialog(self, initial_dir=self.scoring_tab._last_browse_dir)
+        if _exec_qt_object(dialog) != QDIALOG_ACCEPTED:
+            return
+
+        config = dialog.build_config(require_required_fields=True)
+        self._start_parquet_extraction_task(
+            config,
+            "Parquet peptide extraction in progress",
+            "=== Starting parquet import task ===",
+        )
 
     def _handle_run_button_clicked(self) -> None:
         if self.worker_thread is not None:
