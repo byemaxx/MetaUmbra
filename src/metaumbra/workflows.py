@@ -242,7 +242,7 @@ def _load_parquet_peptide_table(
         schema_names,
         normalized_lookup,
         peptide_score_col,
-        ["Evidence", "Score", "CScore"],
+        ["Evidence", "Score", "CScore"] if peptide_score_col is not None else [],
         used,
     )
     error_col, error_auto = _resolve_parquet_column(
@@ -256,7 +256,7 @@ def _load_parquet_peptide_table(
         schema_names,
         normalized_lookup,
         peptide_decoy_flag_col,
-        ["Reverse", "Target/Decoy", "TargetDecoy", "Decoy"],
+        ["Reverse", "Target/Decoy", "TargetDecoy", "Decoy"] if peptide_decoy_flag_col is not None else [],
         used,
     )
 
@@ -271,7 +271,8 @@ def _load_parquet_peptide_table(
             "Parquet columns: "
             f"sequence={seq_col} ({'auto' if seq_auto else 'config'}), "
             f"score={score_col or 'none'} ({'auto' if score_auto else 'config'}), "
-            f"error={error_col or 'none'} ({'auto' if error_auto else 'config'})"
+            f"error={error_col or 'none'} ({'auto' if error_auto else 'config'}), "
+            f"decoy={decoy_col or 'none'}"
         )
 
     table = pq.read_table(parquet_path, columns=columns_to_read)
