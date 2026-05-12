@@ -31,8 +31,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-gui = ["PySide6"]
-gui-pyqt5 = ["PyQt5"]
+gui = ["PySide6", "pyarrow"]
+gui-pyqt5 = ["PyQt5", "pyarrow"]
 parquet = ["pyarrow"]
 dev = ["build", "twine"]
 all = [
