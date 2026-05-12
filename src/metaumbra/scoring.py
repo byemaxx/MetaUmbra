@@ -358,9 +358,19 @@ class GenomePresenceScorer:
             raise ValueError("Provide only one of peptide_table_path or peptide_table_df, not both.")
 
         if peptide_table_df is not None:
-            df = peptide_table_df.copy()
+            df = peptide_table_df
             self.peptide_table_dir = os.getcwd()
             available_columns = df.columns.tolist()
+            
+            # Ensure columns have the expected types so that boolean Parquet flags match string rules
+            if peptide_seq_col in df.columns:
+                df[peptide_seq_col] = df[peptide_seq_col].astype(str)
+            if peptide_decoy_flag_col and peptide_decoy_flag_col in df.columns:
+                df[peptide_decoy_flag_col] = df[peptide_decoy_flag_col].astype(str)
+            if peptide_score_col and peptide_score_col in df.columns:
+                df[peptide_score_col] = pd.to_numeric(df[peptide_score_col], errors="coerce")
+            if peptide_error_col and peptide_error_col in df.columns:
+                df[peptide_error_col] = pd.to_numeric(df[peptide_error_col], errors="coerce")
         else:
             if peptide_table_path is None:
                 raise ValueError("peptide_table_path is None (unexpected).")

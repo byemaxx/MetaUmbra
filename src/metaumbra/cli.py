@@ -205,7 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
     score_required = score_parser.add_argument_group("Required arguments")
     score_optional = score_parser.add_argument_group("Optional arguments")
 
-    _add_argument(score_required, "--peptide-table", required=True, help="Observed peptide TSV path.")
+    _add_argument(score_required, "--peptide-table", required=True, help="Observed peptide TSV or DIA-NN parquet path.")
     _add_argument(
         score_required,
         "--genome-digest-dirs",

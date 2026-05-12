@@ -114,6 +114,8 @@ The GUI contains two main tabs:
 
 The scoring tab also includes `Import Parquet...`, which converts a DIA-NN-style parquet report into a MetaUmbra-compatible peptide TSV. By default it maps:
 
+The observed peptide table field also accepts DIA-NN `report.parquet` files directly. When you click Run, the GUI auto-detects the expected columns and loads them into memory for scoring without writing a separate TSV. Use `Import Parquet...` if you need to customize the column mapping or export a peptide TSV.
+
 | Parquet column | Output TSV column |
 | --- | --- |
 | `Run` | `Run` |
