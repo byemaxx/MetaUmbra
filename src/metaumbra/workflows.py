@@ -46,7 +46,10 @@ class ScoringConfig:
     peptide_error_col: str = "Q.Value"
     peptide_error_cutoff: float = 0.05
     single_peptide_error_rate_upper_bound: float = 0.3
-    unique_pvalue_mode: str = "upper-bound"
+    unique_pvalue_mode: str = "adaptive-fast"
+    min_unique_for_unique_pvalue: int = 3
+    theoretical_opportunity_cache_path: str = ""
+    rebuild_theoretical_opportunity_cache: bool = False
     peptide_decoy_flag_col: str = "Reverse"
     decoy_flag_value: str = "+"
     exclude_genome_ids: list[str] = field(default_factory=list)
@@ -438,6 +441,7 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
 
     output_tsv_path = _normalize_output_path(config.output_tsv_path)
     cache_path = _normalize_output_path(config.matched_peptides_cache_path)
+    theoretical_cache_path = _normalize_output_path(config.theoretical_opportunity_cache_path)
     genome_lineage_table_path = _normalize_output_path(config.genome_lineage_table_path)
 
     with capture_runtime_output(log_callback, ["GenomePresenceScorer"]):
@@ -493,6 +497,9 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
             export_peptide_contrib_topN=int(config.export_peptide_contrib_topN),
             use_cache_if_exists=bool(config.use_cache_if_exists),
             unique_pvalue_mode=str(config.unique_pvalue_mode),
+            min_unique_for_unique_pvalue=int(config.min_unique_for_unique_pvalue),
+            theoretical_opportunity_cache_path=theoretical_cache_path or None,
+            rebuild_theoretical_opportunity_cache=bool(config.rebuild_theoretical_opportunity_cache),
             return_full_table=bool(config.return_full_table),
         )
 

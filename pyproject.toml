@@ -27,6 +27,7 @@ dependencies = [
   "rpg==2.0.5",
   "numpy",
   "pandas",
+  "scipy",
   "tqdm",
 ]
 

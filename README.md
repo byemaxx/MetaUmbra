@@ -4,7 +4,7 @@
 
 ## Genome-level presence inference from metaproteomic peptides
 
-MetaUmbra performs genome-level presence inference from metaproteomic peptide lists. It combines unique peptide support with weighted shared peptide evidence to identify statistically supported microbial genomes and generate interpretable presence rankings.
+MetaUmbra performs genome-level presence inference from metaproteomic peptide lists. It combines depth-adjusted genome-unique peptide support with weighted shared peptide evidence to identify statistically supported microbial genomes and generate interpretable presence rankings.
 
 ## Main features
 
@@ -90,8 +90,11 @@ Key output columns include:
 | `genome_id` | Candidate genome identifier |
 | `num_peptides_matched` | Number of observed peptides matched to the genome |
 | `num_peptides_unique` | Number of matched peptides unique to the genome |
-| `shared_fraction` | Fraction of matched peptides that are shared with other genomes |
-| `mean_degeneracy` | Mean number of genomes containing the matched peptides |
+| `theoretical_unique_peptides` | Theoretical peptides unique to this genome among the analyzed genome set, included for adaptive-exact output |
+| `expected_unique_null` | Expected observed genome-unique peptides under the selected adaptive null |
+| `unique_depth_fold` | Observed unique peptides divided by expected unique peptides under the null |
+| `pvalue_shared` | Shared-peptide knockoff p-value |
+| `pvalue_unique` | Unique-evidence p-value |
 | `pvalue` | Genome-level p-value |
 | `qvalue` | BH-adjusted genome-level q-value |
 | `presence_score` | Ranking score based on q-value |

@@ -1204,14 +1204,20 @@ class ScoringTab(QWidget):
         self.peptide_error_cutoff_edit = QLineEdit("0.05")
         self.single_peptide_error_rate_upper_bound_edit = QLineEdit("0.3")
         self.unique_pvalue_mode_combo = QComboBox()
-        self.unique_pvalue_mode_combo.addItem("Upper bound alpha^U", "upper-bound")
-        self.unique_pvalue_mode_combo.addItem("Peptide column product", "peptide-column")
+        self.unique_pvalue_mode_combo.addItem("Adaptive fast", "adaptive-fast")
+        self.unique_pvalue_mode_combo.addItem("Adaptive exact", "adaptive-exact")
+        self.unique_pvalue_mode_combo.addItem("Legacy upper bound", "upper-bound")
+        self.unique_pvalue_mode_combo.addItem("Peptide column", "peptide-column")
+        self.min_unique_for_unique_pvalue_spin = QSpinBox()
+        self.min_unique_for_unique_pvalue_spin.setRange(0, 1000)
+        self.min_unique_for_unique_pvalue_spin.setValue(3)
+        self.rebuild_theoretical_opportunity_cache_checkbox = QCheckBox("Rebuild theoretical opportunity cache")
         self.peptide_error_cutoff_edit.setToolTip("Filters input peptide rows by the selected error/FDR column.")
         self.single_peptide_error_rate_upper_bound_edit.setToolTip(
-            "Alpha used by default unique evidence p-value bound: alpha^U."
+            "Alpha used only by the legacy upper-bound unique evidence p-value mode: alpha^U."
         )
         self.unique_pvalue_mode_combo.setToolTip(
-            "Choose whether unique peptide p-values use the configured alpha upper bound or values from the peptide error column."
+            "Choose the source for unique peptide p-values."
         )
         self.knockoff_mc_iterations_edit = QLineEdit("500")
         self.knockoff_stage2_mc_iterations_edit = QLineEdit("2000")
@@ -1226,26 +1232,25 @@ class ScoringTab(QWidget):
             "This is mainly a speed optimization for very large runs."
         )
         cache_row, self.cache_path_edit = _make_path_row("Browse", self._browse_cache_path, accept_mode="file")
+        theoretical_cache_row, self.theoretical_opportunity_cache_edit = _make_path_row(
+            "Browse", self._browse_theoretical_opportunity_cache, accept_mode="file"
+        )
         self.export_peptide_contrib_topn_spin = QSpinBox()
         self.export_peptide_contrib_topn_spin.setRange(0, 1000000)
         self.export_peptide_contrib_topn_spin.setValue(0)
         runtime_grid = _create_compact_grid()
         _add_compact_field(runtime_grid, 0, 0, "Processes", self.processes_spin, 110)
         _add_compact_field(runtime_grid, 0, 1, "Peptide error cutoff", self.peptide_error_cutoff_edit, 110)
-        _add_compact_field(
-            runtime_grid,
-            0,
-            2,
-            "Unique alpha upper bound",
-            self.single_peptide_error_rate_upper_bound_edit,
-            130,
-        )
+        self.unique_alpha_label = QLabel("Unique alpha upper bound")
+        self.unique_alpha_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
+        _set_compact_control_width(self.single_peptide_error_rate_upper_bound_edit, 130)
+        runtime_grid.addWidget(self.unique_alpha_label, 0, 4)
+        runtime_grid.addWidget(self.single_peptide_error_rate_upper_bound_edit, 0, 5)
         _add_compact_field(runtime_grid, 1, 0, "Random seed", self.knockoff_random_seed_edit, 110)
         _add_compact_field(runtime_grid, 1, 1, "Knockoff MC", self.knockoff_mc_iterations_edit, 110)
         _add_compact_field(runtime_grid, 1, 2, "Stage 2 MC", self.knockoff_stage2_mc_iterations_edit, 110)
         _add_compact_field(runtime_grid, 2, 0, "Top genomes", self.knockoff_top_n_targets_spin, 110)
         _add_compact_field(runtime_grid, 2, 1, "Export contrib top-N", self.export_peptide_contrib_topn_spin, 110)
-        _add_compact_field(runtime_grid, 2, 2, "Unique p-value mode", self.unique_pvalue_mode_combo, 160)
         runtime_layout.addLayout(runtime_grid)
         runtime_form = QFormLayout()
         runtime_form.addRow("Stage 2 p ranges", self.knockoff_stage2_ranges_edit)
@@ -1263,6 +1268,23 @@ class ScoringTab(QWidget):
         _polish_form_layout(runtime_form)
         runtime_layout.addLayout(runtime_form)
         options_layout.addWidget(runtime_box)
+
+        unique_box = QGroupBox("Unique Evidence Settings")
+        unique_box.setProperty("subtle", True)
+        unique_layout = QVBoxLayout(unique_box)
+        unique_grid = _create_compact_grid()
+        _add_compact_field(unique_grid, 0, 0, "Unique p-value mode", self.unique_pvalue_mode_combo, 160)
+        _add_compact_field(unique_grid, 0, 1, "Minimum unique peptides", self.min_unique_for_unique_pvalue_spin, 110)
+        unique_layout.addLayout(unique_grid)
+        unique_form = QFormLayout()
+        self.theoretical_opportunity_cache_label = QLabel("Theoretical opportunity cache")
+        unique_form.addRow(self.theoretical_opportunity_cache_label, theoretical_cache_row)
+        unique_form.addRow("", self.rebuild_theoretical_opportunity_cache_checkbox)
+        _polish_form_layout(unique_form)
+        unique_layout.addLayout(unique_form)
+        options_layout.addWidget(unique_box)
+        self.unique_pvalue_mode_combo.currentIndexChanged.connect(self._sync_unique_mode_visibility)
+        self._sync_unique_mode_visibility()
 
         exclude_box = QGroupBox("Excluded Genome IDs")
         exclude_box.setProperty("subtle", True)
@@ -1456,6 +1478,10 @@ class ScoringTab(QWidget):
                 out_path = Path(path)
                 suggested = out_path.with_name(f"{out_path.stem}_artifacts") / "matched_peptides.pkl"
                 self.cache_path_edit.setText(str(suggested))
+            if not self.theoretical_opportunity_cache_edit.text().strip():
+                out_path = Path(path)
+                suggested = out_path.with_name(f"{out_path.stem}_artifacts") / "theoretical_opportunity_cache.pkl"
+                self.theoretical_opportunity_cache_edit.setText(str(suggested))
 
     def _browse_genome_lineage_table(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -1478,6 +1504,31 @@ class ScoringTab(QWidget):
         if path:
             self.cache_path_edit.setText(path)
             self._last_browse_dir = _remember_dialog_directory(path)
+
+    def _browse_theoretical_opportunity_cache(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Select theoretical opportunity cache",
+            _initial_dialog_path(
+                self.theoretical_opportunity_cache_edit.text(),
+                self._last_browse_dir,
+                "theoretical_opportunity_cache.pkl",
+            ),
+            "Pickle files (*.pkl);;All files (*.*)",
+        )
+        if path:
+            self.theoretical_opportunity_cache_edit.setText(path)
+            self._last_browse_dir = _remember_dialog_directory(path)
+
+    def _sync_unique_mode_visibility(self) -> None:
+        mode = str(self.unique_pvalue_mode_combo.currentData() or "adaptive-fast")
+        show_alpha = mode == "upper-bound"
+        show_exact_cache = mode == "adaptive-exact"
+        self.unique_alpha_label.setVisible(show_alpha)
+        self.single_peptide_error_rate_upper_bound_edit.setVisible(show_alpha)
+        self.theoretical_opportunity_cache_label.setVisible(show_exact_cache)
+        self.theoretical_opportunity_cache_edit.parentWidget().setVisible(show_exact_cache)
+        self.rebuild_theoretical_opportunity_cache_checkbox.setVisible(show_exact_cache)
 
     def _add_genome_dir(self) -> None:
         path = _choose_directory(
@@ -1518,7 +1569,10 @@ class ScoringTab(QWidget):
                 self.single_peptide_error_rate_upper_bound_edit.text(),
                 "Unique alpha upper bound",
             ),
-            unique_pvalue_mode=str(self.unique_pvalue_mode_combo.currentData() or "upper-bound"),
+            unique_pvalue_mode=str(self.unique_pvalue_mode_combo.currentData() or "adaptive-fast"),
+            min_unique_for_unique_pvalue=int(self.min_unique_for_unique_pvalue_spin.value()),
+            theoretical_opportunity_cache_path=self.theoretical_opportunity_cache_edit.text().strip(),
+            rebuild_theoretical_opportunity_cache=self.rebuild_theoretical_opportunity_cache_checkbox.isChecked(),
             peptide_decoy_flag_col=self.peptide_decoy_flag_col_edit.currentText().strip(),
             decoy_flag_value=self.decoy_flag_value_edit.currentText().strip(),
             exclude_genome_ids=_parse_text_list(self.exclude_text.toPlainText()),
@@ -1568,6 +1622,8 @@ class ScoringTab(QWidget):
                 _require_existing_directory(genome_dir, "Genome digest directory")
             if config.matched_peptides_cache_path:
                 _require_output_parent_directory(config.matched_peptides_cache_path, "matched peptide cache")
+            if config.theoretical_opportunity_cache_path:
+                _require_output_parent_directory(config.theoretical_opportunity_cache_path, "theoretical opportunity cache")
         return config
 
     def load_config(self, config: ScoringConfig) -> None:
@@ -1586,6 +1642,10 @@ class ScoringTab(QWidget):
         )
         mode_index = self.unique_pvalue_mode_combo.findData(config.unique_pvalue_mode)
         self.unique_pvalue_mode_combo.setCurrentIndex(max(mode_index, 0))
+        self.min_unique_for_unique_pvalue_spin.setValue(int(config.min_unique_for_unique_pvalue))
+        self.theoretical_opportunity_cache_edit.setText(config.theoretical_opportunity_cache_path)
+        self.rebuild_theoretical_opportunity_cache_checkbox.setChecked(bool(config.rebuild_theoretical_opportunity_cache))
+        self._sync_unique_mode_visibility()
         self.peptide_decoy_flag_col_edit.setEditText(config.peptide_decoy_flag_col)
         self.decoy_flag_value_edit.setEditText(config.decoy_flag_value)
         self.processes_spin.setValue(config.num_workers if config.num_workers is not None else DEFAULT_PROCESS_COUNT)
@@ -2428,7 +2488,10 @@ class MainWindow(QMainWindow):
                 "peptide_error_col": self.scoring_tab.peptide_error_col_edit.currentText().strip(),
                 "peptide_error_cutoff": err_cutoff,
                 "single_peptide_error_rate_upper_bound": single_err_bound,
-                "unique_pvalue_mode": str(self.scoring_tab.unique_pvalue_mode_combo.currentData() or "upper-bound"),
+                "unique_pvalue_mode": str(self.scoring_tab.unique_pvalue_mode_combo.currentData() or "adaptive-fast"),
+                "min_unique_for_unique_pvalue": self.scoring_tab.min_unique_for_unique_pvalue_spin.value(),
+                "theoretical_opportunity_cache_path": self.scoring_tab.theoretical_opportunity_cache_edit.text().strip(),
+                "rebuild_theoretical_opportunity_cache": self.scoring_tab.rebuild_theoretical_opportunity_cache_checkbox.isChecked(),
                 "peptide_decoy_flag_col": self.scoring_tab.peptide_decoy_flag_col_edit.currentText().strip(),
                 "decoy_flag_value": self.scoring_tab.decoy_flag_value_edit.currentText().strip(),
 
@@ -2502,6 +2565,13 @@ class MainWindow(QMainWindow):
             if "unique_pvalue_mode" in state:
                 mode_index = self.scoring_tab.unique_pvalue_mode_combo.findData(state["unique_pvalue_mode"])
                 self.scoring_tab.unique_pvalue_mode_combo.setCurrentIndex(max(mode_index, 0))
+            if "min_unique_for_unique_pvalue" in state:
+                self.scoring_tab.min_unique_for_unique_pvalue_spin.setValue(int(state["min_unique_for_unique_pvalue"]))
+            if "theoretical_opportunity_cache_path" in state:
+                self.scoring_tab.theoretical_opportunity_cache_edit.setText(str(state["theoretical_opportunity_cache_path"] or ""))
+            if "rebuild_theoretical_opportunity_cache" in state:
+                self.scoring_tab.rebuild_theoretical_opportunity_cache_checkbox.setChecked(bool(state["rebuild_theoretical_opportunity_cache"]))
+            self.scoring_tab._sync_unique_mode_visibility()
 
             if "num_workers" in state and state["num_workers"] is not None:
                 self.scoring_tab.processes_spin.setValue(state["num_workers"])

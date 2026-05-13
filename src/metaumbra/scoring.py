@@ -15,7 +15,7 @@
 #    - Build pools of shared peptide contributions (w*s) stratified by degeneracy (and optional length).
 #    - For each genome, sample from these pools according to that genome's shared-stratum counts to get
 #      an empirical null for weighted_evidence_shared, yielding p_shared_knock.
-#    - Unique evidence p-value upper bound (conservative): p_unique_upper = (single_peptide_error_rate_upper_bound) ** U.
+#    - Unique evidence p-value uses an adaptive peptide-depth null by default.
 #    - Combine with Fisher (2 p-values) => p_presence; BH => q_presence (per-genome existence q-value).
 #
 # Outputs:
@@ -111,6 +111,65 @@ def _init_genome_batch_worker(obs_peptides: Union[Set[str], FrozenSet[str]]) -> 
     _OBS_PEPTIDES_WORKER = obs_peptides
 
 
+def _read_unique_peptides_from_digest(genome_peptides_path: Union[str, os.PathLike]) -> Set[str]:
+    """Read unique theoretical peptides from a digest TSV."""
+    genome_peptides_path = str(genome_peptides_path)
+    fallback_to_first_col = False
+    fallback_available_columns: Optional[List[str]] = None
+    try:
+        chunk_iter = pd.read_csv(
+            genome_peptides_path,
+            sep="\t",
+            usecols=["Peptide"],
+            dtype={"Peptide": "string"},
+            engine="c",
+            chunksize=50000,
+        )
+        peptide_column_name = "Peptide"
+    except ValueError:
+        fallback_to_first_col = True
+        try:
+            fallback_available_columns = pd.read_csv(genome_peptides_path, sep="\t", nrows=0).columns.tolist()
+        except Exception:
+            fallback_available_columns = None
+        chunk_iter = pd.read_csv(
+            genome_peptides_path,
+            sep="\t",
+            usecols=[0],
+            dtype="string",
+            engine="c",
+            chunksize=50000,
+        )
+        peptide_column_name = None
+
+    seen_theoretical: Set[str] = set()
+    fallback_sanity_checked = False
+    for chunk_df in chunk_iter:
+        col_name = peptide_column_name if peptide_column_name is not None else chunk_df.columns[0]
+        col_series = chunk_df[col_name].dropna().astype(str).str.strip()
+
+        if fallback_to_first_col and not fallback_sanity_checked:
+            sample = col_series[col_series != ""].head(200)
+            if not sample.empty:
+                is_aa_only = sample.str.upper().str.fullmatch(_AA_ONLY_PATTERN)
+                if not bool(is_aa_only.all()):
+                    bad_examples = sample[~is_aa_only].head(5).tolist()
+                    cols_for_error = fallback_available_columns if fallback_available_columns else chunk_df.columns.tolist()
+                    available_cols = ", ".join(map(str, cols_for_error))
+                    raise ValueError(
+                        "Fallback to first column failed sanity check: values are not peptide-like "
+                        f"(AA letters only). Available columns: [{available_cols}]. "
+                        f"Please provide a 'Peptide' column. Non-peptide examples: {bad_examples}"
+                    )
+                fallback_sanity_checked = True
+
+        chunk_unique = set(col_series[col_series != ""].values.tolist())
+        if chunk_unique:
+            seen_theoretical.update(chunk_unique)
+
+    return seen_theoretical
+
+
 def _process_genome_batch_worker(file_paths: List[Union[str, os.PathLike]]) -> List[Tuple[str, Set[str], int, Optional[str]]]:
     """
     Process a batch of genome peptide files.
@@ -125,71 +184,8 @@ def _process_genome_batch_worker(file_paths: List[Union[str, os.PathLike]]) -> L
         genome_peptides_path = str(genome_peptides_path)
         genome_id = Path(genome_peptides_path).stem
         try:
-            # Chunked read to reduce peak memory on large genome TSV files.
-            fallback_to_first_col = False
-            fallback_available_columns: Optional[List[str]] = None
-            try:
-                chunk_iter = pd.read_csv(
-                    genome_peptides_path,
-                    sep="\t",
-                    usecols=["Peptide"],
-                    dtype={"Peptide": "string"},
-                    engine="c",
-                    chunksize=50000,
-                )
-                peptide_column_name = "Peptide"
-            except ValueError:
-                # Fallback for files without "Peptide": read only the first column by index.
-                fallback_to_first_col = True
-                try:
-                    fallback_available_columns = pd.read_csv(
-                        genome_peptides_path,
-                        sep="\t",
-                        nrows=0,
-                    ).columns.tolist()
-                except Exception:
-                    fallback_available_columns = None
-                chunk_iter = pd.read_csv(
-                    genome_peptides_path,
-                    sep="\t",
-                    usecols=[0],
-                    dtype="string",
-                    engine="c",
-                    chunksize=50000,
-                )
-                peptide_column_name = None
-
-            seen_theoretical: Set[str] = set()
-            matched_peptides: Set[str] = set()
-            fallback_sanity_checked = False
-            for chunk_df in chunk_iter:
-                col_name = peptide_column_name if peptide_column_name is not None else chunk_df.columns[0]
-                col_series = chunk_df[col_name].dropna().astype(str).str.strip()
-
-                if fallback_to_first_col and not fallback_sanity_checked:
-                    sample = col_series[col_series != ""].head(200)
-                    if not sample.empty:
-                        is_aa_only = sample.str.upper().str.fullmatch(_AA_ONLY_PATTERN)
-                        if not bool(is_aa_only.all()):
-                            bad_examples = sample[~is_aa_only].head(5).tolist()
-                            cols_for_error = fallback_available_columns if fallback_available_columns else chunk_df.columns.tolist()
-                            available_cols = ", ".join(map(str, cols_for_error))
-                            raise ValueError(
-                                "Fallback to first column failed sanity check: values are not peptide-like "
-                                f"(AA letters only). Available columns: [{available_cols}]. "
-                                f"Please provide a 'Peptide' column. Non-peptide examples: {bad_examples}"
-                            )
-                        fallback_sanity_checked = True
-
-                chunk_unique = set(col_series[col_series != ""].values.tolist())
-                if not chunk_unique:
-                    continue
-                new_peptides = chunk_unique.difference(seen_theoretical)
-                if not new_peptides:
-                    continue
-                seen_theoretical.update(new_peptides)
-                matched_peptides.update(new_peptides.intersection(_OBS_PEPTIDES_WORKER))
-
+            seen_theoretical = _read_unique_peptides_from_digest(genome_peptides_path)
+            matched_peptides = set(seen_theoretical).intersection(_OBS_PEPTIDES_WORKER)
             results.append((genome_id, matched_peptides, len(seen_theoretical), None))
         except Exception as e:
             err = f"{type(e).__name__}: {e}"
@@ -225,6 +221,14 @@ class GenomePresenceScorer:
 
         self.genome_matched_peptides: Dict[str, Set[str]] = {}  # genome -> matched peptides (observed ∩ theoretical)
         self.genome_total_theoretical_peptides: Dict[str, int] = {}  # genome -> total theoretical peptides count
+        self.genome_theoretical_unique_peptides: Dict[str, int] = {}
+        self.theoretical_peptide_universe_size: int = 0
+        self.total_theoretical_peptides_all_genomes: int = 0
+        self.observed_matchable_peptides: int = 0
+        self.observed_unique_peptide_pool_size: int = 0
+        self.total_theoretical_unique_peptides_all_genomes: int = 0
+        self.min_unique_for_unique_pvalue: int = 3
+        self.unique_pvalue_mode: str = "adaptive-fast"
         self.genome_scores_df: Optional[pd.DataFrame] = None
 
         # Unified ranking score scales (lexicographic; unique dominates)
@@ -333,6 +337,196 @@ class GenomePresenceScorer:
         insert_at = out.columns.get_loc("genome_id") + 1
         out.insert(insert_at, "Lineage", lineage_values)
         return out
+
+    def _build_theoretical_opportunity(self, genome_digest_files: List[Path]) -> dict:
+        """Compute genome-specific theoretical unique peptide opportunity."""
+        peptide_owner: Dict[str, int] = {}
+        genome_total_theoretical_peptides: Dict[str, int] = {}
+        genome_peptides_by_index: List[Tuple[str, Set[str]]] = []
+
+        for genome_index, genome_file in enumerate(genome_digest_files):
+            genome_id = genome_file.stem
+            peptides = _read_unique_peptides_from_digest(genome_file)
+            genome_peptides_by_index.append((genome_id, peptides))
+            genome_total_theoretical_peptides[genome_id] = int(len(peptides))
+            for peptide in peptides:
+                owner = peptide_owner.get(peptide)
+                if owner is None:
+                    peptide_owner[peptide] = genome_index
+                elif owner != genome_index:
+                    peptide_owner[peptide] = -1
+
+        genome_theoretical_unique_peptides = {
+            genome_id: int(sum(1 for peptide in peptides if peptide_owner.get(peptide) == genome_index))
+            for genome_index, (genome_id, peptides) in enumerate(genome_peptides_by_index)
+        }
+        genome_ids = sorted(genome_id for genome_id, _ in genome_peptides_by_index)
+
+        return {
+            "theoretical_peptide_universe_size": int(len(peptide_owner)),
+            "genome_theoretical_unique_peptides": genome_theoretical_unique_peptides,
+            "genome_total_theoretical_peptides": genome_total_theoretical_peptides,
+            "target_genome_count": int(len(genome_digest_files)),
+            "genome_ids": genome_ids,
+            "digest_files": [str(Path(p)) for p in genome_digest_files],
+            "created_by": "MetaUmbra",
+            "cache_version": 1,
+        }
+
+    def _load_or_build_theoretical_opportunity(
+        self,
+        genome_digest_files: List[Path],
+        cache_path: str,
+        rebuild_cache: bool,
+    ) -> Tuple[dict, bool]:
+        """Load theoretical opportunity cache, or rebuild when missing/stale."""
+        current_genome_ids = sorted(p.stem for p in genome_digest_files)
+        if cache_path and os.path.exists(cache_path) and not rebuild_cache:
+            try:
+                with open(cache_path, "rb") as f:
+                    cached = pickle.load(f)
+                cached_genome_ids = sorted(str(x) for x in cached.get("genome_ids", []))
+                if cached_genome_ids == current_genome_ids:
+                    self.logger.info(f"Loaded theoretical opportunity cache: {cache_path}")
+                    return cached, False
+                self.logger.warning(
+                    "Theoretical opportunity cache genome IDs do not match the selected genomes; rebuilding cache."
+                )
+            except Exception as exc:
+                self.logger.warning(f"Failed to load theoretical opportunity cache; rebuilding. Error: {exc}")
+
+        self.logger.info("Building theoretical unique peptide opportunity cache...")
+        opportunity = self._build_theoretical_opportunity(genome_digest_files)
+        if cache_path:
+            os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
+            with open(cache_path, "wb") as f:
+                pickle.dump(opportunity, f)
+            self.logger.info(f"Saved theoretical opportunity cache: {cache_path}")
+        return opportunity, True
+
+    def _apply_theoretical_opportunity(self, opportunity: dict) -> None:
+        self.theoretical_peptide_universe_size = int(opportunity.get("theoretical_peptide_universe_size", 0) or 0)
+        self.genome_theoretical_unique_peptides = {
+            str(k): int(v)
+            for k, v in dict(opportunity.get("genome_theoretical_unique_peptides", {}) or {}).items()
+        }
+        self.total_theoretical_unique_peptides_all_genomes = int(sum(self.genome_theoretical_unique_peptides.values()))
+        cached_totals = {
+            str(k): int(v)
+            for k, v in dict(opportunity.get("genome_total_theoretical_peptides", {}) or {}).items()
+        }
+        if cached_totals:
+            self.genome_total_theoretical_peptides.update(cached_totals)
+
+    def _binomial_tail_pvalue(self, observed: int, trials: int, prob: float) -> float:
+        observed = int(observed)
+        trials = int(max(trials, 0))
+        prob = float(min(max(prob, 1e-12), 1.0))
+        if observed <= 0 or trials <= 0:
+            return 1.0
+        try:
+            from scipy.stats import binom  # type: ignore
+
+            return float(np.clip(binom.sf(observed - 1, trials, prob), 0.0, 1.0))
+        except ImportError as exc:
+            raise RuntimeError(
+                "scipy is required for adaptive-fast unique p-values. "
+                "Install scipy or use legacy upper-bound mode."
+            ) from exc
+
+    def _hypergeom_tail_pvalue(
+        self,
+        observed: int,
+        universe_size: int,
+        success_states: int,
+        draws: int,
+    ) -> float:
+        observed = int(observed)
+        universe_size = int(max(universe_size, 0))
+        success_states = int(max(success_states, 0))
+        draws = int(max(draws, 0))
+        if observed <= 0:
+            return 1.0
+        if universe_size <= 0 or success_states <= 0 or draws <= 0:
+            return 1.0
+        draws = min(draws, universe_size)
+        success_states = min(success_states, universe_size)
+        try:
+            from scipy.stats import hypergeom  # type: ignore
+
+            return float(np.clip(hypergeom.sf(observed - 1, universe_size, success_states, draws), 0.0, 1.0))
+        except ImportError as exc:
+            raise RuntimeError(
+                "scipy is required for adaptive-exact unique p-values. "
+                "Install scipy or use adaptive-fast/legacy upper-bound mode."
+            ) from exc
+
+    def _unique_pvalue_stats_for_genome(self, gid: str, u_observed: int) -> dict:
+        U = int(u_observed)
+        mode = str(self.unique_pvalue_mode or "adaptive-fast").strip().lower()
+        alpha = float(min(max(self.single_peptide_error_rate_upper_bound, 1e-12), 1.0))
+        p_unique = 1.0
+        p_unique_depth = 1.0
+        S = int(self.observed_unique_peptide_pool_size)
+        expected = 0.0
+        fold = 0.0
+        gate_pass = False
+        null_model = ""
+        unique_fast_pi = 0.0
+        theoretical_unique: Optional[int] = None
+
+        if mode == "adaptive-fast":
+            T_g = int(self.genome_total_theoretical_peptides.get(gid, 0))
+            T_total = int(max(self.total_theoretical_peptides_all_genomes, 1))
+            unique_fast_pi = float(min(max(float(T_g) / float(T_total), 1e-12), 1.0))
+            expected = float(S) * unique_fast_pi
+            fold = float(U) / max(expected, 1e-12)
+            null_model = "binomial"
+            if U >= int(self.min_unique_for_unique_pvalue) and S > 0 and T_g > 0:
+                p_unique_depth = self._binomial_tail_pvalue(U, S, unique_fast_pi)
+                p_unique = p_unique_depth
+                gate_pass = True
+        elif mode == "adaptive-exact":
+            A = int(self.genome_theoretical_unique_peptides.get(gid, 0))
+            A_total = int(max(self.total_theoretical_unique_peptides_all_genomes, 1))
+            theoretical_unique = int(A)
+            expected = float(S) * float(A) / float(A_total)
+            fold = float(U) / max(expected, 1e-12)
+            null_model = "hypergeometric"
+            if U >= int(self.min_unique_for_unique_pvalue) and A > 0 and S > 0 and A_total > 0:
+                p_unique_depth = self._hypergeom_tail_pvalue(U, A_total, A, S)
+                p_unique = p_unique_depth
+                gate_pass = True
+        elif mode == "upper-bound":
+            p_unique = float(alpha ** max(U, 0)) if U > 0 else 1.0
+            p_unique_depth = p_unique
+            gate_pass = U > 0
+        elif mode == "peptide-column":
+            matched = self.genome_matched_peptides.get(gid, set())
+            uniq = [p for p in matched if int((self.peptide_degeneracy or {}).get(p, 1)) == 1]
+            if uniq:
+                errs = [self.peptide_error_upper_by_peptide.get(p, alpha) for p in uniq]
+                p_unique = float(np.prod(np.clip(errs, 1e-12, 1.0)))
+                p_unique_depth = p_unique
+                gate_pass = True
+        else:
+            raise ValueError(
+                "unique_pvalue_mode must be one of 'adaptive-fast', 'adaptive-exact', "
+                "'upper-bound', or 'peptide-column'."
+            )
+
+        return {
+            "p_unique": float(np.clip(p_unique, 0.0, 1.0)),
+            "p_unique_depth": float(np.clip(p_unique_depth, 0.0, 1.0)),
+            "unique_observed": int(U),
+            "unique_expected_null": float(expected),
+            "unique_depth_fold": float(fold),
+            "unique_depth_null_model": null_model,
+            "unique_pvalue_mode": mode,
+            "unique_gate_pass": bool(gate_pass),
+            "unique_fast_pi": float(unique_fast_pi),
+            "theoretical_unique_peptides": theoretical_unique,
+        }
 
 
     # =========================
@@ -896,34 +1090,26 @@ class GenomePresenceScorer:
     def _add_knockoff_existence_stats(
         self,
         df_scored: pd.DataFrame,
-        unique_pvalue_mode: str = "upper-bound",
+        unique_pvalue_mode: str = "adaptive-fast",
+        min_unique_for_unique_pvalue: int = 3,
     ) -> pd.DataFrame:
         """Add per-genome knockoff existence p/q-values."""
-        def _p_unique_upper_for_genome(gid: str) -> float:
-            matched = self.genome_matched_peptides.get(gid, set())
-            if not matched:
-                return 1.0
-
-            # Unique peptides are those with degeneracy == 1
-            uniq = [p for p in matched if int(self.peptide_degeneracy.get(p, 1)) == 1]
-            if not uniq:
-                return 1.0
-
-            # Use global alpha^U if per-peptide mode is disabled or unavailable.
-            if not use_per_peptide_error:
-                return float(peptide_error_upper ** len(uniq))
-
-            # Product of per-peptide upper bounds; fallback to peptide_error_upper if missing
-            errs = [self.peptide_error_upper_by_peptide.get(p, peptide_error_upper) for p in uniq]
-            return float(np.prod(np.clip(errs, 1e-12, 1.0)))
-        
         out = df_scored.copy()
         # Conservative defaults for genomes with no match / skipped inference.
         out["p_shared_knock"] = 1.0
-        out["p_unique_upper"] = 1.0
+        out["p_unique"] = 1.0
+        out["p_unique_depth"] = 1.0
         out["p_presence"] = 1.0
         out["q_presence"] = 1.0
         out["presence_score"] = 0.0
+        out["unique_observed"] = 0
+        out["unique_expected_null"] = 0.0
+        out["unique_depth_fold"] = 0.0
+        out["unique_gate_pass"] = False
+        out["unique_depth_null_model"] = ""
+        out["unique_fast_pi"] = 0.0
+        out["theoretical_unique_peptides"] = pd.NA
+        out["unique_pvalue_mode"] = unique_pvalue_mode
 
         # --- NEW: knockoff null diagnostics ---
         out["null_mean_shared"] = 0.0
@@ -951,22 +1137,42 @@ class GenomePresenceScorer:
         if self.knockoff_stage2_mc_iterations is not None:
             K2 = int(max(50, self.knockoff_stage2_mc_iterations))
         peptide_error_upper = float(min(max(self.single_peptide_error_rate_upper_bound, 1e-12), 1.0))
-        mode = str(unique_pvalue_mode or "upper-bound").strip().lower()
-        if mode not in {"upper-bound", "peptide-column"}:
+        mode = str(unique_pvalue_mode or "adaptive-fast").strip().lower()
+        if int(min_unique_for_unique_pvalue) < 0:
+            raise ValueError("min_unique_for_unique_pvalue must be >= 0.")
+        if mode not in {"adaptive-fast", "adaptive-exact", "upper-bound", "peptide-column"}:
             raise ValueError(
-                "unique_pvalue_mode must be 'upper-bound' or 'peptide-column', "
+                "unique_pvalue_mode must be one of 'adaptive-fast', 'adaptive-exact', "
+                "'upper-bound', or 'peptide-column', "
                 f"got {unique_pvalue_mode!r}."
             )
+        self.unique_pvalue_mode = mode
+        self.min_unique_for_unique_pvalue = int(min_unique_for_unique_pvalue)
         error_col = self.run_stats.get("peptide_error_col", None)
         has_per_peptide_error = bool(self.peptide_error_upper_by_peptide)
         use_per_peptide_error = bool(mode == "peptide-column" and has_per_peptide_error)
         uses_pep_column = bool(use_per_peptide_error and isinstance(error_col, str) and error_col.upper() == "PEP")
         source_col_display = str(error_col) if error_col is not None else "none"
         self.run_stats["unique_pvalue_mode"] = mode
+        self.run_stats["min_unique_for_unique_pvalue"] = int(min_unique_for_unique_pvalue)
         self.run_stats["unique_pvalue_uses_per_peptide_error"] = bool(use_per_peptide_error)
         self.run_stats["unique_pvalue_error_source_col"] = str(error_col) if use_per_peptide_error and error_col is not None else None
         self.run_stats["unique_pvalue_uses_pep_column"] = bool(uses_pep_column)
-        if use_per_peptide_error:
+        if mode == "adaptive-fast":
+            self.logger.info(
+                "Unique p-value mode: [adaptive-fast] "
+                f"null_model=binomial, min_unique={int(min_unique_for_unique_pvalue)}, "
+                f"observed_unique_pool={int(self.observed_unique_peptide_pool_size)}, "
+                f"total_theoretical_peptides={int(self.total_theoretical_peptides_all_genomes)}"
+            )
+        elif mode == "adaptive-exact":
+            self.logger.info(
+                "Unique p-value mode: [adaptive-exact] "
+                f"null_model=hypergeometric, min_unique={int(min_unique_for_unique_pvalue)}, "
+                f"observed_unique_pool={int(self.observed_unique_peptide_pool_size)}, "
+                f"theoretical_unique_universe={int(self.total_theoretical_unique_peptides_all_genomes)}"
+            )
+        elif use_per_peptide_error:
             self.logger.info(
                 f"Unique p-value mode: {'[PEP]' if uses_pep_column else '[per-peptide error column]'} "
                 f"source_col='{source_col_display}', "
@@ -1009,13 +1215,16 @@ class GenomePresenceScorer:
             )
             p_shared, mu, sd, p95, p99 = result if isinstance(result, tuple) else (result, 0.0, 0.0, 0.0, 0.0)
 
-            p_unique_upper = _p_unique_upper_for_genome(genome_id)
-
-
-            p_existence = self._fisher_p_2(p1=p_shared, p2=p_unique_upper)
+            unique_stats = self._unique_pvalue_stats_for_genome(
+                gid=genome_id,
+                u_observed=int(row.get("num_peptides_unique", 0)),
+            )
+            p_unique = float(unique_stats["p_unique"])
+            p_existence = self._fisher_p_2(p1=p_shared, p2=p_unique)
 
             out.at[idx, "p_shared_knock"] = p_shared
-            out.at[idx, "p_unique_upper"] = p_unique_upper
+            for key, value in unique_stats.items():
+                out.at[idx, key] = value
             out.at[idx, "p_presence"] = p_existence
 
             out.at[idx, "null_mean_shared"] = mu
@@ -1062,12 +1271,16 @@ class GenomePresenceScorer:
                         )
                         p_shared, mu, sd, p95, p99 = result if isinstance(result, tuple) else (result, 0.0, 0.0, 0.0, 0.0)
 
-                        p_unique_upper = _p_unique_upper_for_genome(genome_id)
-
-                        p_existence = self._fisher_p_2(p1=p_shared, p2=p_unique_upper)
+                        unique_stats = self._unique_pvalue_stats_for_genome(
+                            gid=genome_id,
+                            u_observed=int(row.get("num_peptides_unique", 0)),
+                        )
+                        p_unique = float(unique_stats["p_unique"])
+                        p_existence = self._fisher_p_2(p1=p_shared, p2=p_unique)
 
                         out.at[idx, "p_shared_knock"] = p_shared
-                        out.at[idx, "p_unique_upper"] = p_unique_upper
+                        for key, value in unique_stats.items():
+                            out.at[idx, key] = value
                         out.at[idx, "p_presence"] = p_existence
 
                         out.at[idx, "null_mean_shared"] = mu
@@ -1233,7 +1446,7 @@ class GenomePresenceScorer:
             def _hist(series: pd.Series, tag: str) -> pd.DataFrame:
                 s = pd.to_numeric(series, errors="coerce").dropna()
                 if len(s) == 0:
-                    return pd.DataFrame({"set": [tag], "bin": [], "count": [], "fraction": []})
+                    return pd.DataFrame(columns=["set", "bin", "count", "fraction"])
                 edges = [0.0, 1e-6, 1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1, 5e-1, 1.0]
                 bins = pd.cut(s, bins=edges, include_lowest=True)
                 h = bins.value_counts().sort_index()
@@ -1327,10 +1540,24 @@ class GenomePresenceScorer:
         export_temp: bool = True,
         export_peptide_contrib_topN: int = 0,
         use_cache_if_exists: bool = True,
-        unique_pvalue_mode: str = "upper-bound",
+        unique_pvalue_mode: str = "adaptive-fast",
+        min_unique_for_unique_pvalue: int = 3,
+        theoretical_opportunity_cache_path: Optional[str] = None,
+        rebuild_theoretical_opportunity_cache: bool = False,
         return_full_table: bool = False,
     ) -> pd.DataFrame:
         """End-to-end analysis producing a genome-level q-value (q_presence)."""
+        mode = str(unique_pvalue_mode or "adaptive-fast").strip().lower()
+        if int(min_unique_for_unique_pvalue) < 0:
+            raise ValueError("min_unique_for_unique_pvalue must be >= 0.")
+        if mode not in {"adaptive-fast", "adaptive-exact", "upper-bound", "peptide-column"}:
+            raise ValueError(
+                "unique_pvalue_mode must be one of 'adaptive-fast', 'adaptive-exact', "
+                "'upper-bound', or 'peptide-column'."
+            )
+        self.unique_pvalue_mode = mode
+        self.min_unique_for_unique_pvalue = int(min_unique_for_unique_pvalue)
+
         if output_tsv_path is None:
             out_dir = self.peptide_table_dir if self.peptide_table_dir else os.getcwd()
             output_tsv_path = os.path.join(out_dir, "genome_presence.tsv")
@@ -1342,6 +1569,8 @@ class GenomePresenceScorer:
         stem = Path(output_tsv_path).stem
         default_cache_dir = os.path.join(out_dir, f"{stem}_artifacts") if export_temp else out_dir
         default_cache_pkl_path = os.path.join(default_cache_dir, "matched_peptides.pkl")
+        default_theoretical_cache_path = os.path.join(default_cache_dir, "theoretical_opportunity_cache.pkl")
+        theoretical_cache_path = str(theoretical_opportunity_cache_path) if theoretical_opportunity_cache_path else default_theoretical_cache_path
 
         if genome_lineage_table_path:
             if not genome_lineage_genome_id_col or not genome_lineage_lineage_col:
@@ -1591,11 +1820,67 @@ class GenomePresenceScorer:
             self.genome_matched_peptides.setdefault(genome_id, set()).update(matched_peptides)
             prev = self.genome_total_theoretical_peptides.get(genome_id, 0)
             self.genome_total_theoretical_peptides[genome_id] = max(prev, int(total_cnt))
+        self.total_theoretical_peptides_all_genomes = int(sum(self.genome_total_theoretical_peptides.values()))
+        self.run_stats["total_theoretical_peptides_all_genomes"] = int(self.total_theoretical_peptides_all_genomes)
+
+        opportunity_rebuilt = False
+        if mode == "adaptive-exact":
+            self.run_stats["adaptive_fast_uses_total_theoretical_peptides"] = False
+            matched_genome_ids = set(self.genome_matched_peptides.keys())
+            folders = [genome_digest_dirs] if isinstance(genome_digest_dirs, str) else list(genome_digest_dirs)
+            genome_files_by_id: Dict[str, Path] = {}
+            for folder in [f for f in folders if f and os.path.exists(f)]:
+                for path in Path(folder).glob("*.tsv"):
+                    if path.stem in matched_genome_ids:
+                        genome_files_by_id.setdefault(path.stem, path)
+            genome_files_for_opportunity = [genome_files_by_id[gid] for gid in sorted(genome_files_by_id)]
+            if len(genome_files_for_opportunity) != len(matched_genome_ids):
+                missing = sorted(matched_genome_ids.difference({p.stem for p in genome_files_for_opportunity}))
+                preview = ", ".join(missing[:10])
+                suffix = " ..." if len(missing) > 10 else ""
+                raise ValueError(
+                    "Adaptive-exact unique p-values require digest TSV files for all selected genomes. "
+                    f"Missing digest files for {len(missing)} genomes: {preview}{suffix}"
+                )
+            opportunity, opportunity_rebuilt = self._load_or_build_theoretical_opportunity(
+                genome_digest_files=genome_files_for_opportunity,
+                cache_path=theoretical_cache_path,
+                rebuild_cache=bool(rebuild_theoretical_opportunity_cache),
+            )
+            self._apply_theoretical_opportunity(opportunity)
+            vals = pd.Series(list(self.genome_theoretical_unique_peptides.values()), dtype=float)
+            self.run_stats["unique_depth_null_model"] = "hypergeometric"
+            self.run_stats["theoretical_peptide_universe_size"] = int(self.theoretical_peptide_universe_size)
+            self.run_stats["total_theoretical_unique_peptides_all_genomes"] = int(self.total_theoretical_unique_peptides_all_genomes)
+            self.run_stats["theoretical_opportunity_cache_path"] = str(theoretical_cache_path) if theoretical_cache_path else None
+            self.run_stats["theoretical_opportunity_cache_rebuilt"] = bool(opportunity_rebuilt)
+            self.run_stats["genome_theoretical_unique_peptides_quantiles"] = (
+                {
+                    "q0": float(vals.quantile(0.0)),
+                    "q25": float(vals.quantile(0.25)),
+                    "q50": float(vals.quantile(0.5)),
+                    "q75": float(vals.quantile(0.75)),
+                    "q100": float(vals.quantile(1.0)),
+                }
+                if len(vals) > 0
+                else {}
+            )
+        else:
+            self.run_stats["unique_depth_null_model"] = "binomial" if mode == "adaptive-fast" else ""
+            self.run_stats["adaptive_fast_uses_total_theoretical_peptides"] = bool(mode == "adaptive-fast")
+            self.run_stats["theoretical_opportunity_cache_path"] = None
+            self.run_stats["theoretical_opportunity_cache_rebuilt"] = False
 
         t_deg0 = time.time()
         peptide_deg, genome_unique_counts = self._calculate_peptide_degeneracy_and_unique_counts(all_matched_peptides)
         self.timing_stats["compute_degeneracy"] = float(time.time() - t_deg0)
         self.peptide_degeneracy = peptide_deg
+        self.observed_matchable_peptides = int(len(peptide_deg))
+        self.observed_unique_peptide_pool_size = int(sum(int(v) for v in genome_unique_counts.values()))
+        self.run_stats["observed_matchable_peptides"] = int(self.observed_matchable_peptides)
+        self.run_stats["observed_unique_peptide_pool_size"] = int(self.observed_unique_peptide_pool_size)
+        if mode == "adaptive-exact":
+            self.run_stats.setdefault("theoretical_peptide_universe_size", int(self.theoretical_peptide_universe_size))
 
         genome_data_list = [
             (
@@ -1622,7 +1907,8 @@ class GenomePresenceScorer:
         self.logger.info("Computing per-genome existence q-values via knockoff...")
         df_scored = self._add_knockoff_existence_stats(
             df_scored,
-            unique_pvalue_mode=unique_pvalue_mode,
+            unique_pvalue_mode=mode,
+            min_unique_for_unique_pvalue=int(min_unique_for_unique_pvalue),
         )
         self.timing_stats["knockoff_pvalues"] = float(time.time() - t_knock0)
 
@@ -1651,17 +1937,31 @@ class GenomePresenceScorer:
             "presence_rank",
             "num_peptides_matched",
             "num_peptides_unique",
-            "shared_fraction",
-            "mean_degeneracy",
+        ])
+        if mode == "adaptive-exact":
+            source_cols.append("theoretical_unique_peptides")
+        source_cols.extend([
+            "unique_expected_null",
+            "unique_depth_fold",
+            "unique_gate_pass",
+            "p_shared_knock",
+            "p_unique",
+            "p_unique_depth",
             "p_presence",
             "q_presence",
             "presence_score",
             "pass_q_0_01",
             "pass_q_0_05",
         ])
+        if "cumulative_coverage_percent" in df_scored.columns:
+            source_cols.append("cumulative_coverage_percent")
         rename_map = {
+            "p_shared_knock": "pvalue_shared",
+            "p_unique": "pvalue_unique",
+            "p_unique_depth": "pvalue_unique_depth",
             "p_presence": "pvalue",
             "q_presence": "qvalue",
+            "unique_expected_null": "expected_unique_null",
         }
         missing = [c for c in source_cols if c not in df_scored.columns]
         if missing:

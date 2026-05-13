@@ -228,19 +228,41 @@ def build_parser() -> argparse.ArgumentParser:
         "--single-peptide-error-rate-upper-bound",
         type=float,
         default=0.3,
-        help="Per-peptide false-match probability upper bound used for unique evidence p-value alpha^U.",
+        help="Per-peptide false-match probability upper bound used only by --unique-pvalue-mode upper-bound.",
     )
     _add_argument(
         score_optional,
         "--unique-pvalue-mode",
-        choices=("upper-bound", "peptide-column"),
-        default="upper-bound",
+        choices=("adaptive-fast", "adaptive-exact", "upper-bound", "peptide-column"),
+        default="adaptive-fast",
         help=(
-            "Unique peptide p-value source. 'upper-bound' uses "
+            "Unique evidence p-value mode. 'adaptive-fast' uses the observed genome-unique peptide pool and "
+            "genome total theoretical peptide count. 'adaptive-exact' uses the observed genome-unique peptide pool and genome-specific "
+            "theoretical unique peptide opportunity. 'upper-bound' uses "
             "--single-peptide-error-rate-upper-bound as alpha in alpha^U. "
             "'peptide-column' multiplies values from --peptide-error-col, "
             "falling back to the upper bound when a peptide value is missing."
         ),
+    )
+    _add_argument(
+        score_optional,
+        "--min-unique-for-unique-pvalue",
+        type=int,
+        default=3,
+        help="Minimum observed genome-unique peptides required before unique evidence contributes to the p-value.",
+    )
+    _add_argument(
+        score_optional,
+        "--theoretical-opportunity-cache",
+        default="",
+        display_default="auto",
+        help="Optional path to the theoretical opportunity cache used by adaptive-exact mode.",
+    )
+    _add_argument(
+        score_optional,
+        "--rebuild-theoretical-opportunity-cache",
+        action="store_true",
+        help="Rebuild the theoretical opportunity cache even if an existing cache is available.",
     )
     _add_argument(
         score_optional,
@@ -420,6 +442,9 @@ def _run_score(args: argparse.Namespace) -> int:
         peptide_error_cutoff=args.peptide_error_cutoff,
         single_peptide_error_rate_upper_bound=args.single_peptide_error_rate_upper_bound,
         unique_pvalue_mode=args.unique_pvalue_mode,
+        min_unique_for_unique_pvalue=args.min_unique_for_unique_pvalue,
+        theoretical_opportunity_cache_path=args.theoretical_opportunity_cache,
+        rebuild_theoretical_opportunity_cache=args.rebuild_theoretical_opportunity_cache,
         peptide_decoy_flag_col=args.peptide_decoy_flag_col,
         decoy_flag_value=args.decoy_flag_value,
         exclude_genome_ids=exclude_genome_ids,

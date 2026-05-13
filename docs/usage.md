@@ -316,8 +316,11 @@ Important scoring options:
 | `--peptide-score-col` | `Evidence` | Peptide score column. If missing, all peptides receive score `1`. |
 | `--peptide-error-col` | `Q.Value` | Peptide error, FDR, PEP, or q-value column used for filtering. |
 | `--peptide-error-cutoff` | `0.05` | Keep peptides with error values less than or equal to this cutoff. |
-| `--single-peptide-error-rate-upper-bound` | `0.3` | Alpha used by `--unique-pvalue-mode upper-bound` for `alpha^U`. This is separate from peptide filtering. |
-| `--unique-pvalue-mode` | `upper-bound` | Unique peptide p-value source. Use `upper-bound` for `alpha^U`, or `peptide-column` to multiply values from `--peptide-error-col`. |
+| `--unique-pvalue-mode` | `adaptive-fast` | Unique evidence p-value mode. `adaptive-fast` uses the observed genome-unique peptide pool and each genome's total theoretical peptide count. `adaptive-exact` uses the observed genome-unique peptide pool and theoretical unique peptide opportunity. `upper-bound` keeps the legacy `alpha^U` mode. `peptide-column` multiplies values from `--peptide-error-col`. |
+| `--min-unique-for-unique-pvalue` | `3` | Minimum observed genome-unique peptides required before unique evidence contributes to the combined p-value. |
+| `--theoretical-opportunity-cache` | auto | Optional path for the theoretical opportunity cache used by `adaptive-exact`. |
+| `--rebuild-theoretical-opportunity-cache` | off | Rebuild the theoretical opportunity cache even if it already exists. |
+| `--single-peptide-error-rate-upper-bound` | `0.3` | Alpha used only by `--unique-pvalue-mode upper-bound` for `alpha^U`. This is separate from peptide filtering. |
 | `--peptide-decoy-flag-col` | `Reverse` | Decoy flag column. Pass an empty string to disable. |
 | `--decoy-flag-value` | `+` | Value treated as a decoy marker. |
 | `--num-workers` | `max(1, cpu_count - 1)` | Worker process count for genome scanning. On Windows, use 60 or fewer workers because `ProcessPoolExecutor` has a platform worker limit. |
@@ -416,13 +419,19 @@ The default scoring output is a concise TSV table with one row per genome.
 | `presence_rank` | Rank after sorting by `presence_score`. |
 | `num_peptides_matched` | Number of observed peptides matched to the genome digest. |
 | `num_peptides_unique` | Number of matched peptides unique to that genome among the analyzed genome set. |
-| `shared_fraction` | Fraction of matched peptides that are shared with other genomes. |
-| `mean_degeneracy` | Mean number of genomes containing the matched peptides. |
+| `theoretical_unique_peptides` | Theoretical peptides unique to this genome among the analyzed genome set. Included in concise output only for `adaptive-exact`. |
+| `expected_unique_null` | Expected observed genome-unique peptides under the selected adaptive null. |
+| `unique_depth_fold` | Observed unique peptides divided by `expected_unique_null`. |
+| `unique_gate_pass` | `true` when the observed unique count passes the configured minimum unique evidence gate. |
+| `pvalue_shared` | Shared-peptide knockoff p-value. |
+| `pvalue_unique` | Unique-evidence p-value after applying the configured mode and minimum evidence gate. |
+| `pvalue_unique_depth` | Depth-adjusted unique-evidence p-value before combination. |
 | `pvalue` | Genome-level presence p-value in the concise output table. |
 | `qvalue` | BH-adjusted genome-level q-value in the concise output table. |
 | `presence_score` | Ranking score used to order genome presence calls. |
 | `pass_q_0_01` | `true` when `qvalue <= 0.01`. |
 | `pass_q_0_05` | `true` when `qvalue <= 0.05`. |
+| `cumulative_coverage_percent` | Cumulative observed peptide coverage after sorting by `presence_rank`, when coverage calculation is enabled. |
 
 The concise output uses `pvalue` and `qvalue`. When `--return-full-table` is enabled, the output retains the full internal table, including internal columns such as `p_presence`, `q_presence`, `weighted_evidence`, and `weighted_evidence_shared`.
 
@@ -441,6 +450,7 @@ results/
     p_shared_hist.tsv
     q_calling_curve.tsv
     shared_stratum_counts.tsv
+    theoretical_opportunity_cache.pkl  # adaptive-exact only
 ```
 
 The exact set of files depends on available runtime data. Use `--no-export-temp` to disable these artifacts.
@@ -467,20 +477,65 @@ When cache saving is enabled, MetaUmbra writes a pickle file containing matched 
 
 Use `--use-cache-if-exists` for repeated analyses with the same observed peptide table and genome digest directories. The cache can still be combined with `--selected-genome-ids` and `--exclude-genome-ids`; filters are applied after loading the cache.
 
+`adaptive-exact` scoring also writes a theoretical opportunity cache. If `--theoretical-opportunity-cache` is not provided, the default cache is:
+
+```text
+<output_directory>/<output_stem>_artifacts/theoretical_opportunity_cache.pkl
+```
+
+Use `--rebuild-theoretical-opportunity-cache` after changing genome digest files or when you want to force a fresh two-pass digest scan. The default `adaptive-fast` mode does not build or require this cache.
+
 ## Interpreting results
 
 MetaUmbra combines unique peptide support with weighted shared peptide evidence:
 
 - Unique matched peptides are strong genome-specific evidence.
 - Shared peptides are weighted by degeneracy. A peptide found in many candidate genomes contributes less to each genome than a peptide found in only a few genomes.
-- Genome-level p-values are estimated using a peptide-space knockoff procedure for shared evidence and a conservative bound for unique evidence.
+- Shared-evidence p-values are estimated using a peptide-space knockoff procedure.
+- Unique-evidence p-values use a peptide-depth adjusted null model by default.
 - `qvalue` is the Benjamini-Hochberg adjusted genome-level presence q-value across analyzed genomes.
+
+For default `adaptive-fast` unique evidence, MetaUmbra compares observed genome-unique peptides against the number expected within the observed genome-unique peptide pool and the genome's total theoretical peptide space:
+
+```text
+X_g ~ Binomial(S, T_g / T_total)
+p_unique = P(X_g >= U_g)
+```
+
+Definitions:
+
+| Symbol | Meaning |
+| --- | --- |
+| `U_g` | Observed genome-unique matched peptides for genome `g`. |
+| `S` | Total observed genome-unique peptides across genomes. |
+| `T_g` | Total theoretical peptides in genome `g`. |
+| `T_total` | Total theoretical peptides across target genomes. |
+
+`adaptive-exact` uses genome-specific theoretical unique peptide opportunity and is intended for fixed reference panels or final benchmark analyses:
+
+```text
+X_g ~ Hypergeometric(A_total, A_g, S)
+p_unique = P(X_g >= U_g)
+```
+
+Definitions:
+
+| Symbol | Meaning |
+| --- | --- |
+| `A_total` | Total theoretical genome-unique peptides across genomes. |
+| `A_g` | Theoretical genome-unique peptides for genome `g`. |
+| `S` | Total observed genome-unique peptides across genomes. |
+| `U_g` | Observed genome-unique matched peptides for genome `g`. |
+
+By default, unique peptide evidence contributes to the combined genome presence p-value only when at least three genome-unique peptides are observed. Genomes below this threshold can still receive support from shared peptide evidence through the shared-peptide knockoff model.
+
+The legacy upper-bound mode, `p_unique = alpha^U`, is retained for sensitivity analysis and backward compatibility, but adaptive-fast is the recommended default. The `peptide-column` mode should only be used when the selected peptide error column represents a peptide-level posterior error probability or a comparable per-peptide error estimate. For DIA-NN `Q.Value`, adaptive-fast is recommended.
 
 Practical interpretation:
 
 - Use `qvalue <= 0.05` as a broad presence threshold and `qvalue <= 0.01` as a stricter presence threshold.
 - Prefer genomes with more unique peptides when closely related genomes have similar q-values.
-- Inspect `shared_fraction` and `mean_degeneracy` for ambiguous calls driven mostly by shared peptides.
+- Inspect `pvalue_shared`, `pvalue_unique`, `expected_unique_null`, and `unique_depth_fold` for ambiguous calls driven mostly by shared peptides or by unusually deep unique evidence.
 - Use the lineage table to summarize calls at taxonomic or custom group levels outside MetaUmbra.
 
 The analyzed genome set matters. Peptide uniqueness and degeneracy are computed across the target genomes included in the run. Adding or removing closely related genomes can change `num_peptides_unique`, shared evidence, and q-values.
