@@ -1668,7 +1668,9 @@ class GenomePresenceScorer:
             raise ValueError(f"Missing required columns for main result table: {missing}")
 
         df_main = df_scored[source_cols].copy().rename(columns=rename_map)
-        df_main.to_csv(output_tsv_path, sep="\t", index=False)
+        
+        df_out = df_scored if return_full_table else df_main
+        df_out.to_csv(output_tsv_path, sep="\t", index=False)
 
         self.timing_stats["save_tsv"] = float(time.time() - t_all0)
 
