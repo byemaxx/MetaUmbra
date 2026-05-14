@@ -328,8 +328,6 @@ Important scoring options:
 | `--metadata-table` | none | Optional TSV/CSV table mapping samples to analysis units. |
 | `--metadata-sample-id-col` | `sample_id` | Sample ID column in `--metadata-table`. |
 | `--metadata-analysis-unit-col` | `analysis_unit_id` | Analysis unit column in `--metadata-table`. |
-| `--unit-presence-rule` | `union` | Sample-to-unit aggregation rule. The first version supports `union`. |
-| `--unit-shared-mode` | `none` | Unit-aware shared evidence mode. The first version uses unique evidence only for unit-level p-values. |
 | `--theoretical-opportunity-cache` | auto | Optional path for the theoretical opportunity cache used by `adaptive-exact`. |
 | `--rebuild-theoretical-opportunity-cache` | off | Rebuild the theoretical opportunity cache even if it already exists. |
 | `--num-workers-for-theoretical-opportunity` | same as `--num-workers` | Optional worker process count for `adaptive-exact` theoretical opportunity sharding and reduction. |
@@ -499,7 +497,7 @@ When `--unit-aware` is enabled, MetaUmbra still writes the main pooled result ta
 <stem>_sample_unit_mapping.tsv
 ```
 
-The unit-level table contains one row per `analysis_unit_id` and genome, including `num_peptides_matched`, `num_peptides_unique`, `theoretical_unique_peptides`, `observed_unique_peptide_pool_size`, `expected_unique_null`, `unique_depth_fold`, `pvalue_unique`, `pvalue`, `qvalue`, `presence_score`, `presence_rank`, and q-value pass flags.
+The unit-level table contains one row per `analysis_unit_id` and genome, including `num_peptides_matched`, `num_peptides_unique`, `theoretical_unique_peptides`, `observed_unique_peptide_pool_size`, `expected_unique_null`, `unique_depth_fold`, `pvalue_unique`, `pvalue_shared`, `pvalue`, `qvalue`, `presence_score`, `presence_rank`, `unit_presence_rule`, `unit_shared_mode`, and q-value pass flags. 
 
 The cohort summary answers how often each genome is supported across units. It includes counts such as `n_units_tested`, `n_units_matched_ge_1`, `n_units_unique_ge_3`, `n_units_q_le_0_05`, `n_units_q_le_0_01`, plus best/median q-values and matched/unique peptide totals across units.
 

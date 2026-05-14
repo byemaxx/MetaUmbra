@@ -8,7 +8,7 @@ import os
 import sys
 import traceback
 import warnings
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from pathlib import Path
 
 if __package__ in {None, ""}:
@@ -1715,10 +1715,10 @@ class ScoringTab(QWidget):
         self.peptide_decoy_flag_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
         self.sample_id_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
         self.intensity_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
-        _add_compact_field(columns_grid, 0, 0, "Error column", self.peptide_error_col_edit, None)
-        _add_compact_field(columns_grid, 0, 1, "Peptide error cutoff", self.peptide_error_cutoff_edit, 110)
-        _add_compact_field(columns_grid, 1, 0, "Decoy flag column", self.peptide_decoy_flag_col_edit, None)
-        _add_compact_field(columns_grid, 1, 1, "Decoy flag value", self.decoy_flag_value_edit, 110)
+        _add_compact_field(columns_grid, 0, 0, "Error column", self.peptide_error_col_edit, 170)
+        _add_compact_field(columns_grid, 0, 1, "Peptide error cutoff", self.peptide_error_cutoff_edit, 90)
+        _add_compact_field(columns_grid, 0, 2, "Decoy flag column", self.peptide_decoy_flag_col_edit, 170)
+        _add_compact_field(columns_grid, 0, 3, "Decoy flag value", self.decoy_flag_value_edit, 90)
         columns_layout = QVBoxLayout(columns_box)
         columns_layout.addLayout(columns_grid)
         options_layout.addWidget(columns_box)
@@ -1743,10 +1743,6 @@ class ScoringTab(QWidget):
         )
         self.metadata_sample_id_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
         self.metadata_analysis_unit_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
-        self.unit_presence_rule_combo = QComboBox()
-        self.unit_presence_rule_combo.addItem("Union", "union")
-        self.unit_shared_mode_combo = QComboBox()
-        self.unit_shared_mode_combo.addItem("None", "none")
         self.configure_sample_mapping_button = QPushButton("Configure Sample / Unit Mapping")
         self.configure_sample_mapping_button.clicked.connect(self._configure_sample_unit_mapping)
         self.sample_mapping_status_label = QLabel("No custom sample mapping configured.")
@@ -1765,18 +1761,27 @@ class ScoringTab(QWidget):
 
         metadata_box = QGroupBox("Sample Metadata And Unit Mapping")
         metadata_box.setProperty("subtle", True)
-        metadata_form = QFormLayout(metadata_box)
-        metadata_form.addRow("Metadata table", metadata_row)
-        metadata_form.addRow("Metadata sample ID column", self.metadata_sample_id_col_edit)
-        metadata_form.addRow("Metadata analysis unit column", self.metadata_analysis_unit_col_edit)
-        _polish_form_layout(metadata_form)
+        metadata_layout = QVBoxLayout(metadata_box)
+        metadata_grid = _create_compact_grid()
+        metadata_table_label = QLabel("Metadata table")
+        metadata_table_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
+        metadata_grid.addWidget(metadata_table_label, 0, 0)
+        metadata_grid.addWidget(metadata_row, 0, 1, 1, 5)
+        _add_compact_field(metadata_grid, 1, 0, "Metadata sample ID column", self.metadata_sample_id_col_edit, None)
+        _add_compact_field(
+            metadata_grid,
+            1,
+            1,
+            "Metadata analysis unit column",
+            self.metadata_analysis_unit_col_edit,
+            None,
+        )
+        metadata_layout.addLayout(metadata_grid)
         unit_layout.addWidget(metadata_box)
 
         unit_output_grid = _create_compact_grid()
-        _add_compact_field(unit_output_grid, 0, 0, "Unit presence rule", self.unit_presence_rule_combo, 140)
-        _add_compact_field(unit_output_grid, 0, 1, "Unit shared mode", self.unit_shared_mode_combo, 140)
-        unit_output_grid.addWidget(self.configure_sample_mapping_button, 1, 0, 1, 2)
-        unit_output_grid.addWidget(self.sample_mapping_status_label, 1, 2, 1, 2)
+        unit_output_grid.addWidget(self.configure_sample_mapping_button, 0, 0, 1, 2)
+        unit_output_grid.addWidget(self.sample_mapping_status_label, 0, 2, 1, 2)
         unit_layout.addLayout(unit_output_grid)
         options_layout.addWidget(unit_box)
 
@@ -1789,7 +1794,7 @@ class ScoringTab(QWidget):
         self.unique_pvalue_mode_combo.addItem("Peptide column", "peptide-column")
         self.min_unique_for_unique_pvalue_spin = QSpinBox()
         self.min_unique_for_unique_pvalue_spin.setRange(0, 1000)
-        self.min_unique_for_unique_pvalue_spin.setValue(2)
+        self.min_unique_for_unique_pvalue_spin.setValue(3)
         self.single_peptide_error_rate_upper_bound_edit = QLineEdit("0.3")
         self.theoretical_opportunity_processes_spin = _create_optional_process_spinbox()
         self.theoretical_opportunity_processes_spin.setToolTip(
@@ -2387,8 +2392,6 @@ class ScoringTab(QWidget):
             metadata_table_path=self.metadata_table_edit.text().strip(),
             metadata_sample_id_col=self.metadata_sample_id_col_edit.currentText().strip(),
             metadata_analysis_unit_col=self.metadata_analysis_unit_col_edit.currentText().strip(),
-            unit_presence_rule=str(self.unit_presence_rule_combo.currentData() or "union"),
-            unit_shared_mode=str(self.unit_shared_mode_combo.currentData() or "none"),
             theoretical_opportunity_cache_path=self.theoretical_opportunity_cache_edit.text().strip(),
             rebuild_theoretical_opportunity_cache=self.rebuild_theoretical_opportunity_cache_checkbox.isChecked(),
             num_workers_for_theoretical_opportunity=(
@@ -2489,10 +2492,6 @@ class ScoringTab(QWidget):
         self.metadata_table_edit.setText(config.metadata_table_path)
         self.metadata_sample_id_col_edit.setEditText(config.metadata_sample_id_col)
         self.metadata_analysis_unit_col_edit.setEditText(config.metadata_analysis_unit_col)
-        unit_rule_index = self.unit_presence_rule_combo.findData(config.unit_presence_rule)
-        self.unit_presence_rule_combo.setCurrentIndex(max(unit_rule_index, 0))
-        unit_shared_index = self.unit_shared_mode_combo.findData(config.unit_shared_mode)
-        self.unit_shared_mode_combo.setCurrentIndex(max(unit_shared_index, 0))
         self._sample_unit_mapping_rows = []
         self._sample_unit_mapping_source_path = config.peptide_table_path
         self._update_sample_mapping_status()
@@ -3269,7 +3268,11 @@ class MainWindow(QMainWindow):
             payload = json.load(handle)
 
         self.digest_tab.load_config(DigestConfig(**payload.get("digest", {})))
-        self.scoring_tab.load_config(ScoringConfig(**payload.get("scoring", {})))
+        scoring_payload = payload.get("scoring", {})
+        if not isinstance(scoring_payload, dict):
+            scoring_payload = {}
+        scoring_fields = {field.name for field in fields(ScoringConfig)}
+        self.scoring_tab.load_config(ScoringConfig(**{k: v for k, v in scoring_payload.items() if k in scoring_fields}))
         if isinstance(payload.get("scoring_sample_unit_mapping_rows"), list):
             self.scoring_tab._sample_unit_mapping_rows = list(payload["scoring_sample_unit_mapping_rows"])
             self.scoring_tab._sample_unit_mapping_source_path = str(
@@ -3361,8 +3364,6 @@ class MainWindow(QMainWindow):
                 "unit_aware": self.scoring_tab.unit_aware_checkbox.isChecked(),
                 "intensity_min_value": self.scoring_tab.intensity_min_value_edit.text().strip(),
                 "intensity_min_quantile": self.scoring_tab.intensity_min_quantile_edit.text().strip(),
-                "unit_presence_rule": str(self.scoring_tab.unit_presence_rule_combo.currentData() or "union"),
-                "unit_shared_mode": str(self.scoring_tab.unit_shared_mode_combo.currentData() or "none"),
                 "theoretical_opportunity_cache_path": self.scoring_tab.theoretical_opportunity_cache_edit.text().strip(),
                 "rebuild_theoretical_opportunity_cache": self.scoring_tab.rebuild_theoretical_opportunity_cache_checkbox.isChecked(),
                 "num_workers_for_theoretical_opportunity": (
@@ -3453,12 +3454,6 @@ class MainWindow(QMainWindow):
                 self.scoring_tab.intensity_min_value_edit.setText(str(state["intensity_min_value"]))
             if "intensity_min_quantile" in state:
                 self.scoring_tab.intensity_min_quantile_edit.setText(str(state["intensity_min_quantile"]))
-            if "unit_presence_rule" in state:
-                idx = self.scoring_tab.unit_presence_rule_combo.findData(state["unit_presence_rule"])
-                self.scoring_tab.unit_presence_rule_combo.setCurrentIndex(max(idx, 0))
-            if "unit_shared_mode" in state:
-                idx = self.scoring_tab.unit_shared_mode_combo.findData(state["unit_shared_mode"])
-                self.scoring_tab.unit_shared_mode_combo.setCurrentIndex(max(idx, 0))
             if "theoretical_opportunity_cache_path" in state:
                 self.scoring_tab.theoretical_opportunity_cache_edit.setText(str(state["theoretical_opportunity_cache_path"] or ""))
             if "rebuild_theoretical_opportunity_cache" in state:

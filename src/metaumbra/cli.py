@@ -298,20 +298,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_argument(
         score_optional,
-        "--unit-presence-rule",
-        choices=("union",),
-        default="union",
-        help="How sample-level peptide presence is aggregated into each analysis unit.",
-    )
-    _add_argument(
-        score_optional,
-        "--unit-shared-mode",
-        choices=("none",),
-        default="none",
-        help="Shared-peptide unit-aware p-value mode. First version supports unique evidence only.",
-    )
-    _add_argument(
-        score_optional,
         "--theoretical-opportunity-cache",
         default="",
         display_default="auto",
@@ -517,8 +503,6 @@ def _run_score(args: argparse.Namespace) -> int:
         metadata_table_path=args.metadata_table,
         metadata_sample_id_col=args.metadata_sample_id_col,
         metadata_analysis_unit_col=args.metadata_analysis_unit_col,
-        unit_presence_rule=args.unit_presence_rule,
-        unit_shared_mode=args.unit_shared_mode,
         theoretical_opportunity_cache_path=args.theoretical_opportunity_cache,
         rebuild_theoretical_opportunity_cache=args.rebuild_theoretical_opportunity_cache,
         num_workers_for_theoretical_opportunity=args.num_workers_for_theoretical_opportunity,

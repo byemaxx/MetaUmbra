@@ -402,6 +402,8 @@ class GenomePresenceScorer:
         self.unit_presence_matrix = None  # sparse peptide x analysis_unit matrix
         self.unit_sample_counts: Dict[str, int] = {}
         self.sample_unit_mapping_df: Optional[pd.DataFrame] = None
+        self.unit_aware_output_paths: Dict[str, str] = {}
+        self.unit_aware_cohort_summary_df: Optional[pd.DataFrame] = None
 
     def _read_genome_lineage_table(
         self,
@@ -2294,10 +2296,8 @@ class GenomePresenceScorer:
 
         if not self.unit_aware_enabled or self.unit_presence_matrix is None:
             raise RuntimeError("Unit-aware peptide presence is not available. Call read_unit_aware_peptide_file first.")
-        if self.unit_presence_rule != "union":
-            raise ValueError("Only unit_presence_rule='union' is supported in this version.")
-        if self.unit_shared_mode != "none":
-            raise ValueError("Only unit_shared_mode='none' is supported in this version.")
+        self.unit_presence_rule = "union"
+        self.unit_shared_mode = "none"
 
         genome_ids = [str(x) for x in df_scored["genome_id"].astype(str).tolist()]
         genome_index = {genome_id: i for i, genome_id in enumerate(genome_ids)}
@@ -2430,6 +2430,7 @@ class GenomePresenceScorer:
                         "unique_depth_fold": float(fold_values[genome_idx]),
                         "unique_gate_pass": bool(gate_values[genome_idx]),
                         "pvalue_unique": float(pvals[genome_idx]),
+                        "pvalue_shared": 1.0,
                         "pvalue": float(pvals[genome_idx]),
                         "qvalue": float(qvals[genome_idx]),
                         "presence_score": float(presence_scores[genome_idx]),
@@ -2437,7 +2438,8 @@ class GenomePresenceScorer:
                         "pass_q_0_01": bool(qvals[genome_idx] <= 0.01 and matched_counts[genome_idx] >= 1),
                         "pass_q_0_05": bool(qvals[genome_idx] <= 0.05 and matched_counts[genome_idx] >= 1),
                         "n_samples_in_unit": int(n_samples),
-                        "unit_presence_rule": self.unit_presence_rule,
+                        "unit_presence_rule": "union",
+                        "unit_shared_mode": "none",
                     }
                 )
 
@@ -2488,6 +2490,7 @@ class GenomePresenceScorer:
         self.run_stats["unit_aware_output_rows"] = int(len(unit_level_df))
         self.run_stats["unit_aware_cohort_summary_rows"] = int(len(cohort_summary_df))
         self.run_stats["unit_aware_unique_pvalue_mode"] = "adaptive-exact"
+        self.run_stats["unit_aware_presence_rule"] = "union"
         self.run_stats["unit_aware_shared_mode"] = "none"
         return unit_level_df, cohort_summary_df
 
@@ -2504,6 +2507,12 @@ class GenomePresenceScorer:
         unit_level_path = os.path.join(out_dir, f"{stem}_unit_level_genome_presence.tsv")
         cohort_path = os.path.join(out_dir, f"{stem}_cohort_genome_presence_summary.tsv")
         mapping_path = os.path.join(out_dir, f"{stem}_sample_unit_mapping.tsv")
+        self.unit_aware_output_paths = {
+            "unit_level": unit_level_path,
+            "cohort_summary": cohort_path,
+            "sample_unit_mapping": mapping_path,
+        }
+        self.unit_aware_cohort_summary_df = cohort_summary_df.copy()
         unit_level_df.to_csv(unit_level_path, sep="\t", index=False)
         cohort_summary_df.to_csv(cohort_path, sep="\t", index=False)
         mapping_df.to_csv(mapping_path, sep="\t", index=False)
@@ -2535,8 +2544,6 @@ class GenomePresenceScorer:
         num_workers_for_theoretical_opportunity: Optional[int] = None,
         return_full_table: bool = False,
         unit_aware: bool = False,
-        unit_presence_rule: str = "union",
-        unit_shared_mode: str = "none",
     ) -> pd.DataFrame:
         """End-to-end analysis producing a genome-level q-value (q_presence)."""
         mode = str(unique_pvalue_mode or "adaptive-exact").strip().lower()
@@ -2549,10 +2556,6 @@ class GenomePresenceScorer:
         if unit_aware:
             if not self.unit_aware_enabled:
                 raise ValueError("unit_aware=True requires read_unit_aware_peptide_file() before analyze_genomes().")
-            if str(unit_presence_rule or "union").strip().lower() != "union":
-                raise ValueError("Only unit_presence_rule='union' is supported in this version.")
-            if str(unit_shared_mode or "none").strip().lower() != "none":
-                raise ValueError("Only unit_shared_mode='none' is supported in this version.")
             self.unit_presence_rule = "union"
             self.unit_shared_mode = "none"
         self.unique_pvalue_mode = mode
@@ -2607,6 +2610,8 @@ class GenomePresenceScorer:
 
         t_all0 = time.time()
         self.timing_stats = {}
+        self.unit_aware_output_paths = {}
+        self.unit_aware_cohort_summary_df = None
 
         # Normalize cache path (if provided); otherwise use the default.
         cache_pkl_path: Optional[str] = None
@@ -3002,20 +3007,23 @@ class GenomePresenceScorer:
         df_main = df_scored[source_cols].copy().rename(columns=rename_map)
         
         df_out = df_scored if return_full_table else df_main
+        t_save0 = time.time()
         df_out.to_csv(output_tsv_path, sep="\t", index=False)
 
-        self.timing_stats["save_tsv"] = float(time.time() - t_all0)
+        self.timing_stats["save_tsv"] = float(time.time() - t_save0)
+        self.timing_stats["total_runtime_before_export"] = float(time.time() - t_all0)
 
         # --- NEW: export extra artifacts for paper figures ---
         if export_temp:
             try:
+                t_export0 = time.time()
                 self._export_temp_artifacts(
                     out_dir=out_dir,
                     stem=stem,
                     df_scored=df_scored,
                     export_peptide_contrib_topN=export_peptide_contrib_topN,
                 )
-                self.timing_stats["export_temp"] = float(time.time() - t_all0)
+                self.timing_stats["export_temp"] = float(time.time() - t_export0)
             except Exception as e:
                 self.logger.warning(f"Failed to export temp artifacts: {e}")
 
@@ -3100,8 +3108,28 @@ class GenomePresenceScorer:
         if "q_presence" in df.columns:
             keep01 = int(df["pass_q_0_01"].fillna(False).sum())
             keep05 = int(df["pass_q_0_05"].fillna(False).sum())
-            print(f"Genomes q<=0.01: {keep01}")
-            print(f"Genomes q<=0.05: {keep05}")
+            if self.unit_aware_output_paths:
+                print(f"Pooled genomes q<=0.01: {keep01}")
+                print(f"Pooled genomes q<=0.05: {keep05}")
+            else:
+                print(f"Genomes q<=0.01: {keep01}")
+                print(f"Genomes q<=0.05: {keep05}")
+
+        if self.unit_aware_output_paths:
+            print("\nUnit-aware outputs written:")
+            for key in ("unit_level", "cohort_summary", "sample_unit_mapping"):
+                path = self.unit_aware_output_paths.get(key)
+                if path:
+                    print(f"  {path}")
+
+            cohort = self.unit_aware_cohort_summary_df
+            if cohort is not None and not cohort.empty:
+                n_units = int(pd.to_numeric(cohort["n_units_tested"], errors="coerce").fillna(0).max())
+                q05_units = pd.to_numeric(cohort["n_units_q_le_0_05"], errors="coerce").fillna(0).astype(int)
+                tested_units = pd.to_numeric(cohort["n_units_tested"], errors="coerce").fillna(0).astype(int)
+                print(f"Analysis units: {n_units}")
+                print(f"Genomes q<=0.05 in >=1 unit: {int((q05_units >= 1).sum())}")
+                print(f"Genomes q<=0.05 in all units: {int(((tested_units > 0) & (q05_units == tested_units)).sum())}")
 
         top = target.head(10)
         print("\nTop 10 target genomes by rank:")
