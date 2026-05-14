@@ -320,6 +320,7 @@ Important scoring options:
 | `--min-unique-for-unique-pvalue` | `3` | Minimum observed genome-unique peptides required before unique evidence contributes to the combined p-value. |
 | `--theoretical-opportunity-cache` | auto | Optional path for the theoretical opportunity cache used by `adaptive-exact`. |
 | `--rebuild-theoretical-opportunity-cache` | off | Rebuild the theoretical opportunity cache even if it already exists. |
+| `--num-workers-for-theoretical-opportunity` | same as `--num-workers` | Optional worker process count for `adaptive-exact` theoretical opportunity sharding and reduction. |
 | `--single-peptide-error-rate-upper-bound` | `0.3` | Alpha used only by `--unique-pvalue-mode upper-bound` for `alpha^U`. This is separate from peptide filtering. |
 | `--peptide-decoy-flag-col` | `Reverse` | Decoy flag column. Pass an empty string to disable. |
 | `--decoy-flag-value` | `+` | Value treated as a decoy marker. |
@@ -483,7 +484,7 @@ Use `--use-cache-if-exists` for repeated analyses with the same observed peptide
 <output_directory>/<output_stem>_artifacts/theoretical_opportunity_cache.pkl
 ```
 
-Use `--rebuild-theoretical-opportunity-cache` after changing genome digest files or when you want to force a fresh two-pass digest scan. The default `adaptive-fast` mode does not build or require this cache.
+Use `--rebuild-theoretical-opportunity-cache` after changing genome digest files or when you want to force a fresh theoretical opportunity scan. New caches include digest file fingerprints so MetaUmbra can detect digest file changes before reusing the cache. Legacy caches without fingerprints are still accepted when genome IDs match, but rebuilding once enables stricter validation. `adaptive-exact` can also shard theoretical peptides across worker processes with `--num-workers-for-theoretical-opportunity`; if you do not set it, MetaUmbra reuses `--num-workers`. The default `adaptive-fast` mode does not build or require this cache.
 
 ## Interpreting results
 
@@ -554,7 +555,9 @@ For digestion:
 For scoring:
 
 - `--num-workers` controls genome scanning parallelism.
+- `--num-workers-for-theoretical-opportunity` controls only the `adaptive-exact` theoretical opportunity sharding and reduction step.
 - The default is `max(1, cpu_count - 1)`.
+- If `--num-workers-for-theoretical-opportunity` is omitted, MetaUmbra reuses `--num-workers`.
 - On Windows, keep worker counts at 60 or fewer. Very high values can exceed the `ProcessPoolExecutor` worker limit.
 
 ### Repeated runs

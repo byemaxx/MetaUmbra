@@ -50,6 +50,7 @@ class ScoringConfig:
     min_unique_for_unique_pvalue: int = 3
     theoretical_opportunity_cache_path: str = ""
     rebuild_theoretical_opportunity_cache: bool = False
+    num_workers_for_theoretical_opportunity: Optional[int] = None
     peptide_decoy_flag_col: str = "Reverse"
     decoy_flag_value: str = "+"
     exclude_genome_ids: list[str] = field(default_factory=list)
@@ -500,6 +501,7 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
             min_unique_for_unique_pvalue=int(config.min_unique_for_unique_pvalue),
             theoretical_opportunity_cache_path=theoretical_cache_path or None,
             rebuild_theoretical_opportunity_cache=bool(config.rebuild_theoretical_opportunity_cache),
+            num_workers_for_theoretical_opportunity=config.num_workers_for_theoretical_opportunity,
             return_full_table=bool(config.return_full_table),
         )
 

@@ -266,6 +266,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_argument(
         score_optional,
+        "--num-workers-for-theoretical-opportunity",
+        type=int,
+        display_default="same as --num-workers",
+        help="Worker process count for adaptive-exact theoretical opportunity sharding and reduction.",
+    )
+    _add_argument(
+        score_optional,
         "--peptide-decoy-flag-col",
         default="Reverse",
         help="Optional decoy flag column. Pass an empty string to disable it.",
@@ -445,6 +452,7 @@ def _run_score(args: argparse.Namespace) -> int:
         min_unique_for_unique_pvalue=args.min_unique_for_unique_pvalue,
         theoretical_opportunity_cache_path=args.theoretical_opportunity_cache,
         rebuild_theoretical_opportunity_cache=args.rebuild_theoretical_opportunity_cache,
+        num_workers_for_theoretical_opportunity=args.num_workers_for_theoretical_opportunity,
         peptide_decoy_flag_col=args.peptide_decoy_flag_col,
         decoy_flag_value=args.decoy_flag_value,
         exclude_genome_ids=exclude_genome_ids,

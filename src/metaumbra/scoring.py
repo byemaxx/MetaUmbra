@@ -27,11 +27,13 @@ import time
 import pickle
 import random
 import logging
+import hashlib
+import tempfile
 import multiprocessing as mp
 import concurrent.futures
 from pathlib import Path
 from typing import Optional, List, Dict, Set, Tuple, Union, FrozenSet
-from collections import Counter
+from collections import Counter, defaultdict
 import json
 import sys
 import platform
@@ -43,6 +45,8 @@ from tqdm import tqdm
 
 WINDOWS_MAX_PROCESS_POOL_WORKERS = 60
 MIN_PVALUE = 1e-300
+THEORETICAL_OPPORTUNITY_CACHE_VERSION = 2
+THEORETICAL_OPPORTUNITY_MAX_SHARDS = 256
 
 
 def _clip_pvalue(p: float) -> float:
@@ -173,6 +177,86 @@ def _read_unique_peptides_from_digest(genome_peptides_path: Union[str, os.PathLi
             seen_theoretical.update(chunk_unique)
 
     return seen_theoretical
+
+
+def _stable_theoretical_shard_index(peptide: str, shard_count: int) -> int:
+    """Return a deterministic shard index for a peptide string."""
+    if int(shard_count) <= 1:
+        return 0
+    digest = hashlib.blake2b(str(peptide).encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "little", signed=False) % int(shard_count)
+
+
+def _build_theoretical_opportunity_batch_worker(
+    batch_index: int,
+    file_paths: List[Union[str, os.PathLike]],
+    shard_count: int,
+    temp_dir: str,
+) -> Tuple[Dict[str, int], Dict[int, str]]:
+    """Read digest TSV files and write peptide/genome pairs into local shard files."""
+    genome_total_theoretical_peptides: Dict[str, int] = {}
+    shard_paths: Dict[int, str] = {}
+    open_handles: Dict[int, object] = {}
+
+    try:
+        for genome_peptides_path in file_paths:
+            genome_peptides_path = str(genome_peptides_path)
+            genome_id = Path(genome_peptides_path).stem
+            peptides = _read_unique_peptides_from_digest(genome_peptides_path)
+            genome_total_theoretical_peptides[genome_id] = int(len(peptides))
+
+            for peptide in peptides:
+                shard_index = _stable_theoretical_shard_index(peptide, shard_count)
+                handle = open_handles.get(shard_index)
+                if handle is None:
+                    shard_path = os.path.join(
+                        temp_dir,
+                        f"batch_{int(batch_index):05d}_shard_{int(shard_index):05d}.tsv",
+                    )
+                    handle = open(shard_path, "w", encoding="utf-8", newline="")
+                    open_handles[shard_index] = handle
+                    shard_paths[shard_index] = shard_path
+                handle.write(f"{peptide}\t{genome_id}\n")
+    finally:
+        for handle in open_handles.values():
+            try:
+                handle.close()
+            except Exception:
+                pass
+
+    return genome_total_theoretical_peptides, shard_paths
+
+
+def _process_theoretical_opportunity_shard_worker(
+    shard_index: int,
+    shard_paths: List[Union[str, os.PathLike]],
+) -> Tuple[int, Dict[str, int]]:
+    """Reduce one theoretical-opportunity shard into unique counts by genome."""
+    del shard_index
+    peptide_owner: Dict[str, str] = {}
+    genome_theoretical_unique_peptides: Counter = Counter()
+    shared_marker = ""
+
+    for shard_path in shard_paths:
+        with open(shard_path, "r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.rstrip("\n")
+                if not line:
+                    continue
+                peptide, genome_id = line.split("\t", 1)
+                owner = peptide_owner.get(peptide)
+                if owner is None:
+                    peptide_owner[peptide] = genome_id
+                    genome_theoretical_unique_peptides[genome_id] += 1
+                elif owner != genome_id and owner != shared_marker:
+                    genome_theoretical_unique_peptides[owner] -= 1
+                    peptide_owner[peptide] = shared_marker
+
+    return int(len(peptide_owner)), {
+        str(genome_id): int(count)
+        for genome_id, count in genome_theoretical_unique_peptides.items()
+        if int(count) != 0
+    }
 
 
 def _process_genome_batch_worker(file_paths: List[Union[str, os.PathLike]]) -> List[Tuple[str, Set[str], int, Optional[str]]]:
@@ -343,29 +427,32 @@ class GenomePresenceScorer:
         out.insert(insert_at, "Lineage", lineage_values)
         return out
 
-    def _build_theoretical_opportunity(self, genome_digest_files: List[Path]) -> dict:
-        """Compute genome-specific theoretical unique peptide opportunity."""
+    def _build_theoretical_opportunity_serial(self, genome_digest_files: List[Path]) -> dict:
+        """Compute genome-specific theoretical unique peptide opportunity serially."""
         peptide_owner: Dict[str, int] = {}
         genome_total_theoretical_peptides: Dict[str, int] = {}
-        genome_peptides_by_index: List[Tuple[str, Set[str]]] = []
+        genome_theoretical_unique_peptides: Dict[str, int] = {}
+        genome_ids_by_index: List[str] = []
 
-        for genome_index, genome_file in enumerate(genome_digest_files):
+        for genome_index, genome_file in enumerate(tqdm(genome_digest_files, desc="Indexing theoretical peptides")):
             genome_id = genome_file.stem
+            genome_ids_by_index.append(genome_id)
             peptides = _read_unique_peptides_from_digest(genome_file)
-            genome_peptides_by_index.append((genome_id, peptides))
             genome_total_theoretical_peptides[genome_id] = int(len(peptides))
+            genome_theoretical_unique_peptides[genome_id] = 0
             for peptide in peptides:
                 owner = peptide_owner.get(peptide)
                 if owner is None:
                     peptide_owner[peptide] = genome_index
+                    genome_theoretical_unique_peptides[genome_id] += 1
                 elif owner != genome_index:
+                    if owner >= 0:
+                        previous_owner_id = genome_ids_by_index[owner]
+                        genome_theoretical_unique_peptides[previous_owner_id] -= 1
                     peptide_owner[peptide] = -1
 
-        genome_theoretical_unique_peptides = {
-            genome_id: int(sum(1 for peptide in peptides if peptide_owner.get(peptide) == genome_index))
-            for genome_index, (genome_id, peptides) in enumerate(genome_peptides_by_index)
-        }
-        genome_ids = sorted(genome_id for genome_id, _ in genome_peptides_by_index)
+        genome_ids = sorted(genome_ids_by_index)
+        digest_file_fingerprints = self._fingerprint_digest_files(genome_digest_files)
 
         return {
             "theoretical_peptide_universe_size": int(len(peptide_owner)),
@@ -374,39 +461,268 @@ class GenomePresenceScorer:
             "target_genome_count": int(len(genome_digest_files)),
             "genome_ids": genome_ids,
             "digest_files": [str(Path(p)) for p in genome_digest_files],
+            "digest_file_fingerprints": digest_file_fingerprints,
             "created_by": "MetaUmbra",
-            "cache_version": 1,
+            "cache_version": THEORETICAL_OPPORTUNITY_CACHE_VERSION,
         }
+
+    def _build_theoretical_opportunity_parallel(
+        self,
+        genome_digest_files: List[Path],
+        num_workers_for_theoretical_opportunity: int,
+        temp_parent_dir: Optional[str] = None,
+    ) -> dict:
+        """Compute theoretical opportunity using stable peptide-hash shards."""
+        resolved_workers = _resolve_worker_count(num_workers_for_theoretical_opportunity, logger=self.logger)
+        shard_count = min(
+            THEORETICAL_OPPORTUNITY_MAX_SHARDS,
+            max(1, resolved_workers * 2),
+        )
+        batches = np.array_split(
+            np.asarray(genome_digest_files, dtype=object),
+            max(1, resolved_workers * 4),
+        )
+        batch_file_lists = [list(batch) for batch in batches if len(batch) > 0]
+
+        self.logger.info(
+            "Building theoretical opportunity with %s worker(s) and %s peptide shard(s)...",
+            resolved_workers,
+            shard_count,
+        )
+        if temp_parent_dir:
+            os.makedirs(temp_parent_dir, exist_ok=True)
+
+        with tempfile.TemporaryDirectory(
+            prefix="metaumbra_theoretical_opportunity_",
+            dir=temp_parent_dir or None,
+        ) as temp_dir:
+            stage1_totals: Dict[str, int] = {}
+            shard_paths_by_index: Dict[int, List[str]] = defaultdict(list)
+            stage1_futures = []
+            executor = concurrent.futures.ProcessPoolExecutor(max_workers=resolved_workers)
+            try:
+                for batch_index, batch_file_paths in enumerate(batch_file_lists):
+                    stage1_futures.append(
+                        executor.submit(
+                            _build_theoretical_opportunity_batch_worker,
+                            int(batch_index),
+                            [str(path) for path in batch_file_paths],
+                            int(shard_count),
+                            str(temp_dir),
+                        )
+                    )
+
+                for fut in tqdm(
+                    concurrent.futures.as_completed(stage1_futures),
+                    total=len(stage1_futures),
+                    desc="Sharding theoretical peptides",
+                ):
+                    batch_totals, batch_shard_paths = fut.result()
+                    for genome_id, total_count in batch_totals.items():
+                        stage1_totals[str(genome_id)] = int(total_count)
+                    for shard_index, shard_path in batch_shard_paths.items():
+                        shard_paths_by_index[int(shard_index)].append(str(shard_path))
+            finally:
+                try:
+                    executor.shutdown(wait=True)
+                except Exception:
+                    pass
+                try:
+                    del stage1_futures
+                    del executor
+                except Exception:
+                    pass
+
+            shard_jobs = [
+                (int(shard_index), list(shard_paths))
+                for shard_index, shard_paths in sorted(shard_paths_by_index.items())
+                if shard_paths
+            ]
+            genome_theoretical_unique_peptides: Counter = Counter()
+            theoretical_peptide_universe_size = 0
+            stage2_futures = []
+            executor = concurrent.futures.ProcessPoolExecutor(max_workers=resolved_workers)
+            try:
+                for shard_index, shard_paths in shard_jobs:
+                    stage2_futures.append(
+                        executor.submit(
+                            _process_theoretical_opportunity_shard_worker,
+                            int(shard_index),
+                            [str(path) for path in shard_paths],
+                        )
+                    )
+
+                for fut in tqdm(
+                    concurrent.futures.as_completed(stage2_futures),
+                    total=len(stage2_futures),
+                    desc="Reducing theoretical peptide shards",
+                ):
+                    shard_universe_size, shard_unique_counts = fut.result()
+                    theoretical_peptide_universe_size += int(shard_universe_size)
+                    for genome_id, unique_count in shard_unique_counts.items():
+                        genome_theoretical_unique_peptides[str(genome_id)] += int(unique_count)
+            finally:
+                try:
+                    executor.shutdown(wait=True)
+                except Exception:
+                    pass
+                try:
+                    del stage2_futures
+                    del executor
+                except Exception:
+                    pass
+
+        genome_ids = sorted(path.stem for path in genome_digest_files)
+        digest_file_fingerprints = self._fingerprint_digest_files(genome_digest_files)
+        self.run_stats["theoretical_opportunity_parallelized"] = True
+        self.run_stats["theoretical_opportunity_num_workers"] = int(resolved_workers)
+        self.run_stats["theoretical_opportunity_shard_count"] = int(shard_count)
+        self.run_stats["theoretical_opportunity_batch_count"] = int(len(batch_file_lists))
+
+        return {
+            "theoretical_peptide_universe_size": int(theoretical_peptide_universe_size),
+            "genome_theoretical_unique_peptides": {
+                genome_id: int(genome_theoretical_unique_peptides.get(genome_id, 0))
+                for genome_id in genome_ids
+            },
+            "genome_total_theoretical_peptides": {
+                genome_id: int(stage1_totals.get(genome_id, 0))
+                for genome_id in genome_ids
+            },
+            "target_genome_count": int(len(genome_digest_files)),
+            "genome_ids": genome_ids,
+            "digest_files": [str(Path(p)) for p in genome_digest_files],
+            "digest_file_fingerprints": digest_file_fingerprints,
+            "created_by": "MetaUmbra",
+            "cache_version": THEORETICAL_OPPORTUNITY_CACHE_VERSION,
+        }
+
+    def _build_theoretical_opportunity(
+        self,
+        genome_digest_files: List[Path],
+        num_workers_for_theoretical_opportunity: Optional[int] = None,
+        temp_parent_dir: Optional[str] = None,
+    ) -> dict:
+        """Compute genome-specific theoretical unique peptide opportunity."""
+        requested_workers = (
+            self.num_workers if num_workers_for_theoretical_opportunity is None else num_workers_for_theoretical_opportunity
+        )
+        resolved_workers = _resolve_worker_count(requested_workers, logger=self.logger)
+        if resolved_workers <= 1 or len(genome_digest_files) <= 1:
+            self.run_stats["theoretical_opportunity_parallelized"] = False
+            self.run_stats["theoretical_opportunity_num_workers"] = int(resolved_workers)
+            self.run_stats["theoretical_opportunity_shard_count"] = 1
+            self.run_stats["theoretical_opportunity_batch_count"] = 1
+            return self._build_theoretical_opportunity_serial(genome_digest_files)
+        return self._build_theoretical_opportunity_parallel(
+            genome_digest_files=genome_digest_files,
+            num_workers_for_theoretical_opportunity=int(resolved_workers),
+            temp_parent_dir=temp_parent_dir,
+        )
+
+    def _fingerprint_digest_files(self, genome_digest_files: List[Path]) -> Dict[str, dict]:
+        """Return cheap cache validation metadata for digest TSV files."""
+        fingerprints: Dict[str, dict] = {}
+        for genome_file in genome_digest_files:
+            path = Path(genome_file)
+            stat = path.stat()
+            fingerprints[path.stem] = {
+                "path": str(path),
+                "size": int(stat.st_size),
+                "mtime_ns": int(stat.st_mtime_ns),
+            }
+        return fingerprints
+
+    def _theoretical_cache_matches_digest_files(self, cached: dict, genome_digest_files: List[Path]) -> bool:
+        """Check whether a theoretical opportunity cache matches selected digest files."""
+        cached_version = int(cached.get("cache_version", 0) or 0)
+        current_genome_ids = sorted(p.stem for p in genome_digest_files)
+        cached_genome_ids = sorted(str(x) for x in cached.get("genome_ids", []))
+        if cached_genome_ids != current_genome_ids:
+            self.logger.warning(
+                "Theoretical opportunity cache genome IDs do not match the selected genomes; rebuilding cache."
+            )
+            return False
+
+        cached_fingerprints = dict(cached.get("digest_file_fingerprints", {}) or {})
+        if not cached_fingerprints:
+            if cached_version < THEORETICAL_OPPORTUNITY_CACHE_VERSION:
+                self.logger.warning(
+                    "Loaded legacy theoretical opportunity cache without digest file fingerprints; "
+                    "validated genome IDs only. Rebuild the cache once to enable digest-change detection."
+                )
+                self.run_stats["theoretical_opportunity_cache_validation"] = "legacy_genome_ids_only"
+                return True
+            self.logger.info("Theoretical opportunity cache has no digest file fingerprints; rebuilding cache.")
+            return False
+
+        try:
+            current_fingerprints = self._fingerprint_digest_files(genome_digest_files)
+        except OSError as exc:
+            self.logger.warning(f"Failed to stat digest files for theoretical opportunity cache validation: {exc}")
+            return False
+
+        for genome_id, current in current_fingerprints.items():
+            cached_item = cached_fingerprints.get(genome_id)
+            if not isinstance(cached_item, dict):
+                self.logger.info(
+                    "Theoretical opportunity cache is missing digest metadata for genome '%s'; rebuilding cache.",
+                    genome_id,
+                )
+                return False
+            if (
+                str(cached_item.get("path", "")) != str(current["path"])
+                or int(cached_item.get("size", -1) or -1) != int(current["size"])
+                or int(cached_item.get("mtime_ns", -1) or -1) != int(current["mtime_ns"])
+            ):
+                self.logger.warning(
+                    "Theoretical opportunity cache digest metadata changed for genome '%s'; rebuilding cache.",
+                    genome_id,
+                )
+                return False
+
+        self.run_stats["theoretical_opportunity_cache_validation"] = "digest_file_fingerprints"
+        return True
 
     def _load_or_build_theoretical_opportunity(
         self,
         genome_digest_files: List[Path],
         cache_path: str,
         rebuild_cache: bool,
+        num_workers_for_theoretical_opportunity: Optional[int] = None,
     ) -> Tuple[dict, bool]:
         """Load theoretical opportunity cache, or rebuild when missing/stale."""
-        current_genome_ids = sorted(p.stem for p in genome_digest_files)
         if cache_path and os.path.exists(cache_path) and not rebuild_cache:
+            t_load0 = time.time()
             try:
                 with open(cache_path, "rb") as f:
                     cached = pickle.load(f)
-                cached_genome_ids = sorted(str(x) for x in cached.get("genome_ids", []))
-                if cached_genome_ids == current_genome_ids:
+                if self._theoretical_cache_matches_digest_files(cached, genome_digest_files):
                     self.logger.info(f"Loaded theoretical opportunity cache: {cache_path}")
+                    self.run_stats["theoretical_opportunity_cache_version"] = int(cached.get("cache_version", 0) or 0)
+                    self.timing_stats["load_theoretical_opportunity_cache"] = float(time.time() - t_load0)
                     return cached, False
-                self.logger.warning(
-                    "Theoretical opportunity cache genome IDs do not match the selected genomes; rebuilding cache."
-                )
             except Exception as exc:
                 self.logger.warning(f"Failed to load theoretical opportunity cache; rebuilding. Error: {exc}")
+            self.timing_stats["load_theoretical_opportunity_cache"] = float(time.time() - t_load0)
 
         self.logger.info("Building theoretical unique peptide opportunity cache...")
-        opportunity = self._build_theoretical_opportunity(genome_digest_files)
+        t_build0 = time.time()
+        opportunity = self._build_theoretical_opportunity(
+            genome_digest_files=genome_digest_files,
+            num_workers_for_theoretical_opportunity=num_workers_for_theoretical_opportunity,
+            temp_parent_dir=(os.path.dirname(cache_path) or ".") if cache_path else None,
+        )
+        self.timing_stats["build_theoretical_opportunity_cache"] = float(time.time() - t_build0)
+        self.run_stats["theoretical_opportunity_cache_validation"] = "rebuilt"
+        self.run_stats["theoretical_opportunity_cache_version"] = int(THEORETICAL_OPPORTUNITY_CACHE_VERSION)
         if cache_path:
+            t_save0 = time.time()
             os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
             with open(cache_path, "wb") as f:
                 pickle.dump(opportunity, f)
             self.logger.info(f"Saved theoretical opportunity cache: {cache_path}")
+            self.timing_stats["save_theoretical_opportunity_cache"] = float(time.time() - t_save0)
         return opportunity, True
 
     def _apply_theoretical_opportunity(self, opportunity: dict) -> None:
@@ -1549,6 +1865,7 @@ class GenomePresenceScorer:
         min_unique_for_unique_pvalue: int = 3,
         theoretical_opportunity_cache_path: Optional[str] = None,
         rebuild_theoretical_opportunity_cache: bool = False,
+        num_workers_for_theoretical_opportunity: Optional[int] = None,
         return_full_table: bool = False,
     ) -> pd.DataFrame:
         """End-to-end analysis producing a genome-level q-value (q_presence)."""
@@ -1562,6 +1879,17 @@ class GenomePresenceScorer:
             )
         self.unique_pvalue_mode = mode
         self.min_unique_for_unique_pvalue = int(min_unique_for_unique_pvalue)
+        theoretical_opportunity_workers = (
+            self.num_workers
+            if num_workers_for_theoretical_opportunity is None
+            else int(num_workers_for_theoretical_opportunity)
+        )
+        self.run_stats["theoretical_opportunity_requested_num_workers"] = (
+            None if num_workers_for_theoretical_opportunity is None else int(num_workers_for_theoretical_opportunity)
+        )
+        self.run_stats["theoretical_opportunity_effective_num_workers"] = int(
+            _resolve_worker_count(theoretical_opportunity_workers, logger=self.logger)
+        )
 
         if output_tsv_path is None:
             out_dir = self.peptide_table_dir if self.peptide_table_dir else os.getcwd()
@@ -1851,6 +2179,7 @@ class GenomePresenceScorer:
                 genome_digest_files=genome_files_for_opportunity,
                 cache_path=theoretical_cache_path,
                 rebuild_cache=bool(rebuild_theoretical_opportunity_cache),
+                num_workers_for_theoretical_opportunity=theoretical_opportunity_workers,
             )
             self._apply_theoretical_opportunity(opportunity)
             vals = pd.Series(list(self.genome_theoretical_unique_peptides.values()), dtype=float)

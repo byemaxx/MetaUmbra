@@ -484,6 +484,14 @@ def _create_process_spinbox() -> QSpinBox:
     return spinbox
 
 
+def _create_optional_process_spinbox() -> QSpinBox:
+    spinbox = QSpinBox()
+    spinbox.setRange(0, MAX_PROCESS_COUNT)
+    spinbox.setSpecialValueText("Same as Processes")
+    spinbox.setValue(0)
+    return spinbox
+
+
 def _set_combo_to_data(combo: QComboBox, value: str) -> None:
     for index in range(combo.count()):
         if combo.itemData(index) == value:
@@ -1211,6 +1219,11 @@ class ScoringTab(QWidget):
         self.min_unique_for_unique_pvalue_spin = QSpinBox()
         self.min_unique_for_unique_pvalue_spin.setRange(0, 1000)
         self.min_unique_for_unique_pvalue_spin.setValue(3)
+        self.theoretical_opportunity_processes_spin = _create_optional_process_spinbox()
+        self.theoretical_opportunity_processes_spin.setToolTip(
+            "Optional worker count for adaptive-exact theoretical opportunity sharding.\n"
+            "Use 0 to reuse the main Processes setting."
+        )
         self.rebuild_theoretical_opportunity_cache_checkbox = QCheckBox("Rebuild theoretical opportunity cache")
         self.peptide_error_cutoff_edit.setToolTip("Filters input peptide rows by the selected error/FDR column.")
         self.single_peptide_error_rate_upper_bound_edit.setToolTip(
@@ -1275,6 +1288,11 @@ class ScoringTab(QWidget):
         unique_grid = _create_compact_grid()
         _add_compact_field(unique_grid, 0, 0, "Unique p-value mode", self.unique_pvalue_mode_combo, 160)
         _add_compact_field(unique_grid, 0, 1, "Minimum unique peptides", self.min_unique_for_unique_pvalue_spin, 110)
+        self.theoretical_opportunity_processes_label = QLabel("Exact-mode processes")
+        self.theoretical_opportunity_processes_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
+        _set_compact_control_width(self.theoretical_opportunity_processes_spin, 160)
+        unique_grid.addWidget(self.theoretical_opportunity_processes_label, 1, 0)
+        unique_grid.addWidget(self.theoretical_opportunity_processes_spin, 1, 1)
         unique_layout.addLayout(unique_grid)
         unique_form = QFormLayout()
         self.theoretical_opportunity_cache_label = QLabel("Theoretical opportunity cache")
@@ -1529,6 +1547,8 @@ class ScoringTab(QWidget):
         self.theoretical_opportunity_cache_label.setVisible(show_exact_cache)
         self.theoretical_opportunity_cache_edit.parentWidget().setVisible(show_exact_cache)
         self.rebuild_theoretical_opportunity_cache_checkbox.setVisible(show_exact_cache)
+        self.theoretical_opportunity_processes_label.setVisible(show_exact_cache)
+        self.theoretical_opportunity_processes_spin.setVisible(show_exact_cache)
 
     def _add_genome_dir(self) -> None:
         path = _choose_directory(
@@ -1573,6 +1593,11 @@ class ScoringTab(QWidget):
             min_unique_for_unique_pvalue=int(self.min_unique_for_unique_pvalue_spin.value()),
             theoretical_opportunity_cache_path=self.theoretical_opportunity_cache_edit.text().strip(),
             rebuild_theoretical_opportunity_cache=self.rebuild_theoretical_opportunity_cache_checkbox.isChecked(),
+            num_workers_for_theoretical_opportunity=(
+                int(self.theoretical_opportunity_processes_spin.value())
+                if self.theoretical_opportunity_processes_spin.value() > 0
+                else None
+            ),
             peptide_decoy_flag_col=self.peptide_decoy_flag_col_edit.currentText().strip(),
             decoy_flag_value=self.decoy_flag_value_edit.currentText().strip(),
             exclude_genome_ids=_parse_text_list(self.exclude_text.toPlainText()),
@@ -1645,6 +1670,11 @@ class ScoringTab(QWidget):
         self.min_unique_for_unique_pvalue_spin.setValue(int(config.min_unique_for_unique_pvalue))
         self.theoretical_opportunity_cache_edit.setText(config.theoretical_opportunity_cache_path)
         self.rebuild_theoretical_opportunity_cache_checkbox.setChecked(bool(config.rebuild_theoretical_opportunity_cache))
+        self.theoretical_opportunity_processes_spin.setValue(
+            int(config.num_workers_for_theoretical_opportunity)
+            if config.num_workers_for_theoretical_opportunity is not None
+            else 0
+        )
         self._sync_unique_mode_visibility()
         self.peptide_decoy_flag_col_edit.setEditText(config.peptide_decoy_flag_col)
         self.decoy_flag_value_edit.setEditText(config.decoy_flag_value)
@@ -2492,6 +2522,11 @@ class MainWindow(QMainWindow):
                 "min_unique_for_unique_pvalue": self.scoring_tab.min_unique_for_unique_pvalue_spin.value(),
                 "theoretical_opportunity_cache_path": self.scoring_tab.theoretical_opportunity_cache_edit.text().strip(),
                 "rebuild_theoretical_opportunity_cache": self.scoring_tab.rebuild_theoretical_opportunity_cache_checkbox.isChecked(),
+                "num_workers_for_theoretical_opportunity": (
+                    self.scoring_tab.theoretical_opportunity_processes_spin.value()
+                    if self.scoring_tab.theoretical_opportunity_processes_spin.value() > 0
+                    else None
+                ),
                 "peptide_decoy_flag_col": self.scoring_tab.peptide_decoy_flag_col_edit.currentText().strip(),
                 "decoy_flag_value": self.scoring_tab.decoy_flag_value_edit.currentText().strip(),
 
@@ -2571,6 +2606,12 @@ class MainWindow(QMainWindow):
                 self.scoring_tab.theoretical_opportunity_cache_edit.setText(str(state["theoretical_opportunity_cache_path"] or ""))
             if "rebuild_theoretical_opportunity_cache" in state:
                 self.scoring_tab.rebuild_theoretical_opportunity_cache_checkbox.setChecked(bool(state["rebuild_theoretical_opportunity_cache"]))
+            if "num_workers_for_theoretical_opportunity" in state:
+                self.scoring_tab.theoretical_opportunity_processes_spin.setValue(
+                    int(state["num_workers_for_theoretical_opportunity"])
+                    if state["num_workers_for_theoretical_opportunity"] is not None
+                    else 0
+                )
             self.scoring_tab._sync_unique_mode_visibility()
 
             if "num_workers" in state and state["num_workers"] is not None:
