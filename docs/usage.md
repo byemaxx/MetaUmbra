@@ -116,6 +116,8 @@ The scoring tab also includes `Import Parquet...`, which converts a DIA-NN-style
 
 The observed peptide table field also accepts DIA-NN `report.parquet` files directly. When you click Run, the GUI auto-detects the expected columns and loads them into memory for scoring without writing a separate TSV. Use `Import Parquet...` if you need to customize the column mapping or export a peptide TSV.
 
+For multi-sample input, enable `Sample / Unit-aware Scoring`. The `Configure Sample / Unit Mapping` button reads the selected TSV/CSV/parquet table, detects sample IDs from the configured sample column, shows `n_total_rows` and `n_valid_peptides`, and lets you assign selected samples to a shared `analysis_unit_id`. You can also import or export a mapping TSV. A separate metadata table is still supported through the metadata table field.
+
 | Parquet column | Output TSV column |
 | --- | --- |
 | `Run` | `Run` |
@@ -318,6 +320,16 @@ Important scoring options:
 | `--peptide-error-cutoff` | `0.05` | Keep peptides with error values less than or equal to this cutoff. |
 | `--unique-pvalue-mode` | `adaptive-fast` | Unique evidence p-value mode. `adaptive-fast` uses the observed genome-unique peptide pool and each genome's total theoretical peptide count. `adaptive-exact` uses the observed genome-unique peptide pool and theoretical unique peptide opportunity. `upper-bound` keeps the legacy `alpha^U` mode. `peptide-column` multiplies values from `--peptide-error-col`. |
 | `--min-unique-for-unique-pvalue` | `3` | Minimum observed genome-unique peptides required before unique evidence contributes to the combined p-value. |
+| `--unit-aware` | off | Enable per-analysis-unit genome presence scoring for long-format multi-sample peptide tables. |
+| `--sample-id-col` | `Run` | Sample or run ID column used by `--unit-aware`. |
+| `--intensity-col` | `Precursor.Quantity` | Intensity column used to call sample-level peptide presence for `--unit-aware`. |
+| `--intensity-min-value` | `0` | Minimum intensity required for sample-level peptide presence. |
+| `--intensity-min-quantile` | `0` | Optional within-sample intensity quantile cutoff for sample-level peptide presence. |
+| `--metadata-table` | none | Optional TSV/CSV table mapping samples to analysis units. |
+| `--metadata-sample-id-col` | `sample_id` | Sample ID column in `--metadata-table`. |
+| `--metadata-analysis-unit-col` | `analysis_unit_id` | Analysis unit column in `--metadata-table`. |
+| `--unit-presence-rule` | `union` | Sample-to-unit aggregation rule. The first version supports `union`. |
+| `--unit-shared-mode` | `none` | Unit-aware shared evidence mode. The first version uses unique evidence only for unit-level p-values. |
 | `--theoretical-opportunity-cache` | auto | Optional path for the theoretical opportunity cache used by `adaptive-exact`. |
 | `--rebuild-theoretical-opportunity-cache` | off | Rebuild the theoretical opportunity cache even if it already exists. |
 | `--num-workers-for-theoretical-opportunity` | same as `--num-workers` | Optional worker process count for `adaptive-exact` theoretical opportunity sharding and reduction. |
@@ -334,6 +346,47 @@ Important scoring options:
 | `--no-compute-coverage` | off | Skip cumulative coverage calculations. |
 | `--no-export-temp` | off | Skip diagnostic artifact exports. |
 | `--return-full-table` | off | Write the full internal result table instead of only the concise main result. |
+
+### Unit-aware scoring for multi-sample data
+
+MetaUmbra can score genome presence for user-defined analysis units. An analysis unit may correspond to one sample, a technical replicate group, a donor-level group of repeated runs, or another manually defined group. Peptide presence is first determined within each raw sample using an intensity column, then sample-level peptide presence is aggregated into analysis units before genome-level scoring.
+
+Use unit-aware scoring when the input contains multiple samples or repeated runs:
+
+```bash
+metaumbra score \
+  --peptide-table results/report.parquet \
+  --genome-digest-dirs results/genome_digests \
+  --output results/genome_presence.tsv \
+  --peptide-seq-col Stripped.Sequence \
+  --unit-aware \
+  --sample-id-col Run \
+  --intensity-col Precursor.Quantity \
+  --peptide-error-col Q.Value \
+  --metadata-table results/sample_metadata.tsv
+```
+
+The metadata table is optional. If omitted, each sample is its own `analysis_unit_id`. If provided, it should contain columns like:
+
+```text
+sample_id	analysis_unit_id
+run_01	donor_A
+run_02	donor_A
+run_03	donor_B
+```
+
+For each analysis unit `u`, unit-level unique evidence uses the adaptive-exact hypergeometric model:
+
+```text
+X_g,u ~ Hypergeometric(A_total, A_g, S_u)
+p_unique_g,u = P(X_g,u >= U_g,u)
+```
+
+where `U_g,u` is the observed genome-unique peptide count for genome `g` in unit `u`, `S_u` is the observed genome-unique peptide pool size in unit `u`, `A_g` is the theoretical unique peptide opportunity for genome `g`, and `A_total` is the total theoretical unique peptide opportunity across the analyzed genome panel. BH correction is applied separately within each analysis unit.
+
+Pooled multi-sample scoring answers a cohort-level pooled support question and should not be interpreted as per-sample genome presence. Unit-aware scoring is recommended when the input contains multiple samples or repeated runs.
+
+For DIA-NN long/parquet input, `Precursor.Quantity` is recommended for peptide presence filtering. `Precursor.Normalised` can be selected for normalized intensity workflows, but it is not the recommended default for presence/absence detection.
 
 ## Input formats
 
@@ -435,6 +488,22 @@ The default scoring output is a concise TSV table with one row per genome.
 | `cumulative_coverage_percent` | Cumulative observed peptide coverage after sorting by `presence_rank`, when coverage calculation is enabled. |
 
 The concise output uses `pvalue` and `qvalue`. When `--return-full-table` is enabled, the output retains the full internal table, including internal columns such as `p_presence`, `q_presence`, `weighted_evidence`, and `weighted_evidence_shared`.
+
+### Unit-aware output TSVs
+
+When `--unit-aware` is enabled, MetaUmbra still writes the main pooled result table and also writes three additional TSV files next to the main output:
+
+```text
+<stem>_unit_level_genome_presence.tsv
+<stem>_cohort_genome_presence_summary.tsv
+<stem>_sample_unit_mapping.tsv
+```
+
+The unit-level table contains one row per `analysis_unit_id` and genome, including `num_peptides_matched`, `num_peptides_unique`, `theoretical_unique_peptides`, `observed_unique_peptide_pool_size`, `expected_unique_null`, `unique_depth_fold`, `pvalue_unique`, `pvalue`, `qvalue`, `presence_score`, `presence_rank`, and q-value pass flags.
+
+The cohort summary answers how often each genome is supported across units. It includes counts such as `n_units_tested`, `n_units_matched_ge_1`, `n_units_unique_ge_3`, `n_units_q_le_0_05`, `n_units_q_le_0_01`, plus best/median q-values and matched/unique peptide totals across units.
+
+The mapping table records `sample_id`, `analysis_unit_id`, `n_valid_peptides`, `n_total_rows`, and whether each sample was included after filtering.
 
 ### Diagnostic artifacts
 

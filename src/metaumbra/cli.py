@@ -253,6 +253,66 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_argument(
         score_optional,
+        "--unit-aware",
+        action="store_true",
+        help="Enable analysis-unit aware scoring for long-format multi-sample peptide tables.",
+    )
+    _add_argument(score_optional, "--sample-id-col", default="Run", help="Sample/run ID column for --unit-aware input.")
+    _add_argument(
+        score_optional,
+        "--intensity-col",
+        default="Precursor.Quantity",
+        help="Intensity column used for unit-aware sample-level peptide presence filtering.",
+    )
+    _add_argument(
+        score_optional,
+        "--intensity-min-value",
+        type=float,
+        default=0.0,
+        help="Minimum intensity for unit-aware sample-level peptide presence.",
+    )
+    _add_argument(
+        score_optional,
+        "--intensity-min-quantile",
+        type=float,
+        default=0.0,
+        help="Within-sample intensity quantile cutoff for unit-aware peptide presence.",
+    )
+    _add_argument(
+        score_optional,
+        "--metadata-table",
+        default="",
+        display_default="none",
+        help="Optional sample-to-analysis-unit metadata TSV/CSV for --unit-aware scoring.",
+    )
+    _add_argument(
+        score_optional,
+        "--metadata-sample-id-col",
+        default="sample_id",
+        help="Sample ID column in --metadata-table.",
+    )
+    _add_argument(
+        score_optional,
+        "--metadata-analysis-unit-col",
+        default="analysis_unit_id",
+        help="Analysis unit column in --metadata-table.",
+    )
+    _add_argument(
+        score_optional,
+        "--unit-presence-rule",
+        choices=("union",),
+        default="union",
+        help="How sample-level peptide presence is aggregated into each analysis unit.",
+    )
+    _add_argument(
+        score_optional,
+        "--unit-shared-mode",
+        choices=("none",),
+        default="none",
+        help="Shared-peptide unit-aware p-value mode. First version supports unique evidence only.",
+    )
+    _add_argument(
+        score_optional,
         "--theoretical-opportunity-cache",
         default="",
         display_default="auto",
@@ -450,6 +510,16 @@ def _run_score(args: argparse.Namespace) -> int:
         single_peptide_error_rate_upper_bound=args.single_peptide_error_rate_upper_bound,
         unique_pvalue_mode=args.unique_pvalue_mode,
         min_unique_for_unique_pvalue=args.min_unique_for_unique_pvalue,
+        unit_aware=args.unit_aware,
+        sample_id_col=args.sample_id_col,
+        intensity_col=args.intensity_col,
+        intensity_min_value=args.intensity_min_value,
+        intensity_min_quantile=args.intensity_min_quantile,
+        metadata_table_path=args.metadata_table,
+        metadata_sample_id_col=args.metadata_sample_id_col,
+        metadata_analysis_unit_col=args.metadata_analysis_unit_col,
+        unit_presence_rule=args.unit_presence_rule,
+        unit_shared_mode=args.unit_shared_mode,
         theoretical_opportunity_cache_path=args.theoretical_opportunity_cache,
         rebuild_theoretical_opportunity_cache=args.rebuild_theoretical_opportunity_cache,
         num_workers_for_theoretical_opportunity=args.num_workers_for_theoretical_opportunity,

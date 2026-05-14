@@ -12,6 +12,7 @@ MetaUmbra performs genome-level presence inference from metaproteomic peptide li
 - Build genome-specific theoretical peptide references from protein FASTA files
 - Support user-defined genome collections, including isolate genomes, strain panels, and MAG catalogs
 - Use both unique and shared peptide evidence for genome presence inference
+- Score multi-sample inputs per sample or user-defined analysis unit without repeated genome digest scans
 - Report genome-level p-values, BH-adjusted q-values, and presence scores
 - Provide GUI, command-line, and Python workflow support
 - Support peptide tables from common metaproteomics workflows such as DIA-NN and MaxQuant
@@ -79,9 +80,12 @@ MetaUmbra requires:
 
 Optional inputs include peptide scores, peptide-level error values, decoy flags, and genome lineage annotations.
 
+For multi-sample long tables such as DIA-NN reports, `metaumbra score --unit-aware` can call peptide presence per raw sample using `Precursor.Quantity`, aggregate samples into `analysis_unit_id` groups from an optional metadata table, and export per-unit genome presence q-values plus a cohort recurrence summary.
+
 ## Output
 
 The main output is a TSV table containing genome-level evidence and significance values.
+When unit-aware scoring is enabled, additional TSV files report per-analysis-unit genome presence, a cohort-level genome recurrence summary, and the final sample-to-unit mapping.
 
 Key output columns include:
 
