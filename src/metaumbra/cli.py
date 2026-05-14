@@ -233,12 +233,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_argument(
         score_optional,
         "--unique-pvalue-mode",
-        choices=("adaptive-fast", "adaptive-exact", "upper-bound", "peptide-column"),
-        default="adaptive-fast",
+        choices=("adaptive-exact", "upper-bound", "peptide-column"),
+        default="adaptive-exact",
         help=(
-            "Unique evidence p-value mode. 'adaptive-fast' uses the observed genome-unique peptide pool and "
-            "genome total theoretical peptide count. 'adaptive-exact' uses the observed genome-unique peptide pool and genome-specific "
-            "theoretical unique peptide opportunity. 'upper-bound' uses "
+            "Unique evidence p-value mode. 'adaptive-exact' uses the observed genome-unique peptide pool and "
+            "genome-specific theoretical unique peptide opportunity. 'upper-bound' uses "
             "--single-peptide-error-rate-upper-bound as alpha in alpha^U. "
             "'peptide-column' multiplies values from --peptide-error-col, "
             "falling back to the upper bound when a peptide value is missing."

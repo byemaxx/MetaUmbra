@@ -318,7 +318,7 @@ Important scoring options:
 | `--peptide-score-col` | `Evidence` | Peptide score column. If missing, all peptides receive score `1`. |
 | `--peptide-error-col` | `Q.Value` | Peptide error, FDR, PEP, or q-value column used for filtering. |
 | `--peptide-error-cutoff` | `0.05` | Keep peptides with error values less than or equal to this cutoff. |
-| `--unique-pvalue-mode` | `adaptive-fast` | Unique evidence p-value mode. `adaptive-fast` uses the observed genome-unique peptide pool and each genome's total theoretical peptide count. `adaptive-exact` uses the observed genome-unique peptide pool and theoretical unique peptide opportunity. `upper-bound` keeps the legacy `alpha^U` mode. `peptide-column` multiplies values from `--peptide-error-col`. |
+| `--unique-pvalue-mode` | `adaptive-exact` | Unique evidence p-value mode. `adaptive-exact` uses the observed genome-unique peptide pool and theoretical unique peptide opportunity. `upper-bound` keeps the legacy `alpha^U` mode. `peptide-column` multiplies values from `--peptide-error-col`. |
 | `--min-unique-for-unique-pvalue` | `3` | Minimum observed genome-unique peptides required before unique evidence contributes to the combined p-value. |
 | `--unit-aware` | off | Enable per-analysis-unit genome presence scoring for long-format multi-sample peptide tables. |
 | `--sample-id-col` | `Run` | Sample or run ID column used by `--unit-aware`. |
@@ -553,7 +553,7 @@ Use `--use-cache-if-exists` for repeated analyses with the same observed peptide
 <output_directory>/<output_stem>_artifacts/theoretical_opportunity_cache.pkl
 ```
 
-Use `--rebuild-theoretical-opportunity-cache` after changing genome digest files or when you want to force a fresh theoretical opportunity scan. New caches include digest file fingerprints so MetaUmbra can detect digest file changes before reusing the cache. Legacy caches without fingerprints are still accepted when genome IDs match, but rebuilding once enables stricter validation. `adaptive-exact` can also shard theoretical peptides across worker processes with `--num-workers-for-theoretical-opportunity`; if you do not set it, MetaUmbra reuses `--num-workers`. The default `adaptive-fast` mode does not build or require this cache.
+Use `--rebuild-theoretical-opportunity-cache` after changing genome digest files or when you want to force a fresh theoretical opportunity scan. New caches include digest file fingerprints so MetaUmbra can detect digest file changes before reusing the cache. Legacy caches without fingerprints are still accepted when genome IDs match, but rebuilding once enables stricter validation. `adaptive-exact` can also shard theoretical peptides across worker processes with `--num-workers-for-theoretical-opportunity`; if you do not set it, MetaUmbra reuses `--num-workers`.
 
 ## Interpreting results
 
@@ -565,23 +565,7 @@ MetaUmbra combines unique peptide support with weighted shared peptide evidence:
 - Unique-evidence p-values use a peptide-depth adjusted null model by default.
 - `qvalue` is the Benjamini-Hochberg adjusted genome-level presence q-value across analyzed genomes.
 
-For default `adaptive-fast` unique evidence, MetaUmbra compares observed genome-unique peptides against the number expected within the observed genome-unique peptide pool and the genome's total theoretical peptide space:
-
-```text
-X_g ~ Binomial(S, T_g / T_total)
-p_unique = P(X_g >= U_g)
-```
-
-Definitions:
-
-| Symbol | Meaning |
-| --- | --- |
-| `U_g` | Observed genome-unique matched peptides for genome `g`. |
-| `S` | Total observed genome-unique peptides across genomes. |
-| `T_g` | Total theoretical peptides in genome `g`. |
-| `T_total` | Total theoretical peptides across target genomes. |
-
-`adaptive-exact` uses genome-specific theoretical unique peptide opportunity and is intended for fixed reference panels or final benchmark analyses:
+For default `adaptive-exact` unique evidence, MetaUmbra compares observed genome-unique peptides against genome-specific theoretical unique peptide opportunity:
 
 ```text
 X_g ~ Hypergeometric(A_total, A_g, S)
@@ -599,7 +583,7 @@ Definitions:
 
 By default, unique peptide evidence contributes to the combined genome presence p-value only when at least three genome-unique peptides are observed. Genomes below this threshold can still receive support from shared peptide evidence through the shared-peptide knockoff model.
 
-The legacy upper-bound mode, `p_unique = alpha^U`, is retained for sensitivity analysis and backward compatibility, but adaptive-fast is the recommended default. The `peptide-column` mode should only be used when the selected peptide error column represents a peptide-level posterior error probability or a comparable per-peptide error estimate. For DIA-NN `Q.Value`, adaptive-fast is recommended.
+The legacy upper-bound mode, `p_unique = alpha^U`, is retained for sensitivity analysis. The `peptide-column` mode should only be used when the selected peptide error column represents a peptide-level posterior error probability or a comparable per-peptide error estimate.
 
 Practical interpretation:
 

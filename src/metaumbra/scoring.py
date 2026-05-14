@@ -346,7 +346,7 @@ class GenomePresenceScorer:
         self.observed_unique_peptide_pool_size: int = 0
         self.total_theoretical_unique_peptides_all_genomes: int = 0
         self.min_unique_for_unique_pvalue: int = 3
-        self.unique_pvalue_mode: str = "adaptive-fast"
+        self.unique_pvalue_mode: str = "adaptive-exact"
         self.genome_scores_df: Optional[pd.DataFrame] = None
 
         # Unified ranking score scales (lexicographic; unique dominates)
@@ -778,22 +778,6 @@ class GenomePresenceScorer:
         if cached_totals:
             self.genome_total_theoretical_peptides.update(cached_totals)
 
-    def _binomial_tail_pvalue(self, observed: int, trials: int, prob: float) -> float:
-        observed = int(observed)
-        trials = int(max(trials, 0))
-        prob = float(min(max(prob, 1e-12), 1.0))
-        if observed <= 0 or trials <= 0:
-            return 1.0
-        try:
-            from scipy.stats import binom  # type: ignore
-
-            return _clip_pvalue(binom.sf(observed - 1, trials, prob))
-        except ImportError as exc:
-            raise RuntimeError(
-                "scipy is required for adaptive-fast unique p-values. "
-                "Install scipy or use legacy upper-bound mode."
-            ) from exc
-
     def _hypergeom_tail_pvalue(
         self,
         observed: int,
@@ -818,12 +802,12 @@ class GenomePresenceScorer:
         except ImportError as exc:
             raise RuntimeError(
                 "scipy is required for adaptive-exact unique p-values. "
-                "Install scipy or use adaptive-fast/legacy upper-bound mode."
+                "Install scipy or use upper-bound or peptide-column mode."
             ) from exc
 
     def _unique_pvalue_stats_for_genome(self, gid: str, u_observed: int) -> dict:
         U = int(u_observed)
-        mode = str(self.unique_pvalue_mode or "adaptive-fast").strip().lower()
+        mode = str(self.unique_pvalue_mode or "adaptive-exact").strip().lower()
         alpha = float(min(max(self.single_peptide_error_rate_upper_bound, 1e-12), 1.0))
         p_unique = 1.0
         p_unique_depth = 1.0
@@ -832,21 +816,9 @@ class GenomePresenceScorer:
         fold = 0.0
         gate_pass = False
         null_model = ""
-        unique_fast_pi = 0.0
         theoretical_unique: Optional[int] = None
 
-        if mode == "adaptive-fast":
-            T_g = int(self.genome_total_theoretical_peptides.get(gid, 0))
-            T_total = int(max(self.total_theoretical_peptides_all_genomes, 1))
-            unique_fast_pi = float(min(max(float(T_g) / float(T_total), 1e-12), 1.0))
-            expected = float(S) * unique_fast_pi
-            fold = float(U) / max(expected, 1e-12)
-            null_model = "binomial"
-            if U >= int(self.min_unique_for_unique_pvalue) and S > 0 and T_g > 0:
-                p_unique_depth = self._binomial_tail_pvalue(U, S, unique_fast_pi)
-                p_unique = p_unique_depth
-                gate_pass = True
-        elif mode == "adaptive-exact":
+        if mode == "adaptive-exact":
             A = int(self.genome_theoretical_unique_peptides.get(gid, 0))
             A_total = int(max(self.total_theoretical_unique_peptides_all_genomes, 1))
             theoretical_unique = int(A)
@@ -871,8 +843,7 @@ class GenomePresenceScorer:
                 gate_pass = True
         else:
             raise ValueError(
-                "unique_pvalue_mode must be one of 'adaptive-fast', 'adaptive-exact', "
-                "'upper-bound', or 'peptide-column'."
+                "unique_pvalue_mode must be one of 'adaptive-exact', 'upper-bound', or 'peptide-column'."
             )
 
         return {
@@ -884,7 +855,6 @@ class GenomePresenceScorer:
             "unique_depth_null_model": null_model,
             "unique_pvalue_mode": mode,
             "unique_gate_pass": bool(gate_pass),
-            "unique_fast_pi": float(unique_fast_pi),
             "theoretical_unique_peptides": theoretical_unique,
         }
 
@@ -1887,7 +1857,7 @@ class GenomePresenceScorer:
     def _add_knockoff_existence_stats(
         self,
         df_scored: pd.DataFrame,
-        unique_pvalue_mode: str = "adaptive-fast",
+        unique_pvalue_mode: str = "adaptive-exact",
         min_unique_for_unique_pvalue: int = 3,
     ) -> pd.DataFrame:
         """Add per-genome knockoff existence p/q-values."""
@@ -1904,7 +1874,6 @@ class GenomePresenceScorer:
         out["unique_depth_fold"] = 0.0
         out["unique_gate_pass"] = False
         out["unique_depth_null_model"] = ""
-        out["unique_fast_pi"] = 0.0
         out["theoretical_unique_peptides"] = pd.NA
         out["unique_pvalue_mode"] = unique_pvalue_mode
 
@@ -1934,13 +1903,12 @@ class GenomePresenceScorer:
         if self.knockoff_stage2_mc_iterations is not None:
             K2 = int(max(50, self.knockoff_stage2_mc_iterations))
         peptide_error_upper = float(min(max(self.single_peptide_error_rate_upper_bound, 1e-12), 1.0))
-        mode = str(unique_pvalue_mode or "adaptive-fast").strip().lower()
+        mode = str(unique_pvalue_mode or "adaptive-exact").strip().lower()
         if int(min_unique_for_unique_pvalue) < 0:
             raise ValueError("min_unique_for_unique_pvalue must be >= 0.")
-        if mode not in {"adaptive-fast", "adaptive-exact", "upper-bound", "peptide-column"}:
+        if mode not in {"adaptive-exact", "upper-bound", "peptide-column"}:
             raise ValueError(
-                "unique_pvalue_mode must be one of 'adaptive-fast', 'adaptive-exact', "
-                "'upper-bound', or 'peptide-column', "
+                "unique_pvalue_mode must be one of 'adaptive-exact', 'upper-bound', or 'peptide-column', "
                 f"got {unique_pvalue_mode!r}."
             )
         self.unique_pvalue_mode = mode
@@ -1955,14 +1923,7 @@ class GenomePresenceScorer:
         self.run_stats["unique_pvalue_uses_per_peptide_error"] = bool(use_per_peptide_error)
         self.run_stats["unique_pvalue_error_source_col"] = str(error_col) if use_per_peptide_error and error_col is not None else None
         self.run_stats["unique_pvalue_uses_pep_column"] = bool(uses_pep_column)
-        if mode == "adaptive-fast":
-            self.logger.info(
-                "Unique p-value mode: [adaptive-fast] "
-                f"null_model=binomial, min_unique={int(min_unique_for_unique_pvalue)}, "
-                f"observed_unique_pool={int(self.observed_unique_peptide_pool_size)}, "
-                f"total_theoretical_peptides={int(self.total_theoretical_peptides_all_genomes)}"
-            )
-        elif mode == "adaptive-exact":
+        if mode == "adaptive-exact":
             self.logger.info(
                 "Unique p-value mode: [adaptive-exact] "
                 f"null_model=hypergeometric, min_unique={int(min_unique_for_unique_pvalue)}, "
@@ -2567,7 +2528,7 @@ class GenomePresenceScorer:
         export_temp: bool = True,
         export_peptide_contrib_topN: int = 0,
         use_cache_if_exists: bool = True,
-        unique_pvalue_mode: str = "adaptive-fast",
+        unique_pvalue_mode: str = "adaptive-exact",
         min_unique_for_unique_pvalue: int = 3,
         theoretical_opportunity_cache_path: Optional[str] = None,
         rebuild_theoretical_opportunity_cache: bool = False,
@@ -2578,13 +2539,12 @@ class GenomePresenceScorer:
         unit_shared_mode: str = "none",
     ) -> pd.DataFrame:
         """End-to-end analysis producing a genome-level q-value (q_presence)."""
-        mode = str(unique_pvalue_mode or "adaptive-fast").strip().lower()
+        mode = str(unique_pvalue_mode or "adaptive-exact").strip().lower()
         if int(min_unique_for_unique_pvalue) < 0:
             raise ValueError("min_unique_for_unique_pvalue must be >= 0.")
-        if mode not in {"adaptive-fast", "adaptive-exact", "upper-bound", "peptide-column"}:
+        if mode not in {"adaptive-exact", "upper-bound", "peptide-column"}:
             raise ValueError(
-                "unique_pvalue_mode must be one of 'adaptive-fast', 'adaptive-exact', "
-                "'upper-bound', or 'peptide-column'."
+                "unique_pvalue_mode must be one of 'adaptive-exact', 'upper-bound', or 'peptide-column'."
             )
         if unit_aware:
             if not self.unit_aware_enabled:
@@ -2876,7 +2836,6 @@ class GenomePresenceScorer:
 
         opportunity_rebuilt = False
         if mode == "adaptive-exact" or unit_aware:
-            self.run_stats["adaptive_fast_uses_total_theoretical_peptides"] = False
             matched_genome_ids = set(self.genome_matched_peptides.keys())
             folders = [genome_digest_dirs] if isinstance(genome_digest_dirs, str) else list(genome_digest_dirs)
             genome_files_by_id: Dict[str, Path] = {}
@@ -2918,8 +2877,7 @@ class GenomePresenceScorer:
                 else {}
             )
         else:
-            self.run_stats["unique_depth_null_model"] = "binomial" if mode == "adaptive-fast" else ""
-            self.run_stats["adaptive_fast_uses_total_theoretical_peptides"] = bool(mode == "adaptive-fast")
+            self.run_stats["unique_depth_null_model"] = ""
             self.run_stats["theoretical_opportunity_cache_path"] = None
             self.run_stats["theoretical_opportunity_cache_rebuilt"] = False
 

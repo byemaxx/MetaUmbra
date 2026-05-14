@@ -46,7 +46,7 @@ class ScoringConfig:
     peptide_error_col: str = "Q.Value"
     peptide_error_cutoff: float = 0.05
     single_peptide_error_rate_upper_bound: float = 0.3
-    unique_pvalue_mode: str = "adaptive-fast"
+    unique_pvalue_mode: str = "adaptive-exact"
     min_unique_for_unique_pvalue: int = 3
     theoretical_opportunity_cache_path: str = ""
     rebuild_theoretical_opportunity_cache: bool = False

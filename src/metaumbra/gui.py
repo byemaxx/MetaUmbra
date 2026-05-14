@@ -1785,8 +1785,7 @@ class ScoringTab(QWidget):
         unique_layout = QVBoxLayout(unique_box)
         self.unique_pvalue_mode_combo = QComboBox()
         self.unique_pvalue_mode_combo.addItem("Adaptive exact", "adaptive-exact")
-        self.unique_pvalue_mode_combo.addItem("Adaptive fast", "adaptive-fast")
-        self.unique_pvalue_mode_combo.addItem("Legacy upper bound", "upper-bound")
+        self.unique_pvalue_mode_combo.addItem("Upper bound", "upper-bound")
         self.unique_pvalue_mode_combo.addItem("Peptide column", "peptide-column")
         self.min_unique_for_unique_pvalue_spin = QSpinBox()
         self.min_unique_for_unique_pvalue_spin.setRange(0, 1000)
@@ -1799,7 +1798,7 @@ class ScoringTab(QWidget):
         )
         self.rebuild_theoretical_opportunity_cache_checkbox = QCheckBox("Rebuild theoretical opportunity cache")
         self.single_peptide_error_rate_upper_bound_edit.setToolTip(
-            "Alpha used only by the legacy upper-bound unique evidence p-value mode: alpha^U."
+            "Alpha used only by the upper-bound unique evidence p-value mode: alpha^U."
         )
         self.unique_pvalue_mode_combo.setToolTip(
             "Choose the source for unique peptide p-values."
@@ -2326,7 +2325,7 @@ class ScoringTab(QWidget):
             self._last_browse_dir = _remember_dialog_directory(path)
 
     def _sync_unique_mode_visibility(self) -> None:
-        mode = str(self.unique_pvalue_mode_combo.currentData() or "adaptive-fast")
+        mode = str(self.unique_pvalue_mode_combo.currentData() or "adaptive-exact")
         show_alpha = mode == "upper-bound"
         show_exact_cache = mode == "adaptive-exact"
         self.unique_alpha_label.setVisible(show_alpha)
@@ -2376,7 +2375,7 @@ class ScoringTab(QWidget):
                 self.single_peptide_error_rate_upper_bound_edit.text(),
                 "Unique alpha upper bound",
             ),
-            unique_pvalue_mode=str(self.unique_pvalue_mode_combo.currentData() or "adaptive-fast"),
+            unique_pvalue_mode=str(self.unique_pvalue_mode_combo.currentData() or "adaptive-exact"),
             min_unique_for_unique_pvalue=int(self.min_unique_for_unique_pvalue_spin.value()),
             unit_aware=self.unit_aware_checkbox.isChecked(),
             sample_id_col=self.sample_id_col_edit.currentText().strip(),
@@ -3357,7 +3356,7 @@ class MainWindow(QMainWindow):
                 "intensity_col": self.scoring_tab.intensity_col_edit.currentText().strip(),
                 "peptide_error_cutoff": err_cutoff,
                 "single_peptide_error_rate_upper_bound": single_err_bound,
-                "unique_pvalue_mode": str(self.scoring_tab.unique_pvalue_mode_combo.currentData() or "adaptive-fast"),
+                "unique_pvalue_mode": str(self.scoring_tab.unique_pvalue_mode_combo.currentData() or "adaptive-exact"),
                 "min_unique_for_unique_pvalue": self.scoring_tab.min_unique_for_unique_pvalue_spin.value(),
                 "unit_aware": self.scoring_tab.unit_aware_checkbox.isChecked(),
                 "intensity_min_value": self.scoring_tab.intensity_min_value_edit.text().strip(),
