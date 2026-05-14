@@ -42,6 +42,11 @@ from tqdm import tqdm
 
 
 WINDOWS_MAX_PROCESS_POOL_WORKERS = 60
+MIN_PVALUE = 1e-300
+
+
+def _clip_pvalue(p: float) -> float:
+    return float(np.clip(float(p), MIN_PVALUE, 1.0))
 
 
 def _resolve_worker_count(num_workers: Optional[int], logger: Optional[logging.Logger] = None) -> int:
@@ -427,7 +432,7 @@ class GenomePresenceScorer:
         try:
             from scipy.stats import binom  # type: ignore
 
-            return float(np.clip(binom.sf(observed - 1, trials, prob), 0.0, 1.0))
+            return _clip_pvalue(binom.sf(observed - 1, trials, prob))
         except ImportError as exc:
             raise RuntimeError(
                 "scipy is required for adaptive-fast unique p-values. "
@@ -454,7 +459,7 @@ class GenomePresenceScorer:
         try:
             from scipy.stats import hypergeom  # type: ignore
 
-            return float(np.clip(hypergeom.sf(observed - 1, universe_size, success_states, draws), 0.0, 1.0))
+            return _clip_pvalue(hypergeom.sf(observed - 1, universe_size, success_states, draws))
         except ImportError as exc:
             raise RuntimeError(
                 "scipy is required for adaptive-exact unique p-values. "
@@ -516,8 +521,8 @@ class GenomePresenceScorer:
             )
 
         return {
-            "p_unique": float(np.clip(p_unique, 0.0, 1.0)),
-            "p_unique_depth": float(np.clip(p_unique_depth, 0.0, 1.0)),
+            "p_unique": _clip_pvalue(p_unique),
+            "p_unique_depth": _clip_pvalue(p_unique_depth),
             "unique_observed": int(U),
             "unique_expected_null": float(expected),
             "unique_depth_fold": float(fold),
