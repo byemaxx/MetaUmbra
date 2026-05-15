@@ -404,6 +404,8 @@ class GenomePresenceScorer:
         self.sample_unit_mapping_df: Optional[pd.DataFrame] = None
         self.unit_aware_output_paths: Dict[str, str] = {}
         self.unit_aware_cohort_summary_df: Optional[pd.DataFrame] = None
+        self._export_unit_derived_tables: bool = False
+        self._last_unit_genome_presence_df: Optional[pd.DataFrame] = None
 
     def _read_genome_lineage_table(
         self,
@@ -2710,6 +2712,11 @@ class GenomePresenceScorer:
 
         unit_level_out = _ordered_columns(unit_level_df, unit_level_columns)
         cohort_summary_out = _ordered_columns(cohort_summary_df, cohort_columns)
+        if not self._export_unit_derived_tables:
+            return {
+                "unit_genome_presence": unit_level_out,
+                "cohort_genome_summary": cohort_summary_out,
+            }
         unit_call_counts = _build_unit_call_counts(unit_level_df)
         unit_q001 = _sort_existing(
             _ordered_columns(unit_level_df.loc[unit_level_df["pass_q_0_01"]], significant_columns),
@@ -2769,16 +2776,15 @@ class GenomePresenceScorer:
         mapping_df: pd.DataFrame,
         export_pooled_result: bool,
     ) -> None:
-        """Write the default unit-aware outputs."""
+        """Write the primary unit-aware outputs."""
         os.makedirs(out_dir or ".", exist_ok=True)
         artifact_dir = os.path.join(out_dir, f"{stem}_artifacts")
-        unit_level_path = os.path.join(out_dir, f"{stem}_unit_genome_presence.tsv")
+        unit_level_path = str(requested_output_path)
         cohort_path = os.path.join(out_dir, f"{stem}_cohort_genome_summary.tsv")
         mapping_path = os.path.join(out_dir, f"{stem}_sample_unit_mapping.tsv")
         pooled_path = os.path.join(artifact_dir, "pooled_genome_presence.tsv")
 
         self.unit_aware_output_paths = {
-            "requested_output": str(requested_output_path),
             "unit_genome_presence": unit_level_path,
             "cohort_genome_summary": cohort_path,
             "sample_unit_mapping": mapping_path,
@@ -2786,10 +2792,9 @@ class GenomePresenceScorer:
         unit_level_out = tables["unit_genome_presence"]
         cohort_summary_out = tables["cohort_genome_summary"]
         self.unit_aware_cohort_summary_df = cohort_summary_out.copy()
+        self._last_unit_genome_presence_df = unit_level_out.copy()
 
-        unit_level_out.to_csv(requested_output_path, sep="\t", index=False)
-        if os.path.abspath(str(requested_output_path)) != os.path.abspath(unit_level_path):
-            unit_level_out.to_csv(unit_level_path, sep="\t", index=False)
+        unit_level_out.to_csv(unit_level_path, sep="\t", index=False)
         cohort_summary_out.to_csv(cohort_path, sep="\t", index=False)
         mapping_df.to_csv(mapping_path, sep="\t", index=False)
 
@@ -2827,6 +2832,11 @@ class GenomePresenceScorer:
             "genome_by_unit_q005_matrix": os.path.join(derived_dir, "genome_by_unit_q005_matrix.tsv"),
             "genome_by_unit_qvalue_matrix": os.path.join(derived_dir, "genome_by_unit_qvalue_matrix.tsv"),
         }
+        missing = [key for key in derived_paths if key not in tables]
+        if missing:
+            raise RuntimeError(
+                "Derived unit-aware tables were requested but not prepared: " + ", ".join(missing)
+            )
         for key, path in derived_paths.items():
             tables[key].to_csv(path, sep="\t", index=False)
             self.unit_aware_output_paths[key] = path
@@ -2877,6 +2887,8 @@ class GenomePresenceScorer:
                 raise ValueError("unit_aware=True requires read_unit_aware_peptide_file() before analyze_genomes().")
             self.unit_presence_rule = "union"
             self.unit_shared_mode = "none"
+        self._export_unit_derived_tables = bool(export_unit_derived_tables)
+        self._last_unit_genome_presence_df = None
         self.unique_pvalue_mode = mode
         self.min_unique_for_unique_pvalue = int(min_unique_for_unique_pvalue)
         theoretical_opportunity_workers = (
@@ -3364,7 +3376,10 @@ class GenomePresenceScorer:
                 self.logger.warning(f"Failed to export temp artifacts: {e}")
 
         self._print_summary()
-        return df_scored if return_full_table else df_main
+        result = df_scored if return_full_table else df_main
+        if unit_aware and isinstance(self._last_unit_genome_presence_df, pd.DataFrame):
+            return self._last_unit_genome_presence_df.copy()
+        return result
 
     # =========================
     # Summary
