@@ -1794,16 +1794,18 @@ class ScoringTab(QWidget):
         unique_box.setProperty("subtle", True)
         unique_layout = QVBoxLayout(unique_box)
         self.unique_pvalue_mode_combo = QComboBox()
-        self.unique_pvalue_mode_combo.addItem("Adaptive exact", "adaptive-exact")
+        self.unique_pvalue_mode_combo.addItem("Hypergeometric opportunity", "hypergeometric-opportunity")
         self.unique_pvalue_mode_combo.addItem("Upper bound", "upper-bound")
         self.unique_pvalue_mode_combo.addItem("Peptide column", "peptide-column")
+        self.unique_pvalue_mode_combo.setMinimumWidth(260)
+        _set_compact_control_width(self.unique_pvalue_mode_combo, 260)
         self.min_unique_for_unique_pvalue_spin = QSpinBox()
         self.min_unique_for_unique_pvalue_spin.setRange(0, 1000)
         self.min_unique_for_unique_pvalue_spin.setValue(3)
         self.single_peptide_error_rate_upper_bound_edit = QLineEdit("0.3")
         self.theoretical_opportunity_processes_spin = _create_optional_process_spinbox()
         self.theoretical_opportunity_processes_spin.setToolTip(
-            "Optional worker count for adaptive-exact theoretical opportunity sharding.\n"
+            "Optional worker count for hypergeometric-opportunity theoretical opportunity sharding.\n"
             "Use 0 to reuse the main Processes setting."
         )
         self.rebuild_theoretical_opportunity_cache_checkbox = QCheckBox("Rebuild theoretical opportunity cache")
@@ -1817,7 +1819,7 @@ class ScoringTab(QWidget):
             "Browse", self._browse_theoretical_opportunity_cache, accept_mode="file"
         )
         unique_grid = _create_compact_grid()
-        _add_compact_field(unique_grid, 0, 0, "Unique p-value mode", self.unique_pvalue_mode_combo, 160)
+        _add_compact_field(unique_grid, 0, 0, "Unique p-value mode", self.unique_pvalue_mode_combo, 260)
         _add_compact_field(unique_grid, 0, 1, "Minimum unique peptides", self.min_unique_for_unique_pvalue_spin, 110)
         self.unique_alpha_label = QLabel("Unique alpha upper bound")
         self.unique_alpha_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
@@ -1844,7 +1846,7 @@ class ScoringTab(QWidget):
         self.processes_spin = _create_process_spinbox()
         self.knockoff_mc_iterations_edit = QLineEdit("500")
         self.knockoff_stage2_mc_iterations_edit = QLineEdit("2000")
-        self.knockoff_stage2_ranges_edit = QLineEdit("0.005-0.02, 0.02-0.08")
+        self.knockoff_stage2_ranges_edit = QLineEdit("0.01-0.05")
         self.knockoff_random_seed_edit = QLineEdit("1")
         self.knockoff_top_n_targets_spin = QSpinBox()
         self.knockoff_top_n_targets_spin.setRange(0, 1000000)
@@ -2335,9 +2337,9 @@ class ScoringTab(QWidget):
             self._last_browse_dir = _remember_dialog_directory(path)
 
     def _sync_unique_mode_visibility(self) -> None:
-        mode = str(self.unique_pvalue_mode_combo.currentData() or "adaptive-exact")
+        mode = str(self.unique_pvalue_mode_combo.currentData() or "hypergeometric-opportunity")
         show_alpha = mode == "upper-bound"
-        show_exact_cache = mode == "adaptive-exact"
+        show_exact_cache = mode == "hypergeometric-opportunity"
         self.unique_alpha_label.setVisible(show_alpha)
         self.single_peptide_error_rate_upper_bound_edit.setVisible(show_alpha)
         self.theoretical_opportunity_cache_label.setVisible(show_exact_cache)
@@ -2385,7 +2387,7 @@ class ScoringTab(QWidget):
                 self.single_peptide_error_rate_upper_bound_edit.text(),
                 "Unique alpha upper bound",
             ),
-            unique_pvalue_mode=str(self.unique_pvalue_mode_combo.currentData() or "adaptive-exact"),
+            unique_pvalue_mode=str(self.unique_pvalue_mode_combo.currentData() or "hypergeometric-opportunity"),
             min_unique_for_unique_pvalue=int(self.min_unique_for_unique_pvalue_spin.value()),
             unit_aware=self.unit_aware_checkbox.isChecked(),
             sample_id_col=self.sample_id_col_edit.currentText().strip(),
@@ -3317,84 +3319,23 @@ class MainWindow(QMainWindow):
         try:
             state_dir = _default_user_config_dir()
             state_dir.mkdir(parents=True, exist_ok=True)
-            
-            try:
-                ko_mc = int(self.scoring_tab.knockoff_mc_iterations_edit.text() or 500)
-            except ValueError:
-                ko_mc = 500
-                
-            try:
-                ko_stage2_mc = int(self.scoring_tab.knockoff_stage2_mc_iterations_edit.text()) if self.scoring_tab.knockoff_stage2_mc_iterations_edit.text().strip() else None
-            except ValueError:
-                ko_stage2_mc = None
-                
-            try:
-                ko_seed = int(self.scoring_tab.knockoff_random_seed_edit.text() or 1)
-            except ValueError:
-                ko_seed = 1
-
-            try:
-                ko_ranges = _parse_range_pairs(self.scoring_tab.knockoff_stage2_ranges_edit.text())
-            except Exception:
-                ko_ranges = []
-
-            try:
-                err_cutoff = float(self.scoring_tab.peptide_error_cutoff_edit.text() or 0.05)
-            except ValueError:
-                err_cutoff = 0.05
-
-            try:
-                single_err_bound = float(self.scoring_tab.single_peptide_error_rate_upper_bound_edit.text() or 0.3)
-            except ValueError:
-                single_err_bound = 0.3
 
             state = {
-                "version": 1,
-                "last_browse_dir": self.scoring_tab._last_browse_dir,
-                "last_peptide_table_dir": _remember_dialog_directory(self.scoring_tab.peptide_table_edit.text()),
-                "last_output_dir": _remember_dialog_directory(self.scoring_tab.output_tsv_edit.text()),
-
-                "genome_digest_dirs": [self.scoring_tab.genome_dir_list.item(i).text() for i in range(self.scoring_tab.genome_dir_list.count())],
-                "genome_lineage_table_path": self.scoring_tab.genome_lineage_table_edit.text().strip(),
-                "genome_lineage_genome_id_col": self.scoring_tab.genome_lineage_genome_id_col_edit.currentText().strip(),
-                "genome_lineage_lineage_col": self.scoring_tab.genome_lineage_lineage_col_edit.currentText().strip(),
-
-                "peptide_seq_col": self.scoring_tab.peptide_seq_col_edit.currentText().strip(),
-                "peptide_score_col": self.scoring_tab.peptide_score_col_edit.currentText().strip(),
-                "peptide_error_col": self.scoring_tab.peptide_error_col_edit.currentText().strip(),
-                "sample_id_col": self.scoring_tab.sample_id_col_edit.currentText().strip(),
-                "intensity_col": self.scoring_tab.intensity_col_edit.currentText().strip(),
-                "peptide_error_cutoff": err_cutoff,
-                "single_peptide_error_rate_upper_bound": single_err_bound,
-                "unique_pvalue_mode": str(self.scoring_tab.unique_pvalue_mode_combo.currentData() or "adaptive-exact"),
-                "min_unique_for_unique_pvalue": self.scoring_tab.min_unique_for_unique_pvalue_spin.value(),
-                "unit_aware": self.scoring_tab.unit_aware_checkbox.isChecked(),
-                "export_unit_derived_tables": self.scoring_tab.export_unit_derived_tables_checkbox.isChecked(),
-                "intensity_min_value": self.scoring_tab.intensity_min_value_edit.text().strip(),
-                "intensity_min_quantile": self.scoring_tab.intensity_min_quantile_edit.text().strip(),
-                "theoretical_opportunity_cache_path": self.scoring_tab.theoretical_opportunity_cache_edit.text().strip(),
-                "rebuild_theoretical_opportunity_cache": self.scoring_tab.rebuild_theoretical_opportunity_cache_checkbox.isChecked(),
-                "num_workers_for_theoretical_opportunity": (
-                    self.scoring_tab.theoretical_opportunity_processes_spin.value()
-                    if self.scoring_tab.theoretical_opportunity_processes_spin.value() > 0
-                    else None
-                ),
-                "peptide_decoy_flag_col": self.scoring_tab.peptide_decoy_flag_col_edit.currentText().strip(),
-                "decoy_flag_value": self.scoring_tab.decoy_flag_value_edit.currentText().strip(),
-
-                "num_workers": self.scoring_tab.processes_spin.value(),
-                "knockoff_mc_iterations": ko_mc,
-                "knockoff_stage2_mc_iterations": ko_stage2_mc,
-                "knockoff_stage2_p_exist_ranges": ko_ranges,
-                "knockoff_random_seed": ko_seed,
-                "knockoff_top_n_targets": self.scoring_tab.knockoff_top_n_targets_spin.value() if self.scoring_tab.knockoff_top_n_targets_spin.value() > 0 else None,
-
-                "use_cache_if_exists": self.scoring_tab.use_cache_if_exists_checkbox.isChecked(),
-                "save_matched_peptides_cache": self.scoring_tab.save_cache_checkbox.isChecked(),
-                "compute_coverage": self.scoring_tab.compute_coverage_checkbox.isChecked(),
-                "export_temp": self.scoring_tab.export_temp_checkbox.isChecked(),
-                "export_peptide_contrib_topN": self.scoring_tab.export_peptide_contrib_topn_spin.value(),
-                "return_full_table": self.scoring_tab.return_full_table_checkbox.isChecked()
+                "version": 2,
+                "genome_digest": {
+                    "directories": [
+                        self.scoring_tab.genome_dir_list.item(i).text()
+                        for i in range(self.scoring_tab.genome_dir_list.count())
+                    ],
+                    "theoretical_opportunity_cache_path": (
+                        self.scoring_tab.theoretical_opportunity_cache_edit.text().strip()
+                    ),
+                },
+                "genome_lineage": {
+                    "table_path": self.scoring_tab.genome_lineage_table_edit.text().strip(),
+                    "genome_id_col": self.scoring_tab.genome_lineage_genome_id_col_edit.currentText().strip(),
+                    "lineage_col": self.scoring_tab.genome_lineage_lineage_col_edit.currentText().strip(),
+                },
             }
             with open(_default_gui_state_path(), "w", encoding="utf-8") as f:
                 json.dump(state, f, indent=2)
@@ -3416,98 +3357,38 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            if "last_browse_dir" in state:
-                path = state["last_browse_dir"]
-                if path and Path(path).exists():
-                    self.scoring_tab._last_browse_dir = path
-            
-            if "genome_digest_dirs" in state:
+            genome_digest_state = state.get("genome_digest", {})
+            restored_digest_dirs: list[str] = []
+            saved_digest_dirs: list[str] = []
+            if isinstance(genome_digest_state, dict):
+                raw_dirs = genome_digest_state.get("directories", [])
+                if isinstance(raw_dirs, list):
+                    saved_digest_dirs = [str(d) for d in raw_dirs if str(d).strip()]
+
                 self.scoring_tab._clear_genome_dirs()
-                for d in state["genome_digest_dirs"]:
+                for d in saved_digest_dirs:
                     if Path(d).exists() and Path(d).is_dir():
                         self.scoring_tab.genome_dir_list.addItem(d)
+                        restored_digest_dirs.append(d)
 
-            if "genome_lineage_table_path" in state:
-                p = state["genome_lineage_table_path"]
+                if saved_digest_dirs and restored_digest_dirs == saved_digest_dirs:
+                    cache_path = str(genome_digest_state.get("theoretical_opportunity_cache_path") or "").strip()
+                    self.scoring_tab.theoretical_opportunity_cache_edit.setText(cache_path)
+
+            genome_lineage_state = state.get("genome_lineage", {})
+            if isinstance(genome_lineage_state, dict):
+                p = str(genome_lineage_state.get("table_path") or "").strip()
                 if p and Path(p).exists() and Path(p).is_file():
                     self.scoring_tab.genome_lineage_table_edit.setText(p)
 
-            def _set_combo(combo, val):
-                if val is not None:
-                    combo.setEditText(str(val))
-                    
-            _set_combo(self.scoring_tab.genome_lineage_genome_id_col_edit, state.get("genome_lineage_genome_id_col"))
-            _set_combo(self.scoring_tab.genome_lineage_lineage_col_edit, state.get("genome_lineage_lineage_col"))
-            _set_combo(self.scoring_tab.peptide_seq_col_edit, state.get("peptide_seq_col", "Sequence"))
-            _set_combo(self.scoring_tab.peptide_score_col_edit, state.get("peptide_score_col", "Evidence"))
-            _set_combo(self.scoring_tab.peptide_error_col_edit, state.get("peptide_error_col", "Q.Value"))
-            _set_combo(self.scoring_tab.sample_id_col_edit, state.get("sample_id_col", "Run"))
-            _set_combo(self.scoring_tab.intensity_col_edit, state.get("intensity_col", "Precursor.Quantity"))
-            _set_combo(self.scoring_tab.peptide_decoy_flag_col_edit, state.get("peptide_decoy_flag_col", "Reverse"))
-            _set_combo(self.scoring_tab.decoy_flag_value_edit, state.get("decoy_flag_value", "+"))
+                genome_id_col = genome_lineage_state.get("genome_id_col")
+                if genome_id_col is not None:
+                    self.scoring_tab.genome_lineage_genome_id_col_edit.setEditText(str(genome_id_col))
+                lineage_col = genome_lineage_state.get("lineage_col")
+                if lineage_col is not None:
+                    self.scoring_tab.genome_lineage_lineage_col_edit.setEditText(str(lineage_col))
 
-            if "peptide_error_cutoff" in state:
-                self.scoring_tab.peptide_error_cutoff_edit.setText(str(state["peptide_error_cutoff"]))
-            if "single_peptide_error_rate_upper_bound" in state:
-                self.scoring_tab.single_peptide_error_rate_upper_bound_edit.setText(str(state["single_peptide_error_rate_upper_bound"]))
-            
-            if "unique_pvalue_mode" in state:
-                mode_index = self.scoring_tab.unique_pvalue_mode_combo.findData(state["unique_pvalue_mode"])
-                self.scoring_tab.unique_pvalue_mode_combo.setCurrentIndex(max(mode_index, 0))
-            if "min_unique_for_unique_pvalue" in state:
-                self.scoring_tab.min_unique_for_unique_pvalue_spin.setValue(int(state["min_unique_for_unique_pvalue"]))
-            if "unit_aware" in state:
-                self.scoring_tab.unit_aware_checkbox.setChecked(bool(state["unit_aware"]))
-            if "export_unit_derived_tables" in state:
-                self.scoring_tab.export_unit_derived_tables_checkbox.setChecked(bool(state["export_unit_derived_tables"]))
-            if "intensity_min_value" in state:
-                self.scoring_tab.intensity_min_value_edit.setText(str(state["intensity_min_value"]))
-            if "intensity_min_quantile" in state:
-                self.scoring_tab.intensity_min_quantile_edit.setText(str(state["intensity_min_quantile"]))
-            if "theoretical_opportunity_cache_path" in state:
-                self.scoring_tab.theoretical_opportunity_cache_edit.setText(str(state["theoretical_opportunity_cache_path"] or ""))
-            if "rebuild_theoretical_opportunity_cache" in state:
-                self.scoring_tab.rebuild_theoretical_opportunity_cache_checkbox.setChecked(bool(state["rebuild_theoretical_opportunity_cache"]))
-            if "num_workers_for_theoretical_opportunity" in state:
-                self.scoring_tab.theoretical_opportunity_processes_spin.setValue(
-                    int(state["num_workers_for_theoretical_opportunity"])
-                    if state["num_workers_for_theoretical_opportunity"] is not None
-                    else 0
-                )
             self.scoring_tab._sync_unique_mode_visibility()
-
-            if "num_workers" in state and state["num_workers"] is not None:
-                self.scoring_tab.processes_spin.setValue(state["num_workers"])
-            
-            if "knockoff_mc_iterations" in state:
-                self.scoring_tab.knockoff_mc_iterations_edit.setText(str(state["knockoff_mc_iterations"]))
-            
-            if "knockoff_stage2_mc_iterations" in state:
-                val = state["knockoff_stage2_mc_iterations"]
-                self.scoring_tab.knockoff_stage2_mc_iterations_edit.setText("" if val is None else str(val))
-            
-            if "knockoff_stage2_p_exist_ranges" in state:
-                self.scoring_tab.knockoff_stage2_ranges_edit.setText(_format_range_pairs(state["knockoff_stage2_p_exist_ranges"]))
-
-            if "knockoff_random_seed" in state:
-                self.scoring_tab.knockoff_random_seed_edit.setText(str(state["knockoff_random_seed"]))
-                
-            if "knockoff_top_n_targets" in state:
-                val = state["knockoff_top_n_targets"]
-                self.scoring_tab.knockoff_top_n_targets_spin.setValue(val if val is not None else 0)
-
-            if "use_cache_if_exists" in state:
-                self.scoring_tab.use_cache_if_exists_checkbox.setChecked(bool(state["use_cache_if_exists"]))
-            if "save_matched_peptides_cache" in state:
-                self.scoring_tab.save_cache_checkbox.setChecked(bool(state["save_matched_peptides_cache"]))
-            if "compute_coverage" in state:
-                self.scoring_tab.compute_coverage_checkbox.setChecked(bool(state["compute_coverage"]))
-            if "export_temp" in state:
-                self.scoring_tab.export_temp_checkbox.setChecked(bool(state["export_temp"]))
-            if "export_peptide_contrib_topN" in state:
-                self.scoring_tab.export_peptide_contrib_topn_spin.setValue(int(state["export_peptide_contrib_topN"]))
-            if "return_full_table" in state:
-                self.scoring_tab.return_full_table_checkbox.setChecked(bool(state["return_full_table"]))
             
             self.scoring_tab._sync_genome_lineage_column_visibility()
         except Exception as exc:

@@ -95,7 +95,7 @@ Unit-aware output files:
 
 The pooled peptide-set result is supplementary in unit-aware mode and is written under `<stem>_artifacts/pooled_genome_presence.tsv` when artifact export is enabled. Optional derived unit-aware tables can be enabled with `--export-unit-derived-tables`; they are written under `<stem>_artifacts/unit_aware/` and include call counts, significant per-unit genome lists, deduplicated genome unions, binary genome x unit matrices, and a q-value matrix.
 
-In the current implementation, peptide presence within an analysis unit is defined as the union of sample-level peptide presence across samples assigned to that unit. Unit-level p-values are based on adaptive-exact unique evidence only; `pvalue_shared` is set to `1.0` and is not used in unit-level scoring.
+In the current implementation, peptide presence within an analysis unit is defined as the union of sample-level peptide presence across samples assigned to that unit. Unit-level p-values are based on `hypergeometric-opportunity` unique evidence only; `pvalue_shared` is set to `1.0` and is not used in unit-level scoring.
 
 Key output columns include:
 
@@ -104,7 +104,7 @@ Key output columns include:
 | `genome_id` | Candidate genome identifier |
 | `num_peptides_matched` | Number of observed peptides matched to the genome |
 | `num_peptides_unique` | Number of matched peptides unique to the genome |
-| `theoretical_unique_peptides` | Theoretical peptides unique to this genome among the analyzed genome set, included for adaptive-exact output |
+| `theoretical_unique_peptides` | Theoretical peptides unique to this genome among the analyzed genome set, included for `hypergeometric-opportunity` output |
 | `expected_unique_null` | Expected observed genome-unique peptides under the selected adaptive null |
 | `unique_depth_fold` | Observed unique peptides divided by expected unique peptides under the null |
 | `pvalue_shared` | Shared-peptide knockoff p-value |

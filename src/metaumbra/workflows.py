@@ -46,7 +46,7 @@ class ScoringConfig:
     peptide_error_col: str = "Q.Value"
     peptide_error_cutoff: float = 0.05
     single_peptide_error_rate_upper_bound: float = 0.3
-    unique_pvalue_mode: str = "adaptive-exact"
+    unique_pvalue_mode: str = "hypergeometric-opportunity"
     min_unique_for_unique_pvalue: int = 3
     theoretical_opportunity_cache_path: str = ""
     rebuild_theoretical_opportunity_cache: bool = False
@@ -67,7 +67,7 @@ class ScoringConfig:
     knockoff_mc_iterations: int = 500
     knockoff_stage2_mc_iterations: Optional[int] = 2000
     knockoff_stage2_p_exist_ranges: list[list[float]] = field(
-        default_factory=lambda: [[0.005, 0.02], [0.02, 0.08]]
+        default_factory=lambda: [[0.01, 0.05]]
     )
     knockoff_random_seed: int = 1
     knockoff_top_n_targets: Optional[int] = None

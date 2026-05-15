@@ -346,7 +346,7 @@ class GenomePresenceScorer:
         self.observed_unique_peptide_pool_size: int = 0
         self.total_theoretical_unique_peptides_all_genomes: int = 0
         self.min_unique_for_unique_pvalue: int = 3
-        self.unique_pvalue_mode: str = "adaptive-exact"
+        self.unique_pvalue_mode: str = "hypergeometric-opportunity"
         self.genome_scores_df: Optional[pd.DataFrame] = None
 
         # Unified ranking score scales (lexicographic; unique dominates)
@@ -376,7 +376,7 @@ class GenomePresenceScorer:
         # Stage 2: recompute ONLY for genomes whose stage-1 p_presence is in given ranges, using a larger K.
         # If knockoff_stage2_mc_iterations is None, 2-stage refinement is disabled.
         self.knockoff_stage2_mc_iterations: Optional[int] = None
-        self.knockoff_stage2_p_exist_ranges: List[Tuple[float, float]] = [(0.005, 0.02), (0.02, 0.08)]
+        self.knockoff_stage2_p_exist_ranges: List[Tuple[float, float]] = [(0.01, 0.05)]
 
         # Optional speed knob: compute knockoff only for top-N TARGET genomes by rank, set others p=1
         self.knockoff_top_n_targets: Optional[int] = None
@@ -805,13 +805,13 @@ class GenomePresenceScorer:
             return _clip_pvalue(hypergeom.sf(observed - 1, universe_size, success_states, draws))
         except ImportError as exc:
             raise RuntimeError(
-                "scipy is required for adaptive-exact unique p-values. "
+                "scipy is required for hypergeometric-opportunity unique p-values. "
                 "Install scipy or use upper-bound or peptide-column mode."
             ) from exc
 
     def _unique_pvalue_stats_for_genome(self, gid: str, u_observed: int) -> dict:
         U = int(u_observed)
-        mode = str(self.unique_pvalue_mode or "adaptive-exact").strip().lower()
+        mode = str(self.unique_pvalue_mode or "hypergeometric-opportunity").strip().lower()
         alpha = float(min(max(self.single_peptide_error_rate_upper_bound, 1e-12), 1.0))
         p_unique = 1.0
         p_unique_depth = 1.0
@@ -822,7 +822,7 @@ class GenomePresenceScorer:
         null_model = ""
         theoretical_unique: Optional[int] = None
 
-        if mode == "adaptive-exact":
+        if mode == "hypergeometric-opportunity":
             A = int(self.genome_theoretical_unique_peptides.get(gid, 0))
             A_total = int(max(self.total_theoretical_unique_peptides_all_genomes, 1))
             theoretical_unique = int(A)
@@ -847,7 +847,7 @@ class GenomePresenceScorer:
                 gate_pass = True
         else:
             raise ValueError(
-                "unique_pvalue_mode must be one of 'adaptive-exact', 'upper-bound', or 'peptide-column'."
+                "unique_pvalue_mode must be one of 'hypergeometric-opportunity', 'upper-bound', or 'peptide-column'."
             )
 
         return {
@@ -1861,7 +1861,7 @@ class GenomePresenceScorer:
     def _add_knockoff_existence_stats(
         self,
         df_scored: pd.DataFrame,
-        unique_pvalue_mode: str = "adaptive-exact",
+        unique_pvalue_mode: str = "hypergeometric-opportunity",
         min_unique_for_unique_pvalue: int = 3,
     ) -> pd.DataFrame:
         """Add per-genome knockoff existence p/q-values."""
@@ -1907,12 +1907,12 @@ class GenomePresenceScorer:
         if self.knockoff_stage2_mc_iterations is not None:
             K2 = int(max(50, self.knockoff_stage2_mc_iterations))
         peptide_error_upper = float(min(max(self.single_peptide_error_rate_upper_bound, 1e-12), 1.0))
-        mode = str(unique_pvalue_mode or "adaptive-exact").strip().lower()
+        mode = str(unique_pvalue_mode or "hypergeometric-opportunity").strip().lower()
         if int(min_unique_for_unique_pvalue) < 0:
             raise ValueError("min_unique_for_unique_pvalue must be >= 0.")
-        if mode not in {"adaptive-exact", "upper-bound", "peptide-column"}:
+        if mode not in {"hypergeometric-opportunity", "upper-bound", "peptide-column"}:
             raise ValueError(
-                "unique_pvalue_mode must be one of 'adaptive-exact', 'upper-bound', or 'peptide-column', "
+                "unique_pvalue_mode must be one of 'hypergeometric-opportunity', 'upper-bound', or 'peptide-column', "
                 f"got {unique_pvalue_mode!r}."
             )
         self.unique_pvalue_mode = mode
@@ -1927,9 +1927,9 @@ class GenomePresenceScorer:
         self.run_stats["unique_pvalue_uses_per_peptide_error"] = bool(use_per_peptide_error)
         self.run_stats["unique_pvalue_error_source_col"] = str(error_col) if use_per_peptide_error and error_col is not None else None
         self.run_stats["unique_pvalue_uses_pep_column"] = bool(uses_pep_column)
-        if mode == "adaptive-exact":
+        if mode == "hypergeometric-opportunity":
             self.logger.info(
-                "Unique p-value mode: [adaptive-exact] "
+                "Unique p-value mode: [hypergeometric-opportunity] "
                 f"null_model=hypergeometric, min_unique={int(min_unique_for_unique_pvalue)}, "
                 f"observed_unique_pool={int(self.observed_unique_peptide_pool_size)}, "
                 f"theoretical_unique_universe={int(self.total_theoretical_unique_peptides_all_genomes)}"
@@ -2366,13 +2366,15 @@ class GenomePresenceScorer:
 
         a_total = int(self.total_theoretical_unique_peptides_all_genomes)
         if a_total <= 0:
-            raise ValueError("Unit-aware adaptive-exact p-values require theoretical unique peptide opportunity.")
+            raise ValueError(
+                "Unit-aware hypergeometric-opportunity p-values require theoretical unique peptide opportunity."
+            )
 
         rows = []
         gate_min = int(min_unique_for_unique_pvalue)
         unit_log_interval = max(1, n_units // 10)
         self.logger.info(
-            f"Computing unit-aware adaptive-exact p/q values for {n_units} unit(s) x {n_genomes} genome(s) ..."
+            f"Computing unit-aware hypergeometric-opportunity p/q values for {n_units} unit(s) x {n_genomes} genome(s) ..."
         )
         for unit_idx, unit_id in enumerate(self.unit_analysis_unit_ids):
             if unit_idx == 0 or (unit_idx + 1) % unit_log_interval == 0 or unit_idx + 1 == n_units:
@@ -2491,7 +2493,7 @@ class GenomePresenceScorer:
 
         self.run_stats["unit_aware_output_rows"] = int(len(unit_level_df))
         self.run_stats["unit_aware_cohort_summary_rows"] = int(len(cohort_summary_df))
-        self.run_stats["unit_aware_unique_pvalue_mode"] = "adaptive-exact"
+        self.run_stats["unit_aware_unique_pvalue_mode"] = "hypergeometric-opportunity"
         self.run_stats["unit_aware_presence_rule"] = "union"
         self.run_stats["unit_aware_shared_mode"] = "none"
         return unit_level_df, cohort_summary_df
@@ -2865,7 +2867,7 @@ class GenomePresenceScorer:
         export_temp: bool = True,
         export_peptide_contrib_topN: int = 0,
         use_cache_if_exists: bool = True,
-        unique_pvalue_mode: str = "adaptive-exact",
+        unique_pvalue_mode: str = "hypergeometric-opportunity",
         min_unique_for_unique_pvalue: int = 3,
         theoretical_opportunity_cache_path: Optional[str] = None,
         rebuild_theoretical_opportunity_cache: bool = False,
@@ -2875,12 +2877,12 @@ class GenomePresenceScorer:
         export_unit_derived_tables: bool = False,
     ) -> pd.DataFrame:
         """End-to-end analysis producing a genome-level q-value (q_presence)."""
-        mode = str(unique_pvalue_mode or "adaptive-exact").strip().lower()
+        mode = str(unique_pvalue_mode or "hypergeometric-opportunity").strip().lower()
         if int(min_unique_for_unique_pvalue) < 0:
             raise ValueError("min_unique_for_unique_pvalue must be >= 0.")
-        if mode not in {"adaptive-exact", "upper-bound", "peptide-column"}:
+        if mode not in {"hypergeometric-opportunity", "upper-bound", "peptide-column"}:
             raise ValueError(
-                "unique_pvalue_mode must be one of 'adaptive-exact', 'upper-bound', or 'peptide-column'."
+                "unique_pvalue_mode must be one of 'hypergeometric-opportunity', 'upper-bound', or 'peptide-column'."
             )
         if unit_aware:
             if not self.unit_aware_enabled:
@@ -3171,7 +3173,7 @@ class GenomePresenceScorer:
         self.run_stats["total_theoretical_peptides_all_genomes"] = int(self.total_theoretical_peptides_all_genomes)
 
         opportunity_rebuilt = False
-        if mode == "adaptive-exact" or unit_aware:
+        if mode == "hypergeometric-opportunity" or unit_aware:
             matched_genome_ids = set(self.genome_matched_peptides.keys())
             folders = [genome_digest_dirs] if isinstance(genome_digest_dirs, str) else list(genome_digest_dirs)
             genome_files_by_id: Dict[str, Path] = {}
@@ -3185,7 +3187,7 @@ class GenomePresenceScorer:
                 preview = ", ".join(missing[:10])
                 suffix = " ..." if len(missing) > 10 else ""
                 raise ValueError(
-                    "Adaptive-exact unique p-values require digest TSV files for all selected genomes. "
+                    "Hypergeometric-opportunity unique p-values require digest TSV files for all selected genomes. "
                     f"Missing digest files for {len(missing)} genomes: {preview}{suffix}"
                 )
             opportunity, opportunity_rebuilt = self._load_or_build_theoretical_opportunity(
@@ -3227,7 +3229,7 @@ class GenomePresenceScorer:
         self.observed_unique_peptide_pool_size = int(sum(int(v) for v in genome_unique_counts.values()))
         self.run_stats["observed_matchable_peptides"] = int(self.observed_matchable_peptides)
         self.run_stats["observed_unique_peptide_pool_size"] = int(self.observed_unique_peptide_pool_size)
-        if mode == "adaptive-exact":
+        if mode == "hypergeometric-opportunity":
             self.run_stats.setdefault("theoretical_peptide_universe_size", int(self.theoretical_peptide_universe_size))
 
         genome_data_list = [
@@ -3281,7 +3283,7 @@ class GenomePresenceScorer:
                 df_scored=df_scored,
                 peptide_deg=peptide_deg,
                 peptide_unique_owner=peptide_unique_owner,
-                mode="adaptive-exact",
+                mode="hypergeometric-opportunity",
                 min_unique_for_unique_pvalue=int(min_unique_for_unique_pvalue),
             )
             mapping_df = self.sample_unit_mapping_df if self.sample_unit_mapping_df is not None else pd.DataFrame()
@@ -3302,7 +3304,7 @@ class GenomePresenceScorer:
             "num_peptides_matched",
             "num_peptides_unique",
         ])
-        if mode == "adaptive-exact":
+        if mode == "hypergeometric-opportunity":
             source_cols.append("theoretical_unique_peptides")
         source_cols.extend([
             "unique_expected_null",

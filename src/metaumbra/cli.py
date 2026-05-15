@@ -233,10 +233,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_argument(
         score_optional,
         "--unique-pvalue-mode",
-        choices=("adaptive-exact", "upper-bound", "peptide-column"),
-        default="adaptive-exact",
+        choices=("hypergeometric-opportunity", "upper-bound", "peptide-column"),
+        default="hypergeometric-opportunity",
         help=(
-            "Unique evidence p-value mode. 'adaptive-exact' uses the observed genome-unique peptide pool and "
+            "Unique evidence p-value mode. 'hypergeometric-opportunity' uses the observed genome-unique peptide pool and "
             "genome-specific theoretical unique peptide opportunity. 'upper-bound' uses "
             "--single-peptide-error-rate-upper-bound as alpha in alpha^U. "
             "'peptide-column' multiplies values from --peptide-error-col, "
@@ -310,7 +310,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--theoretical-opportunity-cache",
         default="",
         display_default="auto",
-        help="Optional path to the theoretical opportunity cache used by adaptive-exact mode.",
+        help="Optional path to the theoretical opportunity cache used by hypergeometric-opportunity mode.",
     )
     _add_argument(
         score_optional,
@@ -323,7 +323,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--num-workers-for-theoretical-opportunity",
         type=int,
         display_default="same as --num-workers",
-        help="Worker process count for adaptive-exact theoretical opportunity sharding and reduction.",
+        help="Worker process count for hypergeometric-opportunity theoretical opportunity sharding and reduction.",
     )
     _add_argument(
         score_optional,
