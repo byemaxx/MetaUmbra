@@ -298,6 +298,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_argument(
         score_optional,
+        "--export-unit-derived-tables",
+        action="store_true",
+        help=(
+            "When --unit-aware is enabled, export derived unit-aware tables under "
+            "<stem>_artifacts/unit_aware/."
+        ),
+    )
+    _add_argument(
+        score_optional,
         "--theoretical-opportunity-cache",
         default="",
         display_default="auto",
@@ -503,6 +512,7 @@ def _run_score(args: argparse.Namespace) -> int:
         metadata_table_path=args.metadata_table,
         metadata_sample_id_col=args.metadata_sample_id_col,
         metadata_analysis_unit_col=args.metadata_analysis_unit_col,
+        export_unit_derived_tables=args.export_unit_derived_tables,
         theoretical_opportunity_cache_path=args.theoretical_opportunity_cache,
         rebuild_theoretical_opportunity_cache=args.rebuild_theoretical_opportunity_cache,
         num_workers_for_theoretical_opportunity=args.num_workers_for_theoretical_opportunity,

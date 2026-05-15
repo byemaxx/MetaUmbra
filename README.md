@@ -80,12 +80,22 @@ MetaUmbra requires:
 
 Optional inputs include peptide scores, peptide-level error values, decoy flags, and genome lineage annotations.
 
-For multi-sample long tables such as DIA-NN reports, `metaumbra score --unit-aware` can call peptide presence per raw sample using `Precursor.Quantity`, aggregate samples into `analysis_unit_id` groups from an optional metadata table, and export per-unit genome presence q-values plus a cohort recurrence summary.
+For multi-sample long tables such as DIA-NN reports, `metaumbra score --unit-aware` can call peptide presence per raw sample using `Precursor.Quantity`, aggregate samples into `analysis_unit_id` groups from an optional metadata table, and export pooled, per-unit, cohort recurrence, significant-call, genome-union, and genome-by-unit matrix outputs.
 
 ## Output
 
 The main output is a TSV table containing genome-level evidence and significance values.
-When unit-aware scoring is enabled, additional TSV files report per-analysis-unit genome presence, a cohort-level genome recurrence summary, and the final sample-to-unit mapping.
+When unit-aware scoring is enabled, the requested output path contains the main unit-level genome presence result.
+
+Unit-aware output files:
+
+- `<stem>_unit_genome_presence.tsv`: one row per `analysis_unit_id` x `genome_id`, including unit-specific `qvalue` and `pass_q` flags.
+- `<stem>_cohort_genome_summary.tsv`: one row per genome, summarizing recurrence across units.
+- `<stem>_sample_unit_mapping.tsv`: final sample-to-analysis-unit mapping used for the run.
+
+The pooled peptide-set result is supplementary in unit-aware mode and is written under `<stem>_artifacts/pooled_genome_presence.tsv` when artifact export is enabled. Optional derived unit-aware tables can be enabled with `--export-unit-derived-tables`; they are written under `<stem>_artifacts/unit_aware/` and include call counts, significant per-unit genome lists, deduplicated genome unions, binary genome x unit matrices, and a q-value matrix.
+
+In the current implementation, peptide presence within an analysis unit is defined as the union of sample-level peptide presence across samples assigned to that unit. Unit-level p-values are based on adaptive-exact unique evidence only; `pvalue_shared` is set to `1.0` and is not used in unit-level scoring.
 
 Key output columns include:
 

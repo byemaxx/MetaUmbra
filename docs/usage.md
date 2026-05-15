@@ -328,6 +328,7 @@ Important scoring options:
 | `--metadata-table` | none | Optional TSV/CSV table mapping samples to analysis units. |
 | `--metadata-sample-id-col` | `sample_id` | Sample ID column in `--metadata-table`. |
 | `--metadata-analysis-unit-col` | `analysis_unit_id` | Analysis unit column in `--metadata-table`. |
+| `--export-unit-derived-tables` | off | When `--unit-aware` is enabled, write optional derived unit-aware tables under `<stem>_artifacts/unit_aware/`. |
 | `--theoretical-opportunity-cache` | auto | Optional path for the theoretical opportunity cache used by `adaptive-exact`. |
 | `--rebuild-theoretical-opportunity-cache` | off | Rebuild the theoretical opportunity cache even if it already exists. |
 | `--num-workers-for-theoretical-opportunity` | same as `--num-workers` | Optional worker process count for `adaptive-exact` theoretical opportunity sharding and reduction. |
@@ -383,6 +384,8 @@ p_unique_g,u = P(X_g,u >= U_g,u)
 where `U_g,u` is the observed genome-unique peptide count for genome `g` in unit `u`, `S_u` is the observed genome-unique peptide pool size in unit `u`, `A_g` is the theoretical unique peptide opportunity for genome `g`, and `A_total` is the total theoretical unique peptide opportunity across the analyzed genome panel. BH correction is applied separately within each analysis unit.
 
 Pooled multi-sample scoring answers a cohort-level pooled support question and should not be interpreted as per-sample genome presence. Unit-aware scoring is recommended when the input contains multiple samples or repeated runs.
+
+In the current implementation, peptide presence within an analysis unit is defined as the union of sample-level peptide presence across samples assigned to that unit. Unit-level p-values are based on adaptive-exact unique evidence only; `pvalue_shared` is set to `1.0` and is not used in unit-level scoring.
 
 For DIA-NN long/parquet input, `Precursor.Quantity` is recommended for peptide presence filtering. `Precursor.Normalised` can be selected for normalized intensity workflows, but it is not the recommended default for presence/absence detection.
 
@@ -489,19 +492,42 @@ The concise output uses `pvalue` and `qvalue`. When `--return-full-table` is ena
 
 ### Unit-aware output TSVs
 
-When `--unit-aware` is enabled, MetaUmbra still writes the main pooled result table and also writes three additional TSV files next to the main output:
+When `--unit-aware` is enabled, the requested `--output` path contains the main unit-level genome presence table. MetaUmbra also writes the primary unit-aware outputs next to it:
 
 ```text
-<stem>_unit_level_genome_presence.tsv
-<stem>_cohort_genome_presence_summary.tsv
+<stem>_unit_genome_presence.tsv
+<stem>_cohort_genome_summary.tsv
 <stem>_sample_unit_mapping.tsv
 ```
 
-The unit-level table contains one row per `analysis_unit_id` and genome, including `num_peptides_matched`, `num_peptides_unique`, `theoretical_unique_peptides`, `observed_unique_peptide_pool_size`, `expected_unique_null`, `unique_depth_fold`, `pvalue_unique`, `pvalue_shared`, `pvalue`, `qvalue`, `presence_score`, `presence_rank`, `unit_presence_rule`, `unit_shared_mode`, and q-value pass flags. 
+- `<stem>_unit_genome_presence.tsv`: one row per `analysis_unit_id` x `genome_id`, including unit-specific `qvalue` and `pass_q_0_01` / `pass_q_0_05` flags.
+- `<stem>_cohort_genome_summary.tsv`: one row per genome, summarizing recurrence across units.
+- `<stem>_sample_unit_mapping.tsv`: final sample-to-analysis-unit mapping used for the run.
 
-The cohort summary answers how often each genome is supported across units. It includes counts such as `n_units_tested`, `n_units_matched_ge_1`, `n_units_unique_ge_3`, `n_units_q_le_0_05`, `n_units_q_le_0_01`, plus best/median q-values and matched/unique peptide totals across units.
+The pooled peptide-set genome presence result is not the union of unit-level calls. In unit-aware mode, it is supplementary and is written to `<stem>_artifacts/pooled_genome_presence.tsv` when artifact export is enabled.
 
-The mapping table records `sample_id`, `analysis_unit_id`, `n_valid_peptides`, `n_total_rows`, and whether each sample was included after filtering.
+Enable optional derived unit-aware tables with `--export-unit-derived-tables`. These files are written under `<stem>_artifacts/unit_aware/`:
+
+```text
+unit_call_counts.tsv
+unit_q001_genomes.tsv
+unit_q005_genomes.tsv
+genome_union_q001.tsv
+genome_union_q005.tsv
+genome_by_unit_q001_matrix.tsv
+genome_by_unit_q005_matrix.tsv
+genome_by_unit_qvalue_matrix.tsv
+```
+
+- `unit_call_counts.tsv`: number of significant genomes per unit.
+- `unit_q001_genomes.tsv` and `unit_q005_genomes.tsv`: significant genome calls for each unit.
+- `genome_union_q001.tsv` and `genome_union_q005.tsv`: deduplicated genome lists significant in at least one unit.
+- `genome_by_unit_q001_matrix.tsv` and `genome_by_unit_q005_matrix.tsv`: binary genome x unit pass matrices.
+- `genome_by_unit_qvalue_matrix.tsv`: genome x unit q-value matrix for downstream heatmaps or manual inspection.
+
+The unit-level table contains one row per `analysis_unit_id` and genome, including `presence_rank`, `qvalue`, `pvalue`, q-value pass flags, matched/unique peptide counts, `theoretical_unique_peptides`, `observed_unique_peptide_pool_size`, `expected_unique_null`, `unique_depth_fold`, `pvalue_unique`, `pvalue_shared`, `presence_score`, `n_samples_in_unit`, `unit_presence_rule`, and `unit_shared_mode`.
+
+The cohort summary answers how often each genome is supported across units. It includes counts such as `n_units_tested`, `n_units_q_le_0_05`, `n_units_q_le_0_01`, `n_units_matched_ge_1`, `n_units_unique_ge_3`, plus best/median q-values and matched/unique peptide totals across units.
 
 ### Diagnostic artifacts
 

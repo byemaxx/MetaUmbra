@@ -59,6 +59,7 @@ class ScoringConfig:
     metadata_table_path: str = ""
     metadata_sample_id_col: str = "sample_id"
     metadata_analysis_unit_col: str = "analysis_unit_id"
+    export_unit_derived_tables: bool = False
     peptide_decoy_flag_col: str = "Reverse"
     decoy_flag_value: str = "+"
     exclude_genome_ids: list[str] = field(default_factory=list)
@@ -527,6 +528,7 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
             num_workers_for_theoretical_opportunity=config.num_workers_for_theoretical_opportunity,
             return_full_table=bool(config.return_full_table),
             unit_aware=bool(config.unit_aware),
+            export_unit_derived_tables=bool(config.export_unit_derived_tables),
         )
 
     saved_output = output_tsv_path

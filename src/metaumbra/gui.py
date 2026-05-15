@@ -1730,6 +1730,10 @@ class ScoringTab(QWidget):
         self.unit_aware_checkbox.setToolTip(
             "Score genome presence per analysis unit after sample-level intensity and error filtering."
         )
+        self.export_unit_derived_tables_checkbox = QCheckBox("Export derived unit-aware tables")
+        self.export_unit_derived_tables_checkbox.setToolTip(
+            "Write optional unit-aware call-count, significant-call, genome-union, and matrix tables under the artifacts folder."
+        )
         self.intensity_min_value_edit = QLineEdit("0")
         self.intensity_min_quantile_edit = QLineEdit("0")
         self.intensity_min_quantile_edit.setToolTip(
@@ -1747,6 +1751,7 @@ class ScoringTab(QWidget):
         self.configure_sample_mapping_button.clicked.connect(self._configure_sample_unit_mapping)
         self.sample_mapping_status_label = QLabel("No custom sample mapping configured.")
         unit_layout.addWidget(self.unit_aware_checkbox)
+        unit_layout.addWidget(self.export_unit_derived_tables_checkbox)
 
         sample_filter_box = QGroupBox("Sample Columns And Intensity Filters")
         sample_filter_box.setProperty("subtle", True)
@@ -2392,6 +2397,7 @@ class ScoringTab(QWidget):
             metadata_table_path=self.metadata_table_edit.text().strip(),
             metadata_sample_id_col=self.metadata_sample_id_col_edit.currentText().strip(),
             metadata_analysis_unit_col=self.metadata_analysis_unit_col_edit.currentText().strip(),
+            export_unit_derived_tables=self.export_unit_derived_tables_checkbox.isChecked(),
             theoretical_opportunity_cache_path=self.theoretical_opportunity_cache_edit.text().strip(),
             rebuild_theoretical_opportunity_cache=self.rebuild_theoretical_opportunity_cache_checkbox.isChecked(),
             num_workers_for_theoretical_opportunity=(
@@ -2487,6 +2493,7 @@ class ScoringTab(QWidget):
         self.unique_pvalue_mode_combo.setCurrentIndex(max(mode_index, 0))
         self.min_unique_for_unique_pvalue_spin.setValue(int(config.min_unique_for_unique_pvalue))
         self.unit_aware_checkbox.setChecked(bool(config.unit_aware))
+        self.export_unit_derived_tables_checkbox.setChecked(bool(config.export_unit_derived_tables))
         self.intensity_min_value_edit.setText(str(config.intensity_min_value))
         self.intensity_min_quantile_edit.setText(str(config.intensity_min_quantile))
         self.metadata_table_edit.setText(config.metadata_table_path)
@@ -3362,6 +3369,7 @@ class MainWindow(QMainWindow):
                 "unique_pvalue_mode": str(self.scoring_tab.unique_pvalue_mode_combo.currentData() or "adaptive-exact"),
                 "min_unique_for_unique_pvalue": self.scoring_tab.min_unique_for_unique_pvalue_spin.value(),
                 "unit_aware": self.scoring_tab.unit_aware_checkbox.isChecked(),
+                "export_unit_derived_tables": self.scoring_tab.export_unit_derived_tables_checkbox.isChecked(),
                 "intensity_min_value": self.scoring_tab.intensity_min_value_edit.text().strip(),
                 "intensity_min_quantile": self.scoring_tab.intensity_min_quantile_edit.text().strip(),
                 "theoretical_opportunity_cache_path": self.scoring_tab.theoretical_opportunity_cache_edit.text().strip(),
@@ -3450,6 +3458,8 @@ class MainWindow(QMainWindow):
                 self.scoring_tab.min_unique_for_unique_pvalue_spin.setValue(int(state["min_unique_for_unique_pvalue"]))
             if "unit_aware" in state:
                 self.scoring_tab.unit_aware_checkbox.setChecked(bool(state["unit_aware"]))
+            if "export_unit_derived_tables" in state:
+                self.scoring_tab.export_unit_derived_tables_checkbox.setChecked(bool(state["export_unit_derived_tables"]))
             if "intensity_min_value" in state:
                 self.scoring_tab.intensity_min_value_edit.setText(str(state["intensity_min_value"]))
             if "intensity_min_quantile" in state:
