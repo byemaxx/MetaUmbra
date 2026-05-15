@@ -470,6 +470,7 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
                 intensity_col=config.intensity_col,
                 peptide_error_col=_none_if_blank(config.peptide_error_col),
                 peptide_error_cutoff=float(config.peptide_error_cutoff),
+                single_peptide_error_rate_upper_bound=float(config.single_peptide_error_rate_upper_bound),
                 intensity_min_value=float(config.intensity_min_value),
                 intensity_min_quantile=float(config.intensity_min_quantile),
                 metadata_table_path=_normalize_output_path(config.metadata_table_path) or None,
