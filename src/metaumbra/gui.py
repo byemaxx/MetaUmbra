@@ -51,6 +51,7 @@ try:
         QLineEdit,
         QListWidget,
         QMainWindow,
+        QMenu,
         QMessageBox,
         QPlainTextEdit,
         QProgressBar,
@@ -87,6 +88,7 @@ except ImportError as pyside_exc:
             QLineEdit,
             QListWidget,
             QMainWindow,
+            QMenu,
             QMessageBox,
             QPlainTextEdit,
             QProgressBar,
@@ -131,6 +133,7 @@ QT_RICH_TEXT = _qt_value(Qt, "TextFormat", "RichText")
 QT_TEXT_BROWSER_INTERACTION = _qt_value(Qt, "TextInteractionFlag", "TextBrowserInteraction")
 QT_TOP_RIGHT_CORNER = _qt_value(Qt, "Corner", "TopRightCorner")
 QT_VERTICAL = _qt_value(Qt, "Orientation", "Vertical")
+QT_CUSTOM_CONTEXT_MENU = _qt_value(Qt, "ContextMenuPolicy", "CustomContextMenu")
 QT_CHECKED = _qt_value(Qt, "CheckState", "Checked")
 QT_UNCHECKED = _qt_value(Qt, "CheckState", "Unchecked")
 QT_ITEM_IS_EDITABLE = _qt_value(Qt, "ItemFlag", "ItemIsEditable")
@@ -1007,6 +1010,28 @@ def _read_sample_unit_mapping_table(path: str, sample_col: str, unit_col: str) -
     return dict(zip(df[sample_col].astype(str), df[unit_col].astype(str)))
 
 
+def _read_metadata_rows_by_sample(path: str, sample_col: str) -> tuple[list[str], dict[str, dict[str, str]]]:
+    import pandas as pd
+
+    path = str(Path(path).expanduser())
+    if not path or not os.path.isfile(path):
+        raise FileNotFoundError(f"Metadata table not found: {path}")
+    sep = "," if Path(path).suffix.lower() == ".csv" else "\t"
+    df = pd.read_csv(path, sep=sep, dtype="string")
+    if sample_col not in df.columns:
+        raise ValueError(f"Metadata table is missing sample column: {sample_col}")
+    columns = [str(column) for column in df.columns]
+    df = df.copy()
+    for column in columns:
+        df[column] = df[column].astype("string").fillna("").str.strip()
+    df = df[df[sample_col] != ""].drop_duplicates(subset=[sample_col], keep="first")
+    records = {
+        str(row[sample_col]): {column: str(row[column]) for column in columns}
+        for row in df.to_dict(orient="records")
+    }
+    return columns, records
+
+
 def _initial_dialog_path(current_value: str = "", fallback_dir: str = "", default_name: str = "") -> str:
     current = current_value.strip()
     if current:
@@ -1438,6 +1463,19 @@ class ParquetExtractionDialog(QDialog):
         super().accept()
 
 
+class SortableTableWidgetItem(QTableWidgetItem):
+    def __init__(self, text: object, sort_value: object | None = None):
+        super().__init__(str(text))
+        self._sort_value = sort_value if sort_value is not None else str(text)
+
+    def __lt__(self, other) -> bool:
+        other_value = getattr(other, "_sort_value", other.text() if other is not None else "")
+        try:
+            return float(self._sort_value) < float(other_value)
+        except (TypeError, ValueError):
+            return str(self._sort_value).casefold() < str(other_value).casefold()
+
+
 class SampleUnitMappingDialog(QDialog):
     def __init__(
         self,
@@ -1450,11 +1488,56 @@ class SampleUnitMappingDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Configure Sample / Unit Mapping")
         self.resize(860, 560)
+        self._metadata_path = metadata_path.strip()
         self._metadata_sample_col = metadata_sample_col or "sample_id"
         self._metadata_unit_col = metadata_unit_col or "analysis_unit_id"
+        self._metadata_columns: list[str] = _read_table_columns(self._metadata_path) if self._metadata_path else []
+        self._metadata_rows_by_sample: dict[str, dict[str, str]] = {}
 
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
+
+        metadata_row = QHBoxLayout()
+        self.metadata_sample_col_combo = _create_editable_combo(
+            self._metadata_sample_col,
+            "Metadata sample ID column",
+        )
+        self.metadata_unit_col_combo = _create_editable_combo(
+            self._metadata_unit_col,
+            "Metadata column to use as analysis_unit_id",
+        )
+        if self._metadata_columns:
+            preferred_sample = _pick_preferred_column(
+                self._metadata_columns,
+                [self._metadata_sample_col, "sample_id", "SampleID", "sample", "Run", "File.Name", "Raw.File"],
+            )
+            preferred_unit = _pick_preferred_column(
+                self._metadata_columns,
+                [self._metadata_unit_col, "analysis_unit_id", "unit_id", "Unit", "Group", "Condition"],
+            )
+            _set_editable_combo_items(
+                self.metadata_sample_col_combo,
+                self._metadata_columns,
+                preferred_text=preferred_sample or self._metadata_sample_col,
+            )
+            _set_editable_combo_items(
+                self.metadata_unit_col_combo,
+                self._metadata_columns,
+                preferred_text=preferred_unit or self._metadata_unit_col,
+                preferred_index=1,
+            )
+        apply_metadata_button = QPushButton("Apply Metadata Unit")
+        apply_metadata_button.clicked.connect(lambda: self._apply_metadata_unit_column(show_errors=True))
+        has_metadata = bool(self._metadata_path and self._metadata_columns)
+        self.metadata_sample_col_combo.setEnabled(has_metadata)
+        self.metadata_unit_col_combo.setEnabled(has_metadata)
+        apply_metadata_button.setEnabled(has_metadata)
+        metadata_row.addWidget(QLabel("Metadata sample"))
+        metadata_row.addWidget(self.metadata_sample_col_combo, 1)
+        metadata_row.addWidget(QLabel("Unit column"))
+        metadata_row.addWidget(self.metadata_unit_col_combo, 1)
+        metadata_row.addWidget(apply_metadata_button)
+        layout.addLayout(metadata_row)
 
         top_row = QHBoxLayout()
         self.group_name_edit = QLineEdit()
@@ -1482,10 +1565,16 @@ class SampleUnitMappingDialog(QDialog):
         )
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows if hasattr(QTableWidget, "SelectionBehavior") else 1)
         self.table.setAlternatingRowColors(True)
+        self.table.setContextMenuPolicy(QT_CUSTOM_CONTEXT_MENU)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
         header = self.table.horizontalHeader()
         if header is not None:
             try:
                 header.setStretchLastSection(True)
+            except Exception:
+                pass
+            try:
+                header.setSortIndicatorShown(True)
             except Exception:
                 pass
         layout.addWidget(self.table, 1)
@@ -1499,41 +1588,137 @@ class SampleUnitMappingDialog(QDialog):
         layout.addWidget(buttons)
 
         self._load_rows(rows)
-        if metadata_path:
-            try:
-                self._apply_mapping(
-                    _read_sample_unit_mapping_table(
-                        metadata_path,
-                        self._metadata_sample_col,
-                        self._metadata_unit_col,
-                    )
-                )
-            except Exception as exc:
-                QMessageBox.warning(self, "Metadata Import Failed", str(exc))
-        self.table.itemChanged.connect(lambda _item: self._update_summary())
+        self.table.setSortingEnabled(True)
+        if self._metadata_path:
+            self._apply_metadata_unit_column(show_errors=True)
+        self.metadata_unit_col_combo.currentIndexChanged.connect(
+            lambda _index: self._apply_metadata_unit_column(show_errors=False)
+        )
+        self.table.itemChanged.connect(self._handle_item_changed)
 
     def _readonly_item(self, text: object) -> QTableWidgetItem:
-        item = QTableWidgetItem(str(text))
+        item = SortableTableWidgetItem(text)
         item.setFlags(item.flags() & ~QT_ITEM_IS_EDITABLE)
         return item
 
     def _load_rows(self, rows: list[dict[str, object]]) -> None:
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
-            include_item = QTableWidgetItem("")
+            included = bool(row.get("included", True))
+            include_item = SortableTableWidgetItem("", sort_value=1 if included else 0)
             include_item.setFlags(include_item.flags() & ~QT_ITEM_IS_EDITABLE)
-            include_item.setCheckState(QT_CHECKED if bool(row.get("included", True)) else QT_UNCHECKED)
+            include_item.setCheckState(QT_CHECKED if included else QT_UNCHECKED)
             self.table.setItem(row_index, 0, include_item)
             sample_id = str(row.get("sample_id", ""))
             self.table.setItem(row_index, 1, self._readonly_item(sample_id))
-            self.table.setItem(row_index, 2, QTableWidgetItem(str(row.get("analysis_unit_id", sample_id))))
-            self.table.setItem(row_index, 3, self._readonly_item(row.get("n_total_rows", 0)))
-            self.table.setItem(row_index, 4, self._readonly_item(row.get("n_valid_peptides", 0)))
+            self.table.setItem(row_index, 2, SortableTableWidgetItem(str(row.get("analysis_unit_id", sample_id))))
+            total_rows = int(row.get("n_total_rows", 0) or 0)
+            valid_peptides = int(row.get("n_valid_peptides", 0) or 0)
+            total_item = SortableTableWidgetItem(total_rows, sort_value=total_rows)
+            total_item.setFlags(total_item.flags() & ~QT_ITEM_IS_EDITABLE)
+            valid_item = SortableTableWidgetItem(valid_peptides, sort_value=valid_peptides)
+            valid_item.setFlags(valid_item.flags() & ~QT_ITEM_IS_EDITABLE)
+            self.table.setItem(row_index, 3, total_item)
+            self.table.setItem(row_index, 4, valid_item)
+        self.table.setSortingEnabled(True)
         self._update_summary()
 
     def _selected_row_indexes(self) -> list[int]:
         rows = {index.row() for index in self.table.selectedIndexes()}
         return sorted(row for row in rows if 0 <= row < self.table.rowCount())
+
+    def _row_sample_id(self, row: int) -> str:
+        sample_item = self.table.item(row, 1)
+        return sample_item.text().strip() if sample_item is not None else ""
+
+    def _set_row_included(self, row: int, included: bool) -> None:
+        include_item = self.table.item(row, 0)
+        if include_item is None:
+            return
+        include_item.setCheckState(QT_CHECKED if included else QT_UNCHECKED)
+        if hasattr(include_item, "_sort_value"):
+            include_item._sort_value = 1 if included else 0
+
+    def _set_all_included(self, included: bool) -> None:
+        sorting_enabled = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
+        self.table.blockSignals(True)
+        for row in range(self.table.rowCount()):
+            self._set_row_included(row, included)
+        self.table.blockSignals(False)
+        self.table.setSortingEnabled(sorting_enabled)
+        self._update_summary()
+
+    def _invert_included(self) -> None:
+        sorting_enabled = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
+        self.table.blockSignals(True)
+        for row in range(self.table.rowCount()):
+            include_item = self.table.item(row, 0)
+            checked = include_item is not None and include_item.checkState() == QT_CHECKED
+            self._set_row_included(row, not checked)
+        self.table.blockSignals(False)
+        self.table.setSortingEnabled(sorting_enabled)
+        self._update_summary()
+
+    def _metadata_group_values(self, column: str) -> list[str]:
+        values = {
+            str(record.get(column, "")).strip()
+            for record in self._metadata_rows_by_sample.values()
+            if str(record.get(column, "")).strip()
+        }
+        return sorted(values, key=lambda value: value.casefold())
+
+    def _set_included_by_metadata_group(self, column: str, value: str, mode: str) -> None:
+        sorting_enabled = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
+        self.table.blockSignals(True)
+        for row in range(self.table.rowCount()):
+            sample_id = self._row_sample_id(row)
+            record = self._metadata_rows_by_sample.get(sample_id, {})
+            matches = str(record.get(column, "")).strip() == value
+            if mode == "only":
+                self._set_row_included(row, matches)
+            elif mode == "include" and matches:
+                self._set_row_included(row, True)
+            elif mode == "exclude" and matches:
+                self._set_row_included(row, False)
+        self.table.blockSignals(False)
+        self.table.setSortingEnabled(sorting_enabled)
+        self._update_summary()
+
+    def _add_metadata_group_actions(self, menu: QMenu, title: str, column: str, mode: str) -> None:
+        submenu = menu.addMenu(title)
+        values = self._metadata_group_values(column)
+        if not values:
+            action = submenu.addAction("No metadata groups available")
+            action.setEnabled(False)
+            return
+        for value in values[:40]:
+            submenu.addAction(value, lambda _checked=False, selected=value: self._set_included_by_metadata_group(column, selected, mode))
+        if len(values) > 40:
+            action = submenu.addAction(f"Showing first 40 of {len(values)} groups")
+            action.setEnabled(False)
+
+    def _show_context_menu(self, position) -> None:
+        menu = QMenu(self)
+        menu.addAction("Check All Samples", lambda: self._set_all_included(True))
+        menu.addAction("Uncheck All Samples", lambda: self._set_all_included(False))
+        menu.addAction("Invert Checked Samples", self._invert_included)
+        unit_col = self.metadata_unit_col_combo.currentText().strip()
+        if self._metadata_rows_by_sample and unit_col:
+            menu.addSeparator()
+            self._add_metadata_group_actions(menu, f"Check {unit_col} Group", unit_col, "include")
+            self._add_metadata_group_actions(menu, f"Check Only {unit_col} Group", unit_col, "only")
+            self._add_metadata_group_actions(menu, f"Uncheck {unit_col} Group", unit_col, "exclude")
+        exec_method = getattr(menu, "exec", None) or getattr(menu, "exec_", None)
+        exec_method(self.table.viewport().mapToGlobal(position))
+
+    def _handle_item_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() == 0 and hasattr(item, "_sort_value"):
+            item._sort_value = 1 if item.checkState() == QT_CHECKED else 0
+        self._update_summary()
 
     def _set_selected_group(self) -> None:
         group_name = self.group_name_edit.text().strip()
@@ -1544,21 +1729,29 @@ class SampleUnitMappingDialog(QDialog):
         if not rows:
             QMessageBox.warning(self, "No Rows Selected", "Select one or more sample rows first.")
             return
+        sorting_enabled = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
         for row in rows:
             item = self.table.item(row, 2)
             if item is not None:
                 item.setText(group_name)
+        self.table.setSortingEnabled(sorting_enabled)
         self._update_summary()
 
     def _reset_to_sample_ids(self) -> None:
+        sorting_enabled = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
         for row in range(self.table.rowCount()):
             sample_item = self.table.item(row, 1)
             unit_item = self.table.item(row, 2)
             if sample_item is not None and unit_item is not None:
                 unit_item.setText(sample_item.text())
+        self.table.setSortingEnabled(sorting_enabled)
         self._update_summary()
 
     def _apply_mapping(self, mapping: dict[str, str]) -> None:
+        sorting_enabled = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
         for row in range(self.table.rowCount()):
             sample_item = self.table.item(row, 1)
             unit_item = self.table.item(row, 2)
@@ -1567,7 +1760,34 @@ class SampleUnitMappingDialog(QDialog):
             sample_id = sample_item.text().strip()
             if sample_id in mapping:
                 unit_item.setText(mapping[sample_id])
+        self.table.setSortingEnabled(sorting_enabled)
         self._update_summary()
+
+    def _apply_metadata_unit_column(self, show_errors: bool = False) -> None:
+        if not self._metadata_path:
+            return
+        sample_col = self.metadata_sample_col_combo.currentText().strip() or self._metadata_sample_col
+        unit_col = self.metadata_unit_col_combo.currentText().strip() or self._metadata_unit_col
+        if not sample_col or not unit_col:
+            return
+        try:
+            columns, rows_by_sample = _read_metadata_rows_by_sample(self._metadata_path, sample_col)
+            if unit_col not in columns:
+                raise ValueError(f"Metadata table is missing unit column: {unit_col}")
+        except Exception as exc:
+            if show_errors:
+                QMessageBox.warning(self, "Metadata Import Failed", str(exc))
+            return
+        self._metadata_sample_col = sample_col
+        self._metadata_unit_col = unit_col
+        self._metadata_columns = columns
+        self._metadata_rows_by_sample = rows_by_sample
+        mapping = {
+            sample_id: str(record.get(unit_col, "")).strip()
+            for sample_id, record in rows_by_sample.items()
+            if str(record.get(unit_col, "")).strip()
+        }
+        self._apply_mapping(mapping)
 
     def _import_mapping(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
