@@ -564,13 +564,14 @@ def _add_compact_field(
     label_text: str,
     widget: QWidget,
     widget_width: int | None = 150,
-) -> None:
+) -> QLabel:
     label = QLabel(label_text)
     label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
     if widget_width is not None:
         _set_compact_control_width(widget, widget_width)
     grid.addWidget(label, row, column * 2)
     grid.addWidget(widget, row, column * 2 + 1)
+    return label
 
 
 def _create_editable_combo(default_text: str = "", placeholder: str = "") -> QComboBox:
@@ -1664,6 +1665,17 @@ class ScoringTab(QWidget):
         _polish_form_layout(required_form)
         layout.addWidget(required_box)
 
+        mode_box = QGroupBox("Scoring Mode")
+        mode_box.setProperty("elevated", True)
+        mode_layout = QHBoxLayout(mode_box)
+        self.unit_aware_checkbox = QCheckBox("Enable unit-aware multi-sample scoring")
+        self.unit_aware_checkbox.setToolTip(
+            "Interpret the observed peptide table as long-format sample evidence and score genome presence per analysis unit."
+        )
+        mode_layout.addWidget(self.unit_aware_checkbox)
+        mode_layout.addStretch(1)
+        layout.addWidget(mode_box)
+
         mapping_box = QGroupBox("Column Mapping")
         mapping_box.setProperty("elevated", True)
         mapping_layout = QVBoxLayout(mapping_box)
@@ -1673,7 +1685,9 @@ class ScoringTab(QWidget):
         self.peptide_score_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
         mapping_grid = _create_compact_grid()
         _add_compact_field(mapping_grid, 0, 0, "Sequence column", self.peptide_seq_col_edit, None)
-        _add_compact_field(mapping_grid, 0, 1, "Score column", self.peptide_score_col_edit, None)
+        self.peptide_score_col_label = _add_compact_field(
+            mapping_grid, 0, 1, "Score column", self.peptide_score_col_edit, None
+        )
         mapping_layout.addLayout(mapping_grid)
         self.lineage_columns_box = QGroupBox("Genome-Lineage Columns")
         self.lineage_columns_box.setProperty("subtle", True)
@@ -1699,7 +1713,7 @@ class ScoringTab(QWidget):
         self.more_options = CollapsibleOptions()
         options_layout = QVBoxLayout(self.more_options.body)
 
-        columns_box = QGroupBox("Input Row Filtering")
+        columns_box = QGroupBox("Peptide Row Filtering")
         columns_box.setProperty("subtle", True)
         columns_grid = _create_compact_grid()
         self.peptide_error_col_edit = _create_editable_combo("Q.Value")
@@ -1717,19 +1731,19 @@ class ScoringTab(QWidget):
         self.intensity_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
         _add_compact_field(columns_grid, 0, 0, "Error column", self.peptide_error_col_edit, 170)
         _add_compact_field(columns_grid, 0, 1, "Peptide error cutoff", self.peptide_error_cutoff_edit, 90)
-        _add_compact_field(columns_grid, 0, 2, "Decoy flag column", self.peptide_decoy_flag_col_edit, 170)
-        _add_compact_field(columns_grid, 0, 3, "Decoy flag value", self.decoy_flag_value_edit, 90)
+        self.peptide_decoy_flag_col_label = _add_compact_field(
+            columns_grid, 0, 2, "Decoy flag column", self.peptide_decoy_flag_col_edit, 170
+        )
+        self.decoy_flag_value_label = _add_compact_field(
+            columns_grid, 0, 3, "Decoy flag value", self.decoy_flag_value_edit, 90
+        )
         columns_layout = QVBoxLayout(columns_box)
         columns_layout.addLayout(columns_grid)
-        options_layout.addWidget(columns_box)
+        layout.addWidget(columns_box)
 
-        unit_box = QGroupBox("Sample / Unit-aware Scoring")
-        unit_box.setProperty("subtle", True)
-        unit_layout = QVBoxLayout(unit_box)
-        self.unit_aware_checkbox = QCheckBox("Enable unit-aware scoring")
-        self.unit_aware_checkbox.setToolTip(
-            "Score genome presence per analysis unit after sample-level intensity and error filtering."
-        )
+        self.unit_box = QGroupBox("Unit-aware Sample Definition")
+        self.unit_box.setProperty("subtle", True)
+        unit_layout = QVBoxLayout(self.unit_box)
         self.export_unit_derived_tables_checkbox = QCheckBox("Export derived unit-aware tables")
         self.export_unit_derived_tables_checkbox.setToolTip(
             "Write optional unit-aware call-count, significant-call, genome-union, and matrix tables under the artifacts folder."
@@ -1750,23 +1764,22 @@ class ScoringTab(QWidget):
         self.configure_sample_mapping_button = QPushButton("Configure Sample / Unit Mapping")
         self.configure_sample_mapping_button.clicked.connect(self._configure_sample_unit_mapping)
         self.sample_mapping_status_label = QLabel("No custom sample mapping configured.")
-        unit_layout.addWidget(self.unit_aware_checkbox)
         unit_layout.addWidget(self.export_unit_derived_tables_checkbox)
 
-        sample_filter_box = QGroupBox("Sample Columns And Intensity Filters")
-        sample_filter_box.setProperty("subtle", True)
+        self.sample_filter_box = QGroupBox("Sample Columns And Intensity Filters")
+        self.sample_filter_box.setProperty("subtle", True)
         sample_filter_grid = _create_compact_grid()
         _add_compact_field(sample_filter_grid, 0, 0, "Sample ID column", self.sample_id_col_edit, None)
         _add_compact_field(sample_filter_grid, 0, 1, "Intensity column", self.intensity_col_edit, None)
         _add_compact_field(sample_filter_grid, 1, 0, "Minimum intensity", self.intensity_min_value_edit, 110)
         _add_compact_field(sample_filter_grid, 1, 1, "Drop lowest fraction", self.intensity_min_quantile_edit, 110)
-        sample_filter_layout = QVBoxLayout(sample_filter_box)
+        sample_filter_layout = QVBoxLayout(self.sample_filter_box)
         sample_filter_layout.addLayout(sample_filter_grid)
-        unit_layout.addWidget(sample_filter_box)
+        unit_layout.addWidget(self.sample_filter_box)
 
-        metadata_box = QGroupBox("Sample Metadata And Unit Mapping")
-        metadata_box.setProperty("subtle", True)
-        metadata_layout = QVBoxLayout(metadata_box)
+        self.metadata_box = QGroupBox("Sample / Unit Mapping")
+        self.metadata_box.setProperty("subtle", True)
+        metadata_layout = QVBoxLayout(self.metadata_box)
         metadata_grid = _create_compact_grid()
         metadata_table_label = QLabel("Metadata table")
         metadata_table_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
@@ -1782,13 +1795,13 @@ class ScoringTab(QWidget):
             None,
         )
         metadata_layout.addLayout(metadata_grid)
-        unit_layout.addWidget(metadata_box)
+        unit_layout.addWidget(self.metadata_box)
 
         unit_output_grid = _create_compact_grid()
         unit_output_grid.addWidget(self.configure_sample_mapping_button, 0, 0, 1, 2)
         unit_output_grid.addWidget(self.sample_mapping_status_label, 0, 2, 1, 2)
         unit_layout.addLayout(unit_output_grid)
-        options_layout.addWidget(unit_box)
+        layout.addWidget(self.unit_box)
 
         unique_box = QGroupBox("Unique Evidence Settings")
         unique_box.setProperty("subtle", True)
@@ -1880,7 +1893,6 @@ class ScoringTab(QWidget):
         options_layout.addWidget(runtime_box)
 
         self.unique_pvalue_mode_combo.currentIndexChanged.connect(self._sync_unique_mode_visibility)
-        self._sync_unique_mode_visibility()
 
         cache_output_box = QGroupBox("Cache And Output Artifacts")
         cache_output_box.setProperty("subtle", True)
@@ -1936,6 +1948,8 @@ class ScoringTab(QWidget):
         self.genome_lineage_table_edit.textChanged.connect(self._update_genome_lineage_column_options)
         self.genome_lineage_table_edit.textChanged.connect(self._sync_genome_lineage_column_visibility)
         self.metadata_table_edit.textChanged.connect(self._update_metadata_table_column_options)
+        self.unit_aware_checkbox.toggled.connect(self._sync_unit_aware_visibility)
+        self._sync_unit_aware_visibility()
 
     def _suggest_output_tsv_path(self, peptide_table_path: str) -> str:
         peptide_path = Path(peptide_table_path.strip())
@@ -2348,6 +2362,16 @@ class ScoringTab(QWidget):
         self.theoretical_opportunity_processes_label.setVisible(show_exact_cache)
         self.theoretical_opportunity_processes_spin.setVisible(show_exact_cache)
 
+    def _sync_unit_aware_visibility(self) -> None:
+        unit_aware = self.unit_aware_checkbox.isChecked()
+        self.unit_box.setVisible(unit_aware)
+        self.sample_filter_box.setVisible(unit_aware)
+        self.metadata_box.setVisible(unit_aware)
+        self.export_unit_derived_tables_checkbox.setVisible(unit_aware)
+        self.configure_sample_mapping_button.setVisible(unit_aware)
+        self.sample_mapping_status_label.setVisible(unit_aware)
+        self._sync_unique_mode_visibility()
+
     def _add_genome_dir(self) -> None:
         path = _choose_directory(
             self,
@@ -2432,6 +2456,8 @@ class ScoringTab(QWidget):
             export_peptide_contrib_topN=int(self.export_peptide_contrib_topn_spin.value()),
             return_full_table=self.return_full_table_checkbox.isChecked(),
         )
+        if not config.unit_aware:
+            config.export_unit_derived_tables = False
 
         if require_required_fields:
             if not config.peptide_table_path:
@@ -2511,7 +2537,7 @@ class ScoringTab(QWidget):
             if config.num_workers_for_theoretical_opportunity is not None
             else 0
         )
-        self._sync_unique_mode_visibility()
+        self._sync_unit_aware_visibility()
         self.peptide_decoy_flag_col_edit.setEditText(config.peptide_decoy_flag_col)
         self.decoy_flag_value_edit.setEditText(config.decoy_flag_value)
         self.processes_spin.setValue(config.num_workers if config.num_workers is not None else DEFAULT_PROCESS_COUNT)
@@ -2531,6 +2557,7 @@ class ScoringTab(QWidget):
         self.compute_coverage_checkbox.setChecked(config.compute_coverage)
         self.export_temp_checkbox.setChecked(config.export_temp)
         self.return_full_table_checkbox.setChecked(config.return_full_table)
+        self._sync_unit_aware_visibility()
         self._last_browse_dir = _remember_dialog_directory(
             config.peptide_table_path
             or config.genome_lineage_table_path
@@ -3388,7 +3415,7 @@ class MainWindow(QMainWindow):
                 if lineage_col is not None:
                     self.scoring_tab.genome_lineage_lineage_col_edit.setEditText(str(lineage_col))
 
-            self.scoring_tab._sync_unique_mode_visibility()
+            self.scoring_tab._sync_unit_aware_visibility()
             
             self.scoring_tab._sync_genome_lineage_column_visibility()
         except Exception as exc:

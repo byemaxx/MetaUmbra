@@ -1062,6 +1062,9 @@ class GenomePresenceScorer:
         peptide_table_path: str,
         sample_id_col: str,
         peptide_seq_col: str,
+        peptide_score_col: Optional[str] = "Evidence",
+        peptide_decoy_flag_col: Optional[str] = "Reverse",
+        decoy_flag_value: str = "+",
         intensity_col: str = "Precursor.Quantity",
         peptide_error_col: Optional[str] = "Q.Value",
         peptide_error_cutoff: float = 0.05,
@@ -1082,6 +1085,8 @@ class GenomePresenceScorer:
 
         sample_col = str(sample_id_col).strip()
         seq_col = str(peptide_seq_col).strip()
+        score_col = str(peptide_score_col).strip() if peptide_score_col else None
+        decoy_col = str(peptide_decoy_flag_col).strip() if peptide_decoy_flag_col else None
         intensity_col = str(intensity_col).strip()
         error_col = str(peptide_error_col).strip() if peptide_error_col else None
         if not sample_col:
@@ -1152,6 +1157,20 @@ class GenomePresenceScorer:
                     "peptide sequence",
                 )
             )
+            score_col = _resolve_col(
+                schema_names,
+                score_col,
+                ["Evidence", "Score", "CScore"],
+                "peptide score",
+                required=False,
+            )
+            decoy_col = _resolve_col(
+                schema_names,
+                decoy_col,
+                ["Reverse", "Target/Decoy", "TargetDecoy", "Decoy"],
+                "decoy flag",
+                required=False,
+            )
             intensity_col = str(
                 _resolve_col(
                     schema_names,
@@ -1168,7 +1187,7 @@ class GenomePresenceScorer:
                 required=False,
             )
             required_cols = [sample_col, seq_col, intensity_col]
-            optional_cols = [error_col] if error_col else []
+            optional_cols = [score_col, decoy_col, error_col]
             columns_to_read = list(dict.fromkeys(required_cols + [col for col in optional_cols if col in schema_names]))
             df = pq.read_table(peptide_file_path, columns=columns_to_read, use_threads=True).to_pandas()
         else:
@@ -1186,6 +1205,20 @@ class GenomePresenceScorer:
                     "peptide sequence",
                 )
             )
+            score_col = _resolve_col(
+                available_columns,
+                score_col,
+                ["Evidence", "Score", "CScore"],
+                "peptide score",
+                required=False,
+            )
+            decoy_col = _resolve_col(
+                available_columns,
+                decoy_col,
+                ["Reverse", "Target/Decoy", "TargetDecoy", "Decoy"],
+                "decoy flag",
+                required=False,
+            )
             intensity_col = str(
                 _resolve_col(
                     available_columns,
@@ -1202,10 +1235,17 @@ class GenomePresenceScorer:
                 required=False,
             )
             required_cols = [sample_col, seq_col, intensity_col]
-            columns_to_read = list(dict.fromkeys(required_cols + ([error_col] if error_col else [])))
+            columns_to_read = list(dict.fromkeys(required_cols + [col for col in [score_col, decoy_col, error_col] if col]))
             dtype = {sample_col: "string", seq_col: "string"}
             df = pd.read_csv(peptide_file_path, sep=sep, usecols=columns_to_read, dtype=dtype, engine="c")
 
+        if score_col and score_col not in df.columns:
+            self.logger.warning(
+                f"Score column '{score_col}' not found; setting all unit-aware peptide scores=1."
+            )
+            score_col = None
+        if decoy_col and decoy_col not in df.columns:
+            decoy_col = None
         if error_col and error_col not in df.columns:
             self.logger.warning(
                 f"Error column '{error_col}' not found; skipping peptide-level error filtering for unit-aware input."
@@ -1216,6 +1256,9 @@ class GenomePresenceScorer:
         self.run_stats["unit_aware_peptide_rows_loaded"] = int(len(df))
         self.run_stats["unit_aware_sample_id_col"] = sample_col
         self.run_stats["unit_aware_peptide_seq_col"] = seq_col
+        self.run_stats["unit_aware_peptide_score_col"] = score_col if score_col else None
+        self.run_stats["unit_aware_peptide_decoy_flag_col"] = decoy_col if decoy_col else None
+        self.run_stats["unit_aware_decoy_flag_value"] = decoy_flag_value
         self.run_stats["unit_aware_intensity_col"] = intensity_col
         self.run_stats["unit_aware_peptide_error_col"] = error_col
         self.run_stats["unit_aware_peptide_error_cutoff"] = float(peptide_error_cutoff)
@@ -1234,9 +1277,19 @@ class GenomePresenceScorer:
                     f"Normalized parquet sample IDs by removing trailing '.raw' from {changed_rows} row(s)."
                 )
         df[seq_col] = df[seq_col].astype("string").str.strip()
+        if score_col:
+            df[score_col] = pd.to_numeric(df[score_col], errors="coerce")
+        if decoy_col:
+            df[decoy_col] = df[decoy_col].astype("string").str.strip()
         df[intensity_col] = pd.to_numeric(df[intensity_col], errors="coerce")
         if error_col:
             df[error_col] = pd.to_numeric(df[error_col], errors="coerce")
+
+        if decoy_col:
+            before = int(len(df))
+            df = df[(df[decoy_col] != str(decoy_flag_value)) | (df[decoy_col].isna())].copy()
+            self.logger.info(f"Unit-aware decoy filter on '{decoy_col}': {before} -> {len(df)} rows.")
+            self.run_stats["unit_aware_peptide_rows_after_decoy_filter"] = int(len(df))
 
         self.logger.info("Counting total unit-aware rows per sample ...")
         total_by_sample = (
@@ -1460,7 +1513,41 @@ class GenomePresenceScorer:
             for unit_id in analysis_unit_ids
         }
         self.sample_unit_mapping_df = mapping_df
-        self.peptide_score = {peptide: 1.0 for peptide in peptide_list}
+        if score_col and score_col in valid.columns:
+            self.logger.info("Computing unit-aware peptide scores from the configured score column ...")
+            score_source = valid[
+                valid[sample_col].isin(valid_sample_ids)
+                & valid[seq_col].astype(str).isin(set(peptide_list))
+                & valid[score_col].notna()
+            ].copy()
+            pep_scores = score_source.groupby(seq_col)[score_col].max().reset_index()
+            pep_scores.columns = ["Peptide", "Score"]
+            if not pep_scores.empty:
+                min_s = float(pep_scores["Score"].min())
+                max_s = float(pep_scores["Score"].max())
+                if max_s > min_s:
+                    pep_scores["NormScore"] = (pep_scores["Score"] - min_s) / (max_s - min_s)
+                else:
+                    pep_scores["NormScore"] = 1.0
+                self.peptide_score = {peptide: 1.0 for peptide in peptide_list}
+                self.peptide_score.update(
+                    dict(zip(pep_scores["Peptide"].astype(str), pep_scores["NormScore"].astype(float)))
+                )
+            else:
+                self.peptide_score = {peptide: 1.0 for peptide in peptide_list}
+        else:
+            self.peptide_score = {peptide: 1.0 for peptide in peptide_list}
+
+        try:
+            vals = np.asarray(list(self.peptide_score.values()), dtype=float)
+            if vals.size > 0:
+                qs = np.quantile(vals, [0.05, 0.25, 0.5, 0.75, 0.95]).tolist()
+                self.run_stats["peptide_normscore_quantiles"] = {
+                    "0.05": float(qs[0]), "0.25": float(qs[1]), "0.50": float(qs[2]),
+                    "0.75": float(qs[3]), "0.95": float(qs[4])
+                }
+        except Exception:
+            pass
 
         self.peptide_error_cutoff = float(peptide_error_cutoff)
         self.single_peptide_error_rate_upper_bound = float(
