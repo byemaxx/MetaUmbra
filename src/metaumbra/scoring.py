@@ -113,6 +113,593 @@ def _resolve_worker_count(num_workers: Optional[int], logger: Optional[logging.L
     return resolved
 
 
+def _unit_knock_deg_bin(d: int, degeneracy_bin_edges: List[int]) -> int:
+    d = int(max(d, 1))
+    edges = list(degeneracy_bin_edges)
+    if d <= edges[0]:
+        return 0
+    for i, e in enumerate(edges[1:], start=1):
+        if d <= e:
+            return i
+    return len(edges)
+
+
+def _unit_knock_len_bin(length: int, peptide_length_bin_edges: List[int]) -> int:
+    length = int(max(length, 0))
+    edges = list(peptide_length_bin_edges)
+    if length <= edges[0]:
+        return 0
+    for i, e in enumerate(edges[1:], start=1):
+        if length <= e:
+            return i
+    return len(edges)
+
+
+def _unit_knock_stratum(
+    d: int,
+    pep_len: int,
+    use_length_strata: bool,
+    degeneracy_bin_edges: List[int],
+    peptide_length_bin_edges: List[int],
+) -> Union[int, Tuple[int, int]]:
+    deg_bin = _unit_knock_deg_bin(d=d, degeneracy_bin_edges=degeneracy_bin_edges)
+    if not use_length_strata:
+        return int(deg_bin)
+    len_bin = _unit_knock_len_bin(length=pep_len, peptide_length_bin_edges=peptide_length_bin_edges)
+    return (int(deg_bin), int(len_bin))
+
+
+def _unit_compute_weight(d: int) -> float:
+    return 1.0 / float(int(max(d, 1)))
+
+
+def _unit_build_knockoff_pools_for_peptides(
+    observed_peptides: Set[str],
+    peptide_deg: Dict[str, int],
+    peptide_score: Dict[str, float],
+    use_length_strata: bool,
+    degeneracy_bin_edges: List[int],
+    peptide_length_bin_edges: List[int],
+) -> Dict[Union[int, Tuple[int, int]], np.ndarray]:
+    pools: Dict[Union[int, Tuple[int, int]], List[float]] = {}
+    for peptide in sorted(observed_peptides):
+        d = int(peptide_deg.get(peptide, 0))
+        if d <= 1:
+            continue
+        score = float(peptide_score.get(peptide, 1.0))
+        weight = _unit_compute_weight(d=d)
+        key = _unit_knock_stratum(
+            d=d,
+            pep_len=len(peptide),
+            use_length_strata=use_length_strata,
+            degeneracy_bin_edges=degeneracy_bin_edges,
+            peptide_length_bin_edges=peptide_length_bin_edges,
+        )
+        pools.setdefault(key, []).append(float(weight * score))
+    return {key: np.asarray(values, dtype=np.float32) for key, values in pools.items()}
+
+
+def _unit_mc_sum_from_pool(
+    pool: Optional[np.ndarray],
+    K: int,
+    c: int,
+    rng: np.random.Generator,
+    sample_block_size: int,
+) -> np.ndarray:
+    if c <= 0:
+        return np.zeros(int(K), dtype=np.float64)
+    if pool is None or pool.size == 0:
+        return np.zeros(int(K), dtype=np.float64)
+
+    K = int(K)
+    c = int(c)
+    block = int(max(1, sample_block_size))
+    out = np.zeros(K, dtype=np.float64)
+    i = 0
+    while i < K:
+        j = min(K, i + block)
+        idx = rng.integers(0, int(pool.size), size=(j - i, c), endpoint=False)
+        out[i:j] = pool[idx].sum(axis=1)
+        i = j
+    return out
+
+
+def _unit_p_shared_knockoff_mc(
+    gid: str,
+    obs_shared_score: float,
+    K: int,
+    rng: np.random.Generator,
+    pools: Dict[Union[int, Tuple[int, int]], np.ndarray],
+    counts_by_genome: Dict[str, Counter],
+    sample_block_size: int,
+) -> Tuple[float, float, float, float, float]:
+    counts = counts_by_genome.get(gid, None)
+    if not counts:
+        return 1.0, 0.0, 0.0, 0.0, 0.0
+
+    null_sum = np.zeros(int(K), dtype=np.float64)
+    for key, c in counts.items():
+        pool = pools.get(key, None)
+        null_sum += _unit_mc_sum_from_pool(
+            pool=pool,
+            K=int(K),
+            c=int(c),
+            rng=rng,
+            sample_block_size=sample_block_size,
+        )
+
+    ge = float(np.sum(null_sum >= float(obs_shared_score)))
+    p = (1.0 + ge) / (1.0 + float(K))
+    mu = float(null_sum.mean())
+    sd = float(null_sum.std(ddof=1)) if int(K) > 1 else 0.0
+    p95 = float(np.quantile(null_sum, 0.95))
+    p99 = float(np.quantile(null_sum, 0.99))
+    return float(p), mu, sd, p95, p99
+
+
+def _unit_fisher_p_2(p1: float, p2: float) -> float:
+    p1 = float(min(max(p1, 1e-300), 1.0))
+    p2 = float(min(max(p2, 1e-300), 1.0))
+    stat = -2.0 * (np.log(p1) + np.log(p2))
+    x = float(stat)
+    return float(np.exp(-x / 2.0) * (1.0 + x / 2.0))
+
+
+def _unit_bh_qvalues(pvals: np.ndarray) -> np.ndarray:
+    p = np.asarray(pvals, dtype=float)
+    n = int(p.size)
+    if n == 0:
+        return p
+
+    order = np.argsort(p)
+    ranked = p[order]
+    q = ranked * float(n) / (np.arange(1, n + 1, dtype=float))
+    q = np.minimum.accumulate(q[::-1])[::-1]
+    q = np.clip(q, 0.0, 1.0)
+    out = np.empty_like(q)
+    out[order] = q
+    return out
+
+
+def _unit_hypergeom_tail_pvalue(
+    observed: int,
+    universe_size: int,
+    success_states: int,
+    draws: int,
+) -> float:
+    observed = int(observed)
+    universe_size = int(max(universe_size, 0))
+    success_states = int(max(success_states, 0))
+    draws = int(max(draws, 0))
+    if observed <= 0:
+        return 1.0
+    if universe_size <= 0 or success_states <= 0 or draws <= 0:
+        return 1.0
+    draws = min(draws, universe_size)
+    success_states = min(success_states, universe_size)
+    try:
+        from scipy.stats import hypergeom  # type: ignore
+
+        return _clip_pvalue(hypergeom.sf(observed - 1, universe_size, success_states, draws))
+    except ImportError as exc:
+        raise RuntimeError(
+            "scipy is required for hypergeometric-opportunity unique p-values. "
+            "Install scipy or use upper-bound or peptide-column mode."
+        ) from exc
+
+
+def _unit_unique_pvalue_stats_for_genome(
+    gid: str,
+    matched_peptides: Set[str],
+    observed_unique: int,
+    observed_unique_pool_size: int,
+    min_unique_for_unique_pvalue: int,
+    mode: str,
+    peptide_deg: Dict[str, int],
+    genome_theoretical_unique_peptides: Dict[str, int],
+    total_theoretical_unique_peptides_all_genomes: int,
+    single_peptide_error_rate_upper_bound: float,
+    peptide_error_upper_by_peptide: Dict[str, float],
+) -> dict:
+    U = int(observed_unique)
+    mode = str(mode or "hypergeometric-opportunity").strip().lower()
+    if mode not in {"hypergeometric-opportunity", "upper-bound", "peptide-column"}:
+        raise ValueError(
+            "unique_pvalue_mode must be one of 'hypergeometric-opportunity', 'upper-bound', or 'peptide-column'."
+        )
+
+    alpha = float(min(max(single_peptide_error_rate_upper_bound, 1e-12), 1.0))
+    S = int(observed_unique_pool_size)
+    A = int(genome_theoretical_unique_peptides.get(gid, 0))
+    A_total = int(max(total_theoretical_unique_peptides_all_genomes, 1))
+    theoretical_unique: object = pd.NA
+    p_unique = 1.0
+    p_unique_depth = 1.0
+    expected = 0.0
+    fold = 0.0
+    gate_pass = False
+    null_model = ""
+
+    if mode == "hypergeometric-opportunity":
+        theoretical_unique = int(A)
+        expected = float(S) * float(A) / float(A_total) if A_total > 0 else 0.0
+        fold = float(U) / max(expected, 1e-12)
+        gate_pass = bool(U >= int(min_unique_for_unique_pvalue))
+        null_model = "hypergeometric"
+        if gate_pass and S > 0 and A > 0 and A_total > 0:
+            p_unique_depth = _unit_hypergeom_tail_pvalue(
+                observed=U,
+                universe_size=A_total,
+                success_states=A,
+                draws=S,
+            )
+            p_unique = p_unique_depth
+    elif mode == "upper-bound":
+        p_unique = float(alpha ** max(U, 0)) if U > 0 else 1.0
+        p_unique_depth = p_unique
+        gate_pass = U > 0
+        null_model = "upper-bound"
+    elif mode == "peptide-column":
+        unique_peptides = [
+            peptide
+            for peptide in matched_peptides
+            if int(peptide_deg.get(peptide, 1)) == 1
+        ]
+        if unique_peptides:
+            errs = [
+                peptide_error_upper_by_peptide.get(peptide, alpha)
+                for peptide in sorted(unique_peptides)
+            ]
+            p_unique = float(np.prod(np.clip(errs, 1e-12, 1.0)))
+            p_unique_depth = p_unique
+            gate_pass = True
+        null_model = "peptide-column"
+
+    return {
+        "p_unique": _clip_pvalue(p_unique),
+        "p_unique_depth": _clip_pvalue(p_unique_depth),
+        "unique_observed": int(U),
+        "unique_expected_null": float(expected),
+        "unique_depth_fold": float(fold),
+        "unique_depth_null_model": null_model,
+        "unique_pvalue_mode": mode,
+        "unique_gate_pass": bool(gate_pass),
+        "theoretical_unique_peptides": theoretical_unique,
+    }
+
+
+def _unit_shared_metrics_for_genome(
+    genome_id: str,
+    matched_peptides: Set[str],
+    peptide_deg: Dict[str, int],
+    peptide_score: Dict[str, float],
+    genome_total_theoretical_peptides: Dict[str, int],
+    use_length_strata: bool,
+    degeneracy_bin_edges: List[int],
+    peptide_length_bin_edges: List[int],
+) -> dict:
+    total_matched = int(len(matched_peptides))
+    unique_count = 0
+    shared_count = 0
+    peptide_scores: List[float] = []
+    peptide_weights: List[float] = []
+    weighted_contributions: List[float] = []
+    shared_weights: List[float] = []
+    shared_contributions: List[float] = []
+    unique_weighted_evidence = 0.0
+    strata_counter = Counter()
+
+    for peptide in sorted(matched_peptides):
+        d = int(peptide_deg.get(peptide, 1))
+        score = float(peptide_score.get(peptide, 1.0))
+        weight = float(_unit_compute_weight(d=d))
+        contribution = float(weight * score)
+
+        peptide_scores.append(score)
+        peptide_weights.append(weight)
+        weighted_contributions.append(contribution)
+
+        if d == 1:
+            unique_count += 1
+            unique_weighted_evidence += score
+        else:
+            shared_count += 1
+            shared_weights.append(weight)
+            shared_contributions.append(contribution)
+            strata_counter[
+                _unit_knock_stratum(
+                    d=d,
+                    pep_len=len(peptide),
+                    use_length_strata=use_length_strata,
+                    degeneracy_bin_edges=degeneracy_bin_edges,
+                    peptide_length_bin_edges=peptide_length_bin_edges,
+                )
+            ] += 1
+
+    total_theoretical = int(genome_total_theoretical_peptides.get(genome_id, 0))
+    effective_peptide_count = float(np.sum(peptide_weights)) if peptide_weights else 0.0
+    weighted_evidence = float(np.sum(weighted_contributions)) if weighted_contributions else 0.0
+    effective_shared = float(np.sum(shared_weights)) if shared_weights else 0.0
+    weighted_shared = float(np.sum(shared_contributions)) if shared_contributions else 0.0
+
+    return {
+        "num_peptides_matched": int(total_matched),
+        "num_peptides_unique": int(unique_count),
+        "peptide_match_ratio": float(total_matched) / float(max(total_theoretical, 1)),
+        "average_peptide_score": float(np.mean(peptide_scores)) if peptide_scores else 0.0,
+        "effective_peptide_count": float(effective_peptide_count),
+        "weighted_evidence": float(weighted_evidence),
+        "unique_weighted_evidence": float(unique_weighted_evidence),
+        "shared_fraction": float(shared_count) / float(total_matched) if total_matched else 0.0,
+        "matched_peptide_count_shared": int(shared_count),
+        "effective_peptide_count_shared": float(effective_shared),
+        "weighted_evidence_shared": float(weighted_shared),
+        "shared_stratum_counts": strata_counter,
+    }
+
+
+def _unit_in_any_stage2_range(value: float, ranges: List[Tuple[float, float]]) -> bool:
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return False
+    for a, b in ranges:
+        lo = float(min(a, b))
+        hi = float(max(a, b))
+        if lo <= float(value) <= hi:
+            return True
+    return False
+
+
+_UNIT_WORKER_CONTEXT: Dict[str, object] = {}
+
+
+def _init_unit_aware_worker(context: Dict[str, object]) -> None:
+    _UNIT_WORKER_CONTEXT.clear()
+    _UNIT_WORKER_CONTEXT.update(context)
+
+
+def _compute_unit_aware_single_unit_worker(args: Dict[str, object]) -> Dict[str, object]:
+    context = _UNIT_WORKER_CONTEXT
+    unit_idx = int(args["unit_idx"])
+    unit_id = str(args["analysis_unit_id"])
+    genome_ids = [str(x) for x in context["genome_ids"]]
+    n_genomes = len(genome_ids)
+    matched_counts = np.asarray(args["matched_counts"], dtype=int).ravel()
+    unit_observed_peptides = set(str(x) for x in args["unit_observed_peptides"])
+    genome_matched_peptides: Dict[str, Set[str]] = context["genome_matched_peptides"]  # type: ignore[assignment]
+    peptide_deg: Dict[str, int] = context["peptide_deg"]  # type: ignore[assignment]
+    peptide_score: Dict[str, float] = context["peptide_score"]  # type: ignore[assignment]
+    genome_total_theoretical_peptides: Dict[str, int] = context["genome_total_theoretical_peptides"]  # type: ignore[assignment]
+    genome_theoretical_unique_peptides: Dict[str, int] = context["genome_theoretical_unique_peptides"]  # type: ignore[assignment]
+    peptide_error_upper_by_peptide: Dict[str, float] = context["peptide_error_upper_by_peptide"]  # type: ignore[assignment]
+    lineage_map: Dict[str, object] = context["lineage_map"]  # type: ignore[assignment]
+    mode = str(context["mode"])
+    gate_min = int(context["min_unique_for_unique_pvalue"])
+    K1 = int(context["knockoff_mc_iterations"])
+    K2_raw = context.get("knockoff_stage2_mc_iterations")
+    K2 = int(K2_raw) if K2_raw is not None else None
+    ranges: List[Tuple[float, float]] = context["knockoff_stage2_p_exist_ranges"]  # type: ignore[assignment]
+    sample_block_size = int(context["knockoff_sample_block_size"])
+    knockoff_random_seed = int(context["knockoff_random_seed"])
+    single_peptide_error_rate_upper_bound = float(context["single_peptide_error_rate_upper_bound"])
+    total_theoretical_unique_peptides_all_genomes = int(context["total_theoretical_unique_peptides_all_genomes"])
+    n_samples = int(args["n_samples_in_unit"])
+    use_length_strata = bool(context["use_length_strata"])
+    degeneracy_bin_edges: List[int] = context["degeneracy_bin_edges"]  # type: ignore[assignment]
+    peptide_length_bin_edges: List[int] = context["peptide_length_bin_edges"]  # type: ignore[assignment]
+    shared_knockoff_func = context.get("shared_knockoff_func")
+
+    unit_pools = _unit_build_knockoff_pools_for_peptides(
+        observed_peptides=unit_observed_peptides,
+        peptide_deg=peptide_deg,
+        peptide_score=peptide_score,
+        use_length_strata=use_length_strata,
+        degeneracy_bin_edges=degeneracy_bin_edges,
+        peptide_length_bin_edges=peptide_length_bin_edges,
+    )
+    unit_shared_strata_by_genome: Dict[str, Counter] = {}
+    unit_metrics_by_genome: Dict[str, dict] = {}
+    unit_matched_peptides_by_genome: Dict[str, Set[str]] = {}
+    unit_unique_stats_by_genome: Dict[str, dict] = {}
+
+    p_shared_values = np.ones(n_genomes, dtype=float)
+    p_unique_values = np.ones(n_genomes, dtype=float)
+    p_combined_values = np.ones(n_genomes, dtype=float)
+    unique_counts = np.zeros(n_genomes, dtype=int)
+    null_mean_values = np.zeros(n_genomes, dtype=float)
+    null_sd_values = np.zeros(n_genomes, dtype=float)
+    null_p95_values = np.zeros(n_genomes, dtype=float)
+    null_p99_values = np.zeros(n_genomes, dtype=float)
+    z_shared_values = np.zeros(n_genomes, dtype=float)
+
+    for genome_idx, genome_id in enumerate(genome_ids):
+        matched_peptides = set(genome_matched_peptides.get(genome_id, set())).intersection(unit_observed_peptides)
+        metrics = _unit_shared_metrics_for_genome(
+            genome_id=genome_id,
+            matched_peptides=matched_peptides,
+            peptide_deg=peptide_deg,
+            peptide_score=peptide_score,
+            genome_total_theoretical_peptides=genome_total_theoretical_peptides,
+            use_length_strata=use_length_strata,
+            degeneracy_bin_edges=degeneracy_bin_edges,
+            peptide_length_bin_edges=peptide_length_bin_edges,
+        )
+        unit_matched_peptides_by_genome[genome_id] = matched_peptides
+        unit_metrics_by_genome[genome_id] = metrics
+        unit_shared_strata_by_genome[genome_id] = metrics["shared_stratum_counts"]
+        unique_counts[genome_idx] = int(metrics["num_peptides_unique"])
+
+    observed_unique_pool_size = int(unique_counts.sum())
+    seed_seq = np.random.SeedSequence([int(knockoff_random_seed), int(unit_idx)])
+    stage_children = seed_seq.spawn(2)
+    rng_stage1 = np.random.default_rng(stage_children[0])
+    rng_stage2 = np.random.default_rng(stage_children[1])
+
+    for genome_idx, genome_id in enumerate(genome_ids):
+        metrics = unit_metrics_by_genome[genome_id]
+        unique_stats = _unit_unique_pvalue_stats_for_genome(
+            gid=genome_id,
+            matched_peptides=unit_matched_peptides_by_genome[genome_id],
+            observed_unique=int(metrics["num_peptides_unique"]),
+            observed_unique_pool_size=observed_unique_pool_size,
+            min_unique_for_unique_pvalue=gate_min,
+            mode=mode,
+            peptide_deg=peptide_deg,
+            genome_theoretical_unique_peptides=genome_theoretical_unique_peptides,
+            total_theoretical_unique_peptides_all_genomes=total_theoretical_unique_peptides_all_genomes,
+            single_peptide_error_rate_upper_bound=single_peptide_error_rate_upper_bound,
+            peptide_error_upper_by_peptide=peptide_error_upper_by_peptide,
+        )
+        unit_unique_stats_by_genome[genome_id] = unique_stats
+
+        p_unique = float(unique_stats["p_unique"])
+        p_shared = 1.0
+        mu = sd = p95 = p99 = 0.0
+        if int(metrics["num_peptides_matched"]) > 0:
+            if callable(shared_knockoff_func):
+                result = shared_knockoff_func(
+                    gid=genome_id,
+                    obs_shared_score=float(metrics["weighted_evidence_shared"]),
+                    K=K1,
+                    rng=rng_stage1,
+                    return_moments=True,
+                    pools=unit_pools,
+                    counts_by_genome=unit_shared_strata_by_genome,
+                )
+                p_shared, mu, sd, p95, p99 = (
+                    result if isinstance(result, tuple) else (float(result), 0.0, 0.0, 0.0, 0.0)
+                )
+            else:
+                p_shared, mu, sd, p95, p99 = _unit_p_shared_knockoff_mc(
+                    gid=genome_id,
+                    obs_shared_score=float(metrics["weighted_evidence_shared"]),
+                    K=K1,
+                    rng=rng_stage1,
+                    pools=unit_pools,
+                    counts_by_genome=unit_shared_strata_by_genome,
+                    sample_block_size=sample_block_size,
+                )
+
+        p_shared_values[genome_idx] = _clip_pvalue(float(p_shared))
+        p_unique_values[genome_idx] = _clip_pvalue(float(p_unique))
+        p_combined_values[genome_idx] = _clip_pvalue(
+            _unit_fisher_p_2(p1=p_shared_values[genome_idx], p2=p_unique_values[genome_idx])
+        )
+        null_mean_values[genome_idx] = float(mu)
+        null_sd_values[genome_idx] = float(sd)
+        null_p95_values[genome_idx] = float(p95)
+        null_p99_values[genome_idx] = float(p99)
+        z_shared_values[genome_idx] = (
+            (float(metrics["weighted_evidence_shared"]) - float(mu)) / (float(sd) + 1e-12)
+            if int(metrics["matched_peptide_count_shared"]) > 0
+            else 0.0
+        )
+
+    if K2 is not None and ranges:
+        target_mask = matched_counts >= 1
+        candidate_mask = target_mask & np.asarray(
+            [_unit_in_any_stage2_range(value, ranges) for value in p_combined_values],
+            dtype=bool,
+        )
+        candidate_indices = np.where(candidate_mask)[0]
+        for genome_idx in candidate_indices:
+            genome_id = genome_ids[int(genome_idx)]
+            metrics = unit_metrics_by_genome[genome_id]
+            if callable(shared_knockoff_func):
+                result = shared_knockoff_func(
+                    gid=genome_id,
+                    obs_shared_score=float(metrics["weighted_evidence_shared"]),
+                    K=K2,
+                    rng=rng_stage2,
+                    return_moments=True,
+                    pools=unit_pools,
+                    counts_by_genome=unit_shared_strata_by_genome,
+                )
+                p_shared, mu, sd, p95, p99 = (
+                    result if isinstance(result, tuple) else (float(result), 0.0, 0.0, 0.0, 0.0)
+                )
+            else:
+                p_shared, mu, sd, p95, p99 = _unit_p_shared_knockoff_mc(
+                    gid=genome_id,
+                    obs_shared_score=float(metrics["weighted_evidence_shared"]),
+                    K=K2,
+                    rng=rng_stage2,
+                    pools=unit_pools,
+                    counts_by_genome=unit_shared_strata_by_genome,
+                    sample_block_size=sample_block_size,
+                )
+            p_shared_values[genome_idx] = _clip_pvalue(float(p_shared))
+            p_combined_values[genome_idx] = _clip_pvalue(
+                _unit_fisher_p_2(p1=p_shared_values[genome_idx], p2=p_unique_values[genome_idx])
+            )
+            null_mean_values[genome_idx] = float(mu)
+            null_sd_values[genome_idx] = float(sd)
+            null_p95_values[genome_idx] = float(p95)
+            null_p99_values[genome_idx] = float(p99)
+            z_shared_values[genome_idx] = (
+                (float(metrics["weighted_evidence_shared"]) - float(mu)) / (float(sd) + 1e-12)
+                if int(metrics["matched_peptide_count_shared"]) > 0
+                else 0.0
+            )
+
+    qvals = np.ones(n_genomes, dtype=float)
+    target_mask = matched_counts >= 1
+    if bool(np.any(target_mask)):
+        qvals[target_mask] = _unit_bh_qvalues(p_combined_values[target_mask])
+    presence_scores = -np.log10(np.clip(qvals, 1e-300, 1.0))
+    rank_order = np.lexsort((np.asarray(genome_ids, dtype=object), -matched_counts, -unique_counts, qvals))
+    ranks = np.empty(n_genomes, dtype=int)
+    ranks[rank_order] = np.arange(1, n_genomes + 1, dtype=int)
+
+    rows = []
+    for genome_idx, genome_id in enumerate(genome_ids):
+        metrics = unit_metrics_by_genome[genome_id]
+        unique_stats = unit_unique_stats_by_genome[genome_id]
+        rows.append(
+            {
+                "analysis_unit_id": unit_id,
+                "genome_id": genome_id,
+                "Lineage": lineage_map.get(genome_id, pd.NA),
+                "num_peptides_matched": int(metrics["num_peptides_matched"]),
+                "num_peptides_unique": int(metrics["num_peptides_unique"]),
+                "matched_peptide_count_shared": int(metrics["matched_peptide_count_shared"]),
+                "effective_peptide_count_shared": float(metrics["effective_peptide_count_shared"]),
+                "weighted_evidence_shared": float(metrics["weighted_evidence_shared"]),
+                "effective_peptide_count": float(metrics["effective_peptide_count"]),
+                "weighted_evidence": float(metrics["weighted_evidence"]),
+                "unique_weighted_evidence": float(metrics["unique_weighted_evidence"]),
+                "shared_fraction": float(metrics["shared_fraction"]),
+                "theoretical_unique_peptides": unique_stats["theoretical_unique_peptides"],
+                "observed_unique_peptide_pool_size": int(observed_unique_pool_size),
+                "expected_unique_null": float(unique_stats["unique_expected_null"]),
+                "unique_depth_fold": float(unique_stats["unique_depth_fold"]),
+                "unique_gate_pass": bool(unique_stats["unique_gate_pass"]),
+                "pvalue_unique": float(p_unique_values[genome_idx]),
+                "pvalue_unique_depth": float(unique_stats["p_unique_depth"]),
+                "pvalue_shared": float(p_shared_values[genome_idx]),
+                "pvalue": float(p_combined_values[genome_idx]),
+                "qvalue": float(qvals[genome_idx]),
+                "presence_score": float(presence_scores[genome_idx]),
+                "presence_rank": int(ranks[genome_idx]),
+                "pass_q_0_01": bool(qvals[genome_idx] <= 0.01 and int(metrics["num_peptides_matched"]) >= 1),
+                "pass_q_0_05": bool(qvals[genome_idx] <= 0.05 and int(metrics["num_peptides_matched"]) >= 1),
+                "null_mean_shared": float(null_mean_values[genome_idx]),
+                "null_sd_shared": float(null_sd_values[genome_idx]),
+                "null_p95_shared": float(null_p95_values[genome_idx]),
+                "null_p99_shared": float(null_p99_values[genome_idx]),
+                "z_shared": float(z_shared_values[genome_idx]),
+                "n_samples_in_unit": int(n_samples),
+                "unit_presence_rule": "union",
+                "unit_shared_mode": "per-unit",
+            }
+        )
+
+    return {
+        "unit_idx": int(unit_idx),
+        "analysis_unit_id": unit_id,
+        "rows": rows,
+    }
+
+
 # =========================
 # Logging
 # =========================
@@ -2649,203 +3236,105 @@ class GenomePresenceScorer:
                 "Unit-aware hypergeometric-opportunity p-values require theoretical unique peptide opportunity."
             )
 
-        rows = []
         gate_min = int(min_unique_for_unique_pvalue)
         K1 = int(max(50, self.knockoff_mc_iterations))
         K2 = int(max(50, self.knockoff_stage2_mc_iterations)) if self.knockoff_stage2_mc_iterations is not None else None
         ranges = list(self.knockoff_stage2_p_exist_ranges or [])
-
-        def _in_any_stage2_range(value: float) -> bool:
-            if value is None or (isinstance(value, float) and np.isnan(value)):
-                return False
-            for a, b in ranges:
-                lo = float(min(a, b))
-                hi = float(max(a, b))
-                if lo <= float(value) <= hi:
-                    return True
-            return False
 
         unit_log_interval = max(1, n_units // 10)
         self.logger.info(
             f"Computing unit-aware per-unit shared knockoff and {mode} unique p/q values "
             f"for {n_units} unit(s) x {n_genomes} genome(s) ..."
         )
+        resolved_workers = _resolve_worker_count(self.num_workers, logger=self.logger)
+        parallel_unit_workers = min(int(resolved_workers), int(n_units))
+        use_parallel = bool(self.num_workers > 1 and n_units > 1 and parallel_unit_workers > 1)
+        effective_unit_workers = parallel_unit_workers if use_parallel else 1
+        self.run_stats["unit_aware_parallelized"] = bool(use_parallel)
+        self.run_stats["unit_aware_num_workers"] = int(effective_unit_workers)
+        self.run_stats["unit_aware_parallel_unit_count"] = int(n_units if use_parallel else 0)
+        if use_parallel:
+            self.logger.info(
+                f"Unit-aware scoring running in parallel with {effective_unit_workers} worker(s) "
+                f"across {n_units} analysis unit(s)."
+            )
+        else:
+            self.logger.info(
+                f"Unit-aware scoring running serially with 1 worker across {n_units} analysis unit(s)."
+            )
+
+        worker_context = {
+            "genome_ids": genome_ids,
+            "genome_matched_peptides": self.genome_matched_peptides,
+            "peptide_deg": peptide_deg,
+            "peptide_score": self.peptide_score,
+            "genome_total_theoretical_peptides": self.genome_total_theoretical_peptides,
+            "genome_theoretical_unique_peptides": self.genome_theoretical_unique_peptides,
+            "total_theoretical_unique_peptides_all_genomes": int(
+                self.total_theoretical_unique_peptides_all_genomes
+            ),
+            "single_peptide_error_rate_upper_bound": float(self.single_peptide_error_rate_upper_bound),
+            "peptide_error_upper_by_peptide": self.peptide_error_upper_by_peptide,
+            "lineage_map": lineage_map,
+            "mode": mode,
+            "min_unique_for_unique_pvalue": int(gate_min),
+            "knockoff_mc_iterations": int(K1),
+            "knockoff_stage2_mc_iterations": K2,
+            "knockoff_stage2_p_exist_ranges": ranges,
+            "knockoff_sample_block_size": int(self.knockoff_sample_block_size),
+            "knockoff_random_seed": int(self.knockoff_random_seed),
+            "use_length_strata": bool(self.use_length_strata),
+            "degeneracy_bin_edges": list(self.degeneracy_bin_edges),
+            "peptide_length_bin_edges": list(self.peptide_length_bin_edges),
+        }
+        worker_args = []
         for unit_idx, unit_id in enumerate(self.unit_analysis_unit_ids):
-            if unit_idx == 0 or (unit_idx + 1) % unit_log_interval == 0 or unit_idx + 1 == n_units:
-                self.logger.info(
-                    f"Unit-aware p/q progress: {unit_idx + 1}/{n_units} analysis unit(s) processed."
-                )
             matched_counts = np.asarray(matched_matrix[:, unit_idx].todense()).ravel().astype(int)
             unit_peptide_indices = self.unit_presence_matrix[:, unit_idx].nonzero()[0]
             unit_observed_peptides = {peptide_by_index[int(i)] for i in unit_peptide_indices}
-            unit_pools = self._build_knockoff_pools_for_peptides(unit_observed_peptides, peptide_deg)
-            unit_shared_strata_by_genome: Dict[str, Counter] = {}
-            unit_metrics_by_genome: Dict[str, dict] = {}
-            unit_matched_peptides_by_genome: Dict[str, Set[str]] = {}
-            unit_unique_stats_by_genome: Dict[str, dict] = {}
+            args_for_unit = {
+                "unit_idx": int(unit_idx),
+                "analysis_unit_id": str(unit_id),
+                "matched_counts": matched_counts,
+                "unit_observed_peptides": tuple(sorted(unit_observed_peptides)),
+                "n_samples_in_unit": int(self.unit_sample_counts.get(unit_id, 0)),
+            }
+            worker_args.append(args_for_unit)
 
-            p_shared_values = np.ones(n_genomes, dtype=float)
-            p_unique_values = np.ones(n_genomes, dtype=float)
-            p_combined_values = np.ones(n_genomes, dtype=float)
-            unique_counts = np.zeros(n_genomes, dtype=int)
-            null_mean_values = np.zeros(n_genomes, dtype=float)
-            null_sd_values = np.zeros(n_genomes, dtype=float)
-            null_p95_values = np.zeros(n_genomes, dtype=float)
-            null_p99_values = np.zeros(n_genomes, dtype=float)
-            z_shared_values = np.zeros(n_genomes, dtype=float)
-
-            for genome_idx, genome_id in enumerate(genome_ids):
-                matched_peptides = set(self.genome_matched_peptides.get(genome_id, set())).intersection(
-                    unit_observed_peptides
-                )
-                metrics = self._unit_shared_metrics_for_genome(
-                    genome_id=genome_id,
-                    matched_peptides=matched_peptides,
-                    peptide_deg=peptide_deg,
-                )
-                unit_matched_peptides_by_genome[genome_id] = matched_peptides
-                unit_metrics_by_genome[genome_id] = metrics
-                unit_shared_strata_by_genome[genome_id] = metrics["shared_stratum_counts"]
-                unique_counts[genome_idx] = int(metrics["num_peptides_unique"])
-
-            observed_unique_pool_size = int(unique_counts.sum())
-            seed_seq = np.random.SeedSequence([int(self.knockoff_random_seed), int(unit_idx)])
-            stage_children = seed_seq.spawn(2)
-            rng_stage1 = np.random.default_rng(stage_children[0])
-            rng_stage2 = np.random.default_rng(stage_children[1])
-
-            for genome_idx, genome_id in enumerate(genome_ids):
-                metrics = unit_metrics_by_genome[genome_id]
-                unique_stats = self._unit_unique_pvalue_stats_for_genome(
-                    gid=genome_id,
-                    matched_peptides=unit_matched_peptides_by_genome[genome_id],
-                    observed_unique=int(metrics["num_peptides_unique"]),
-                    observed_unique_pool_size=observed_unique_pool_size,
-                    min_unique_for_unique_pvalue=gate_min,
-                    mode=mode,
-                    peptide_deg=peptide_deg,
-                )
-                unit_unique_stats_by_genome[genome_id] = unique_stats
-
-                p_unique = float(unique_stats["p_unique"])
-                p_shared = 1.0
-                mu = sd = p95 = p99 = 0.0
-                if int(metrics["num_peptides_matched"]) > 0:
-                    result = self._p_shared_knockoff_mc(
-                        gid=genome_id,
-                        obs_shared_score=float(metrics["weighted_evidence_shared"]),
-                        K=K1,
-                        rng=rng_stage1,
-                        return_moments=True,
-                        pools=unit_pools,
-                        counts_by_genome=unit_shared_strata_by_genome,
-                    )
-                    p_shared, mu, sd, p95, p99 = (
-                        result if isinstance(result, tuple) else (float(result), 0.0, 0.0, 0.0, 0.0)
+        unit_results = []
+        if use_parallel:
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=effective_unit_workers,
+                initializer=_init_unit_aware_worker,
+                initargs=(worker_context,),
+            ) as executor:
+                future_to_unit_idx = {
+                    executor.submit(_compute_unit_aware_single_unit_worker, args): int(args["unit_idx"])
+                    for args in worker_args
+                }
+                completed = 0
+                for future in concurrent.futures.as_completed(future_to_unit_idx):
+                    unit_results.append(future.result())
+                    completed += 1
+                    if completed == 1 or completed % unit_log_interval == 0 or completed == n_units:
+                        self.logger.info(
+                            f"Unit-aware p/q progress: {completed}/{n_units} analysis unit(s) processed."
+                        )
+        else:
+            serial_context = dict(worker_context)
+            serial_context["shared_knockoff_func"] = self._p_shared_knockoff_mc
+            _init_unit_aware_worker(serial_context)
+            for args in worker_args:
+                unit_results.append(_compute_unit_aware_single_unit_worker(args))
+                completed = int(args["unit_idx"]) + 1
+                if completed == 1 or completed % unit_log_interval == 0 or completed == n_units:
+                    self.logger.info(
+                        f"Unit-aware p/q progress: {completed}/{n_units} analysis unit(s) processed."
                     )
 
-                p_shared_values[genome_idx] = _clip_pvalue(float(p_shared))
-                p_unique_values[genome_idx] = _clip_pvalue(float(p_unique))
-                p_combined_values[genome_idx] = _clip_pvalue(
-                    self._fisher_p_2(p1=p_shared_values[genome_idx], p2=p_unique_values[genome_idx])
-                )
-                null_mean_values[genome_idx] = float(mu)
-                null_sd_values[genome_idx] = float(sd)
-                null_p95_values[genome_idx] = float(p95)
-                null_p99_values[genome_idx] = float(p99)
-                z_shared_values[genome_idx] = (
-                    (float(metrics["weighted_evidence_shared"]) - float(mu)) / (float(sd) + 1e-12)
-                    if int(metrics["matched_peptide_count_shared"]) > 0
-                    else 0.0
-                )
-
-            if K2 is not None and ranges:
-                target_mask = matched_counts >= 1
-                candidate_mask = target_mask & np.asarray(
-                    [_in_any_stage2_range(value) for value in p_combined_values],
-                    dtype=bool,
-                )
-                candidate_indices = np.where(candidate_mask)[0]
-                for genome_idx in candidate_indices:
-                    genome_id = genome_ids[int(genome_idx)]
-                    metrics = unit_metrics_by_genome[genome_id]
-                    result = self._p_shared_knockoff_mc(
-                        gid=genome_id,
-                        obs_shared_score=float(metrics["weighted_evidence_shared"]),
-                        K=K2,
-                        rng=rng_stage2,
-                        return_moments=True,
-                        pools=unit_pools,
-                        counts_by_genome=unit_shared_strata_by_genome,
-                    )
-                    p_shared, mu, sd, p95, p99 = (
-                        result if isinstance(result, tuple) else (float(result), 0.0, 0.0, 0.0, 0.0)
-                    )
-                    p_shared_values[genome_idx] = _clip_pvalue(float(p_shared))
-                    p_combined_values[genome_idx] = _clip_pvalue(
-                        self._fisher_p_2(p1=p_shared_values[genome_idx], p2=p_unique_values[genome_idx])
-                    )
-                    null_mean_values[genome_idx] = float(mu)
-                    null_sd_values[genome_idx] = float(sd)
-                    null_p95_values[genome_idx] = float(p95)
-                    null_p99_values[genome_idx] = float(p99)
-                    z_shared_values[genome_idx] = (
-                        (float(metrics["weighted_evidence_shared"]) - float(mu)) / (float(sd) + 1e-12)
-                        if int(metrics["matched_peptide_count_shared"]) > 0
-                        else 0.0
-                    )
-
-            qvals = np.ones(n_genomes, dtype=float)
-            target_mask = matched_counts >= 1
-            if bool(np.any(target_mask)):
-                qvals[target_mask] = self._bh_qvalues(p_combined_values[target_mask])
-            presence_scores = -np.log10(np.clip(qvals, 1e-300, 1.0))
-            rank_order = np.lexsort((np.asarray(genome_ids, dtype=object), -matched_counts, -unique_counts, qvals))
-            ranks = np.empty(n_genomes, dtype=int)
-            ranks[rank_order] = np.arange(1, n_genomes + 1, dtype=int)
-
-            n_samples = int(self.unit_sample_counts.get(unit_id, 0))
-            for genome_idx, genome_id in enumerate(genome_ids):
-                metrics = unit_metrics_by_genome[genome_id]
-                unique_stats = unit_unique_stats_by_genome[genome_id]
-                rows.append(
-                    {
-                        "analysis_unit_id": unit_id,
-                        "genome_id": genome_id,
-                        "Lineage": lineage_map.get(genome_id, pd.NA),
-                        "num_peptides_matched": int(metrics["num_peptides_matched"]),
-                        "num_peptides_unique": int(metrics["num_peptides_unique"]),
-                        "matched_peptide_count_shared": int(metrics["matched_peptide_count_shared"]),
-                        "effective_peptide_count_shared": float(metrics["effective_peptide_count_shared"]),
-                        "weighted_evidence_shared": float(metrics["weighted_evidence_shared"]),
-                        "effective_peptide_count": float(metrics["effective_peptide_count"]),
-                        "weighted_evidence": float(metrics["weighted_evidence"]),
-                        "unique_weighted_evidence": float(metrics["unique_weighted_evidence"]),
-                        "shared_fraction": float(metrics["shared_fraction"]),
-                        "theoretical_unique_peptides": unique_stats["theoretical_unique_peptides"],
-                        "observed_unique_peptide_pool_size": int(observed_unique_pool_size),
-                        "expected_unique_null": float(unique_stats["unique_expected_null"]),
-                        "unique_depth_fold": float(unique_stats["unique_depth_fold"]),
-                        "unique_gate_pass": bool(unique_stats["unique_gate_pass"]),
-                        "pvalue_unique": float(p_unique_values[genome_idx]),
-                        "pvalue_unique_depth": float(unique_stats["p_unique_depth"]),
-                        "pvalue_shared": float(p_shared_values[genome_idx]),
-                        "pvalue": float(p_combined_values[genome_idx]),
-                        "qvalue": float(qvals[genome_idx]),
-                        "presence_score": float(presence_scores[genome_idx]),
-                        "presence_rank": int(ranks[genome_idx]),
-                        "pass_q_0_01": bool(qvals[genome_idx] <= 0.01 and int(metrics["num_peptides_matched"]) >= 1),
-                        "pass_q_0_05": bool(qvals[genome_idx] <= 0.05 and int(metrics["num_peptides_matched"]) >= 1),
-                        "null_mean_shared": float(null_mean_values[genome_idx]),
-                        "null_sd_shared": float(null_sd_values[genome_idx]),
-                        "null_p95_shared": float(null_p95_values[genome_idx]),
-                        "null_p99_shared": float(null_p99_values[genome_idx]),
-                        "z_shared": float(z_shared_values[genome_idx]),
-                        "n_samples_in_unit": int(n_samples),
-                        "unit_presence_rule": "union",
-                        "unit_shared_mode": "per-unit",
-                    }
-                )
+        rows = []
+        for result in sorted(unit_results, key=lambda item: int(item["unit_idx"])):
+            rows.extend(result["rows"])
 
         unit_level_df = pd.DataFrame(rows)
         if "Lineage" in unit_level_df.columns and unit_level_df["Lineage"].isna().all():
