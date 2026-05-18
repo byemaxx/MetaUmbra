@@ -1138,6 +1138,28 @@ class GenomePresenceScorer:
                 )
             return None
 
+        def _infer_decoy_flag_value_from_values(values, configured_value: str) -> str:
+            configured = str(configured_value)
+            if configured == "":
+                return configured
+            value_set: Set[str] = set()
+            for value in values:
+                if value is None:
+                    continue
+                text = str(value).strip()
+                if text and text != "<NA>":
+                    value_set.add(text)
+            if configured in value_set or configured != "+":
+                return configured
+            for candidate in ("True", "true", "1", "decoy", "Decoy", "DECOY", "T", "t"):
+                if candidate in value_set:
+                    self.logger.info(
+                        f"Auto-detected unit-aware decoy marker for column '{decoy_col}': "
+                        f"using '{candidate}' instead of '+'."
+                    )
+                    return candidate
+            return configured
+
         if is_parquet_input:
             try:
                 import pyarrow.parquet as pq
@@ -1251,6 +1273,11 @@ class GenomePresenceScorer:
                 f"Error column '{error_col}' not found; skipping peptide-level error filtering for unit-aware input."
             )
             error_col = None
+        if decoy_col:
+            decoy_flag_value = _infer_decoy_flag_value_from_values(
+                df[decoy_col].dropna().unique()[:50],
+                decoy_flag_value,
+            )
 
         self.run_stats["unit_aware"] = True
         self.run_stats["unit_aware_peptide_rows_loaded"] = int(len(df))

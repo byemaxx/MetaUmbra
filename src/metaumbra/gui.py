@@ -709,6 +709,25 @@ def _strip_raw_suffix_from_sample_ids(values):
     return values.astype("string").str.strip().str.replace(r"\.raw$", "", case=False, regex=True)
 
 
+def _infer_decoy_flag_value_from_values(values, configured_value: str) -> str:
+    configured = str(configured_value)
+    if configured == "":
+        return configured
+    value_set: set[str] = set()
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text and text != "<NA>":
+            value_set.add(text)
+    if configured in value_set or configured != "+":
+        return configured
+    for candidate in ("True", "true", "1", "decoy", "Decoy", "DECOY", "T", "t"):
+        if candidate in value_set:
+            return candidate
+    return configured
+
+
 def _drop_duplicate_pairs_with_pyarrow(df, first_col: str, second_col: str):
     try:
         import pyarrow as pa
@@ -726,6 +745,8 @@ def _read_parquet_sample_unit_preview_rows_fast(
     intensity_col: str,
     peptide_error_col: str,
     peptide_error_cutoff: float,
+    peptide_decoy_flag_col: str,
+    decoy_flag_value: str,
     intensity_min_value: float,
 ) -> list[dict[str, object]]:
     import numpy as np
@@ -742,14 +763,20 @@ def _read_parquet_sample_unit_preview_rows_fast(
     )
     intensity_col = _resolve_table_column(columns, intensity_col, ["Precursor.Quantity", "Precursor.Normalised", "Intensity"])
     error_col = _resolve_table_column(columns, peptide_error_col, ["Q.Value", "QValue", "Qval", "QVal", "PEP", "FDR"])
+    decoy_col = _resolve_table_column(columns, peptide_decoy_flag_col, ["Reverse", "Target/Decoy", "TargetDecoy", "Decoy"])
     required = [sample_col, seq_col, intensity_col]
     if not all(required):
         raise ValueError(
             "Unable to resolve sample, peptide sequence, and intensity columns from the parquet table."
         )
 
-    read_cols = list(dict.fromkeys(required + ([error_col] if error_col else [])))
+    read_cols = list(dict.fromkeys(required + [col for col in [decoy_col, error_col] if col]))
     raw_table = pq.read_table(path, columns=read_cols, use_threads=True)
+    if decoy_col:
+        decoy = pc.utf8_trim_whitespace(pc.cast(raw_table[decoy_col], pa.string(), safe=False))
+        effective_decoy_value = _infer_decoy_flag_value_from_values(pc.unique(decoy).to_pylist(), decoy_flag_value)
+        decoy_keep = pc.or_(pc.is_null(decoy), pc.not_equal(decoy, effective_decoy_value))
+        raw_table = raw_table.filter(decoy_keep)
 
     sample = pc.utf8_trim_whitespace(pc.cast(raw_table[sample_col], pa.string(), safe=False))
     sample = pc.replace_substring_regex(sample, pattern=r"(?i)\.raw$", replacement="")
@@ -839,6 +866,8 @@ def _read_sample_unit_preview_rows(
     intensity_col: str,
     peptide_error_col: str,
     peptide_error_cutoff: float,
+    peptide_decoy_flag_col: str,
+    decoy_flag_value: str,
     intensity_min_value: float,
     intensity_min_quantile: float,
 ) -> list[dict[str, object]]:
@@ -869,6 +898,8 @@ def _read_sample_unit_preview_rows(
                     intensity_col=intensity_col,
                     peptide_error_col=peptide_error_col,
                     peptide_error_cutoff=peptide_error_cutoff,
+                    peptide_decoy_flag_col=peptide_decoy_flag_col,
+                    decoy_flag_value=decoy_flag_value,
                     intensity_min_value=intensity_min_value,
                 )
             except (pa.ArrowInvalid, pa.ArrowNotImplementedError, pa.ArrowTypeError):
@@ -881,12 +912,13 @@ def _read_sample_unit_preview_rows(
         )
         intensity_col = _resolve_table_column(columns, intensity_col, ["Precursor.Quantity", "Precursor.Normalised", "Intensity"])
         error_col = _resolve_table_column(columns, peptide_error_col, ["Q.Value", "QValue", "Qval", "QVal", "PEP", "FDR"])
+        decoy_col = _resolve_table_column(columns, peptide_decoy_flag_col, ["Reverse", "Target/Decoy", "TargetDecoy", "Decoy"])
         required = [sample_col, seq_col, intensity_col]
         if not all(required):
             raise ValueError(
                 "Unable to resolve sample, peptide sequence, and intensity columns from the parquet table."
             )
-        read_cols = list(dict.fromkeys(required + ([error_col] if error_col else [])))
+        read_cols = list(dict.fromkeys(required + [col for col in [decoy_col, error_col] if col]))
         df = pq.read_table(path, columns=read_cols, use_threads=True).to_pandas()
     else:
         columns = _read_table_columns(path)
@@ -898,12 +930,13 @@ def _read_sample_unit_preview_rows(
         )
         intensity_col = _resolve_table_column(columns, intensity_col, ["Precursor.Quantity", "Precursor.Normalised", "Intensity"])
         error_col = _resolve_table_column(columns, peptide_error_col, ["Q.Value", "QValue", "Qval", "QVal", "PEP", "FDR"])
+        decoy_col = _resolve_table_column(columns, peptide_decoy_flag_col, ["Reverse", "Target/Decoy", "TargetDecoy", "Decoy"])
         required = [sample_col, seq_col, intensity_col]
         if not all(required):
             raise ValueError(
                 "Unable to resolve sample, peptide sequence, and intensity columns from the peptide table."
             )
-        read_cols = list(dict.fromkeys(required + ([error_col] if error_col else [])))
+        read_cols = list(dict.fromkeys(required + [col for col in [decoy_col, error_col] if col]))
         df = _read_delimited_table_for_columns(path, read_cols)
 
     df = df.copy()
@@ -911,6 +944,10 @@ def _read_sample_unit_preview_rows(
     if is_parquet_input:
         df[sample_col] = _strip_raw_suffix_from_sample_ids(df[sample_col])
     df[seq_col] = df[seq_col].astype("string").str.strip()
+    if decoy_col and decoy_col in df.columns:
+        df[decoy_col] = df[decoy_col].astype("string").str.strip()
+        effective_decoy_value = _infer_decoy_flag_value_from_values(df[decoy_col].dropna().unique()[:50], decoy_flag_value)
+        df = df[(df[decoy_col] != effective_decoy_value) | (df[decoy_col].isna())].copy()
     df[intensity_col] = pd.to_numeric(df[intensity_col], errors="coerce")
     if error_col and error_col in df.columns:
         df[error_col] = pd.to_numeric(df[error_col], errors="coerce")
@@ -1665,17 +1702,6 @@ class ScoringTab(QWidget):
         _polish_form_layout(required_form)
         layout.addWidget(required_box)
 
-        mode_box = QGroupBox("Scoring Mode")
-        mode_box.setProperty("elevated", True)
-        mode_layout = QHBoxLayout(mode_box)
-        self.unit_aware_checkbox = QCheckBox("Enable unit-aware multi-sample scoring")
-        self.unit_aware_checkbox.setToolTip(
-            "Interpret the observed peptide table as long-format sample evidence and score genome presence per analysis unit."
-        )
-        mode_layout.addWidget(self.unit_aware_checkbox)
-        mode_layout.addStretch(1)
-        layout.addWidget(mode_box)
-
         mapping_box = QGroupBox("Column Mapping")
         mapping_box.setProperty("elevated", True)
         mapping_layout = QVBoxLayout(mapping_box)
@@ -1740,6 +1766,17 @@ class ScoringTab(QWidget):
         columns_layout = QVBoxLayout(columns_box)
         columns_layout.addLayout(columns_grid)
         layout.addWidget(columns_box)
+
+        mode_box = QGroupBox("Scoring Mode")
+        mode_box.setProperty("elevated", True)
+        mode_layout = QHBoxLayout(mode_box)
+        self.unit_aware_checkbox = QCheckBox("Enable unit-aware multi-sample scoring")
+        self.unit_aware_checkbox.setToolTip(
+            "Interpret the observed peptide table as long-format sample evidence and score genome presence per analysis unit."
+        )
+        mode_layout.addWidget(self.unit_aware_checkbox)
+        mode_layout.addStretch(1)
+        layout.addWidget(mode_box)
 
         self.unit_box = QGroupBox("Unit-aware Sample Definition")
         self.unit_box.setProperty("subtle", True)
@@ -2235,6 +2272,8 @@ class ScoringTab(QWidget):
                 self.intensity_col_edit.currentText().strip(),
                 self.peptide_error_col_edit.currentText().strip(),
                 float(peptide_error_cutoff),
+                self.peptide_decoy_flag_col_edit.currentText().strip(),
+                self.decoy_flag_value_edit.currentText().strip(),
                 float(intensity_min_value),
                 float(intensity_min_quantile),
             )
@@ -2248,6 +2287,8 @@ class ScoringTab(QWidget):
                     intensity_col=self.intensity_col_edit.currentText().strip(),
                     peptide_error_col=self.peptide_error_col_edit.currentText().strip(),
                     peptide_error_cutoff=peptide_error_cutoff,
+                    peptide_decoy_flag_col=self.peptide_decoy_flag_col_edit.currentText().strip(),
+                    decoy_flag_value=self.decoy_flag_value_edit.currentText().strip(),
                     intensity_min_value=intensity_min_value,
                     intensity_min_quantile=intensity_min_quantile,
                 )
