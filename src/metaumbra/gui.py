@@ -42,6 +42,7 @@ try:
         QComboBox,
         QDialog,
         QDialogButtonBox,
+        QDoubleSpinBox,
         QFileDialog,
         QFormLayout,
         QGridLayout,
@@ -79,6 +80,7 @@ except ImportError as pyside_exc:
             QComboBox,
             QDialog,
             QDialogButtonBox,
+            QDoubleSpinBox,
             QFileDialog,
             QFormLayout,
             QGridLayout,
@@ -453,6 +455,16 @@ def _parse_required_float(raw_value: str, field_name: str) -> float:
         return float(raw_value.strip())
     except Exception as exc:
         raise ValueError(f"{field_name} must be a number.") from exc
+
+
+def _parse_optional_float(raw_value: str, field_name: str) -> float | None:
+    value = raw_value.strip()
+    if not value:
+        return None
+    try:
+        return float(value)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a number or blank.") from exc
 
 
 def _parse_text_list(raw_text: str) -> list[str]:
@@ -1987,16 +1999,17 @@ class ScoringTab(QWidget):
         columns_layout.addLayout(columns_grid)
         layout.addWidget(columns_box)
 
-        mode_box = QGroupBox("Scoring Mode")
-        mode_box.setProperty("elevated", True)
-        mode_layout = QHBoxLayout(mode_box)
         self.unit_aware_checkbox = QCheckBox("Enable unit-aware multi-sample scoring")
         self.unit_aware_checkbox.setToolTip(
             "Interpret the observed peptide table as long-format sample evidence and score genome presence per analysis unit."
         )
-        mode_layout.addWidget(self.unit_aware_checkbox)
-        mode_layout.addStretch(1)
-        layout.addWidget(mode_box)
+        unit_aware_row = QWidget()
+        unit_aware_row.setObjectName("InlineOptionRow")
+        unit_aware_row_layout = QHBoxLayout(unit_aware_row)
+        unit_aware_row_layout.setContentsMargins(10, 6, 10, 6)
+        unit_aware_row_layout.addWidget(self.unit_aware_checkbox)
+        unit_aware_row_layout.addStretch(1)
+        layout.addWidget(unit_aware_row)
 
         self.unit_box = QGroupBox("Unit-aware Sample Definition")
         self.unit_box.setProperty("subtle", True)
@@ -2064,15 +2077,25 @@ class ScoringTab(QWidget):
         unique_box.setProperty("subtle", True)
         unique_layout = QVBoxLayout(unique_box)
         self.unique_pvalue_mode_combo = QComboBox()
+        self.unique_pvalue_mode_combo.addItem("Alpha upper bound", "alpha-upper-bound")
         self.unique_pvalue_mode_combo.addItem("Hypergeometric opportunity", "hypergeometric-opportunity")
-        self.unique_pvalue_mode_combo.addItem("Upper bound", "upper-bound")
-        self.unique_pvalue_mode_combo.addItem("Peptide column", "peptide-column")
         self.unique_pvalue_mode_combo.setMinimumWidth(260)
         _set_compact_control_width(self.unique_pvalue_mode_combo, 260)
+        self.unique_peptide_error_source_combo = QComboBox()
+        self.unique_peptide_error_source_combo.addItem("Global alpha", "global-alpha")
+        self.unique_peptide_error_source_combo.addItem("Peptide error column", "peptide-error-column")
+        _set_compact_control_width(self.unique_peptide_error_source_combo, 190)
         self.min_unique_for_unique_pvalue_spin = QSpinBox()
         self.min_unique_for_unique_pvalue_spin.setRange(0, 1000)
         self.min_unique_for_unique_pvalue_spin.setValue(3)
         self.single_peptide_error_rate_upper_bound_edit = QLineEdit("0.3")
+        self.unique_count_power_spin = QDoubleSpinBox()
+        self.unique_count_power_spin.setRange(0.01, 1.0)
+        self.unique_count_power_spin.setSingleStep(0.05)
+        self.unique_count_power_spin.setDecimals(2)
+        self.unique_count_power_spin.setValue(0.6)
+        self.unique_count_cap_edit = QLineEdit("")
+        self.unique_count_cap_edit.setPlaceholderText("none")
         self.theoretical_opportunity_processes_spin = _create_optional_process_spinbox()
         self.theoretical_opportunity_processes_spin.setToolTip(
             "Optional worker count for hypergeometric-opportunity theoretical opportunity sharding.\n"
@@ -2080,22 +2103,49 @@ class ScoringTab(QWidget):
         )
         self.rebuild_theoretical_opportunity_cache_checkbox = QCheckBox("Rebuild theoretical opportunity cache")
         self.single_peptide_error_rate_upper_bound_edit.setToolTip(
-            "Alpha used only by the upper-bound unique evidence p-value mode: alpha^U."
+            "Alpha used by alpha-upper-bound mode: alpha^(U_raw^power)."
         )
         self.unique_pvalue_mode_combo.setToolTip(
             "Choose the source for unique peptide p-values."
+        )
+        self.unique_peptide_error_source_combo.setToolTip(
+            "Choose epsilon_i for alpha-upper-bound mode."
+        )
+        self.unique_count_power_spin.setToolTip(
+            "Power exponent for alpha-upper-bound mode: U_eff = U_raw^power. Set to 1.0 for raw unique count."
+        )
+        self.unique_count_cap_edit.setToolTip(
+            "Optional upper cap for effective unique count. Leave blank for no cap."
         )
         theoretical_cache_row, self.theoretical_opportunity_cache_edit = _make_path_row(
             "Browse", self._browse_theoretical_opportunity_cache, accept_mode="file"
         )
         unique_grid = _create_compact_grid()
         _add_compact_field(unique_grid, 0, 0, "Unique p-value mode", self.unique_pvalue_mode_combo, 260)
-        _add_compact_field(unique_grid, 0, 1, "Minimum unique peptides", self.min_unique_for_unique_pvalue_spin, 110)
-        self.unique_alpha_label = QLabel("Unique alpha upper bound")
+        self.unique_peptide_error_source_label = _add_compact_field(
+            unique_grid,
+            0,
+            1,
+            "Unique peptide error source",
+            self.unique_peptide_error_source_combo,
+            190,
+        )
+        _add_compact_field(unique_grid, 0, 2, "Minimum unique peptides", self.min_unique_for_unique_pvalue_spin, 110)
+        self.unique_alpha_label = QLabel("Unique evidence alpha")
         self.unique_alpha_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
         _set_compact_control_width(self.single_peptide_error_rate_upper_bound_edit, 130)
-        unique_grid.addWidget(self.unique_alpha_label, 1, 0)
-        unique_grid.addWidget(self.single_peptide_error_rate_upper_bound_edit, 1, 1)
+        unique_grid.addWidget(self.unique_alpha_label, 1, 4)
+        unique_grid.addWidget(self.single_peptide_error_rate_upper_bound_edit, 1, 5)
+        self.unique_count_power_label = QLabel("Unique count power")
+        self.unique_count_power_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
+        _set_compact_control_width(self.unique_count_power_spin, 110)
+        unique_grid.addWidget(self.unique_count_power_label, 1, 0)
+        unique_grid.addWidget(self.unique_count_power_spin, 1, 1)
+        self.unique_count_cap_label = QLabel("Unique count cap")
+        self.unique_count_cap_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
+        _set_compact_control_width(self.unique_count_cap_edit, 130)
+        unique_grid.addWidget(self.unique_count_cap_label, 1, 2)
+        unique_grid.addWidget(self.unique_count_cap_edit, 1, 3)
         self.theoretical_opportunity_processes_label = QLabel("Exact-mode processes")
         self.theoretical_opportunity_processes_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
         _set_compact_control_width(self.theoretical_opportunity_processes_spin, 160)
@@ -2150,6 +2200,7 @@ class ScoringTab(QWidget):
         options_layout.addWidget(runtime_box)
 
         self.unique_pvalue_mode_combo.currentIndexChanged.connect(self._sync_unique_mode_visibility)
+        self.unique_peptide_error_source_combo.currentIndexChanged.connect(self._sync_unique_mode_visibility)
 
         cache_output_box = QGroupBox("Cache And Output Artifacts")
         cache_output_box.setProperty("subtle", True)
@@ -2612,11 +2663,20 @@ class ScoringTab(QWidget):
             self._last_browse_dir = _remember_dialog_directory(path)
 
     def _sync_unique_mode_visibility(self) -> None:
-        mode = str(self.unique_pvalue_mode_combo.currentData() or "hypergeometric-opportunity")
-        show_alpha = mode == "upper-bound"
+        mode = str(self.unique_pvalue_mode_combo.currentData() or "alpha-upper-bound")
+        error_source = str(self.unique_peptide_error_source_combo.currentData() or "global-alpha")
+        show_alpha_mode = mode == "alpha-upper-bound"
+        show_alpha = show_alpha_mode and error_source == "global-alpha"
+        show_effective_count = show_alpha_mode
+        self.unique_peptide_error_source_label.setVisible(show_alpha_mode)
+        self.unique_peptide_error_source_combo.setVisible(show_alpha_mode)
         show_exact_cache = mode == "hypergeometric-opportunity"
         self.unique_alpha_label.setVisible(show_alpha)
         self.single_peptide_error_rate_upper_bound_edit.setVisible(show_alpha)
+        self.unique_count_power_label.setVisible(show_effective_count)
+        self.unique_count_power_spin.setVisible(show_effective_count)
+        self.unique_count_cap_label.setVisible(show_effective_count)
+        self.unique_count_cap_edit.setVisible(show_effective_count)
         self.theoretical_opportunity_cache_label.setVisible(show_exact_cache)
         self.theoretical_opportunity_cache_edit.parentWidget().setVisible(show_exact_cache)
         self.rebuild_theoretical_opportunity_cache_checkbox.setVisible(show_exact_cache)
@@ -2670,9 +2730,15 @@ class ScoringTab(QWidget):
             ),
             single_peptide_error_rate_upper_bound=_parse_required_float(
                 self.single_peptide_error_rate_upper_bound_edit.text(),
-                "Unique alpha upper bound",
+                "Unique evidence alpha",
             ),
-            unique_pvalue_mode=str(self.unique_pvalue_mode_combo.currentData() or "hypergeometric-opportunity"),
+            unique_pvalue_mode=str(self.unique_pvalue_mode_combo.currentData() or "alpha-upper-bound"),
+            unique_peptide_error_source=str(self.unique_peptide_error_source_combo.currentData() or "global-alpha"),
+            unique_count_power=float(self.unique_count_power_spin.value()),
+            unique_count_cap=_parse_optional_float(
+                self.unique_count_cap_edit.text(),
+                "Unique count cap",
+            ),
             min_unique_for_unique_pvalue=int(self.min_unique_for_unique_pvalue_spin.value()),
             unit_aware=self.unit_aware_checkbox.isChecked(),
             sample_id_col=self.sample_id_col_edit.currentText().strip(),
@@ -2778,8 +2844,12 @@ class ScoringTab(QWidget):
         self.single_peptide_error_rate_upper_bound_edit.setText(
             str(config.single_peptide_error_rate_upper_bound)
         )
-        mode_index = self.unique_pvalue_mode_combo.findData(config.unique_pvalue_mode)
-        self.unique_pvalue_mode_combo.setCurrentIndex(max(mode_index, 0))
+        _set_combo_to_data(self.unique_pvalue_mode_combo, str(config.unique_pvalue_mode))
+        _set_combo_to_data(self.unique_peptide_error_source_combo, str(config.unique_peptide_error_source))
+        self.unique_count_power_spin.setValue(float(config.unique_count_power))
+        self.unique_count_cap_edit.setText(
+            "" if config.unique_count_cap is None else str(config.unique_count_cap)
+        )
         self.min_unique_for_unique_pvalue_spin.setValue(int(config.min_unique_for_unique_pvalue))
         self.unit_aware_checkbox.setChecked(bool(config.unit_aware))
         self.export_unit_derived_tables_checkbox.setChecked(bool(config.export_unit_derived_tables))
@@ -3096,6 +3166,11 @@ class MainWindow(QMainWindow):
             }
             QWidget#FormCanvas {
                 background: transparent;
+            }
+            QWidget#InlineOptionRow {
+                background: #f8fafc;
+                border: 1px solid #dde3ea;
+                border-radius: 3px;
             }
             QLabel#StatusBadge {
                 padding: 5px 10px;
@@ -3716,3 +3791,4 @@ def main() -> None:
 if __name__ == "__main__":
     mp.freeze_support()
     main()
+

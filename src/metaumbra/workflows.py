@@ -46,7 +46,10 @@ class ScoringConfig:
     peptide_error_col: str = "Q.Value"
     peptide_error_cutoff: float = 0.05
     single_peptide_error_rate_upper_bound: float = 0.3
-    unique_pvalue_mode: str = "hypergeometric-opportunity"
+    unique_pvalue_mode: str = "alpha-upper-bound"
+    unique_peptide_error_source: str = "global-alpha"
+    unique_count_power: float = 0.6
+    unique_count_cap: Optional[float] = None
     min_unique_for_unique_pvalue: int = 3
     theoretical_opportunity_cache_path: str = ""
     rebuild_theoretical_opportunity_cache: bool = False
@@ -526,6 +529,9 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
             export_peptide_contrib_topN=int(config.export_peptide_contrib_topN),
             use_cache_if_exists=bool(config.use_cache_if_exists),
             unique_pvalue_mode=str(config.unique_pvalue_mode),
+            unique_peptide_error_source=str(config.unique_peptide_error_source),
+            unique_count_power=float(config.unique_count_power),
+            unique_count_cap=config.unique_count_cap,
             min_unique_for_unique_pvalue=int(config.min_unique_for_unique_pvalue),
             theoretical_opportunity_cache_path=theoretical_cache_path or None,
             rebuild_theoretical_opportunity_cache=bool(config.rebuild_theoretical_opportunity_cache),
@@ -663,3 +669,4 @@ if __name__ == "__main__":
     else:
         from .cli import main as cli_main
     raise SystemExit(cli_main(sys.argv[1:]))
+

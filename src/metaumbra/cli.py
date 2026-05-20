@@ -228,20 +228,50 @@ def build_parser() -> argparse.ArgumentParser:
         "--single-peptide-error-rate-upper-bound",
         type=float,
         default=0.3,
-        help="Per-peptide false-match probability upper bound used only by --unique-pvalue-mode upper-bound.",
+        help="Alpha upper bound for one unique evidence unit in alpha^(U_raw^power).",
     )
     _add_argument(
         score_optional,
         "--unique-pvalue-mode",
-        choices=("hypergeometric-opportunity", "upper-bound", "peptide-column"),
-        default="hypergeometric-opportunity",
+        choices=(
+            "hypergeometric-opportunity",
+            "alpha-upper-bound",
+        ),
+        default="alpha-upper-bound",
         help=(
             "Unique evidence p-value mode. 'hypergeometric-opportunity' uses the observed genome-unique peptide pool and "
-            "genome-specific theoretical unique peptide opportunity. 'upper-bound' uses "
-            "--single-peptide-error-rate-upper-bound as alpha in alpha^U. "
-            "'peptide-column' multiplies values from --peptide-error-col, "
-            "falling back to the upper bound when a peptide value is missing."
+            "genome-specific theoretical unique peptide opportunity. 'alpha-upper-bound' uses alpha^(U_raw^power) "
+            "and is the default; power=1.0 recovers alpha^U_raw."
         ),
+    )
+    _add_argument(
+        score_optional,
+        "--unique-peptide-error-source",
+        choices=("global-alpha", "peptide-error-column"),
+        default="global-alpha",
+        help=(
+            "Error source epsilon_i for alpha-upper-bound mode. 'global-alpha' uses "
+            "--single-peptide-error-rate-upper-bound for every unique peptide. "
+            "'peptide-error-column' uses values from --peptide-error-col for each unique peptide."
+        ),
+    )
+    _add_argument(
+        score_optional,
+        "--unique-count-power",
+        type=float,
+        default=0.6,
+        help=(
+            "Power exponent for effective unique evidence count: U_eff = U_raw^power. "
+            "Lower values are more conservative; 1.0 recovers the raw unique count."
+        ),
+    )
+    _add_argument(
+        score_optional,
+        "--unique-count-cap",
+        type=float,
+        default=None,
+        display_default="none",
+        help="Optional upper cap for effective unique evidence count.",
     )
     _add_argument(
         score_optional,
@@ -503,6 +533,9 @@ def _run_score(args: argparse.Namespace) -> int:
         peptide_error_cutoff=args.peptide_error_cutoff,
         single_peptide_error_rate_upper_bound=args.single_peptide_error_rate_upper_bound,
         unique_pvalue_mode=args.unique_pvalue_mode,
+        unique_peptide_error_source=args.unique_peptide_error_source,
+        unique_count_power=args.unique_count_power,
+        unique_count_cap=args.unique_count_cap,
         min_unique_for_unique_pvalue=args.min_unique_for_unique_pvalue,
         unit_aware=args.unit_aware,
         sample_id_col=args.sample_id_col,
@@ -568,3 +601,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
+
