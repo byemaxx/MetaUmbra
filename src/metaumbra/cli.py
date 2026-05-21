@@ -242,7 +242,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Unique evidence p-value mode. 'hypergeometric-opportunity' uses the observed genome-unique peptide pool and "
             "genome-specific theoretical unique peptide opportunity. 'alpha-upper-bound' uses alpha^(U_raw^power) "
             "and is the default; power=1.0 recovers alpha^U_raw. Unique p-value strength is controlled by this mode, "
-            "--unique-peptide-error-source, --single-peptide-error-rate-upper-bound, --unique-count-power, and --unique-count-cap."
+            "--unique-peptide-error-source, --single-peptide-error-rate-upper-bound, and --unique-count-power."
         ),
     )
     _add_argument(
@@ -265,14 +265,6 @@ def build_parser() -> argparse.ArgumentParser:
             "Power exponent for effective unique evidence count: U_eff = U_raw^power. "
             "Lower values are more conservative; 1.0 recovers the raw unique count."
         ),
-    )
-    _add_argument(
-        score_optional,
-        "--unique-count-cap",
-        type=float,
-        default=None,
-        display_default="none",
-        help="Optional upper cap for effective unique evidence count.",
     )
     _add_argument(
         score_optional,
@@ -529,7 +521,6 @@ def _run_score(args: argparse.Namespace) -> int:
         unique_pvalue_mode=args.unique_pvalue_mode,
         unique_peptide_error_source=args.unique_peptide_error_source,
         unique_count_power=args.unique_count_power,
-        unique_count_cap=args.unique_count_cap,
         unit_aware=args.unit_aware,
         sample_id_col=args.sample_id_col,
         intensity_col=args.intensity_col,

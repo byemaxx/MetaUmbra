@@ -80,7 +80,6 @@ def _normalize_unique_peptide_error_source(source: Optional[str]) -> str:
 def _effective_unique_count(
     u_raw: int,
     power: float = DEFAULT_UNIQUE_COUNT_POWER,
-    cap: Optional[float] = None,
 ) -> float:
     """Convert a raw unique peptide count into a tempered effective count."""
     u_raw = int(max(u_raw, 0))
@@ -92,11 +91,6 @@ def _effective_unique_count(
         raise ValueError("unique_count_power must be in the interval (0, 1].")
 
     u_eff = min(float(u_raw), float(u_raw) ** power)
-    if cap is not None:
-        cap_value = float(cap)
-        if not np.isfinite(cap_value) or cap_value <= 0:
-            raise ValueError("unique_count_cap must be positive or None.")
-        u_eff = min(u_eff, cap_value)
 
     return float(max(u_eff, 0.0))
 
@@ -107,7 +101,6 @@ def _tempered_unique_error_product_pvalue(
     peptide_error_upper_by_peptide: Dict[str, float],
     error_source: str,
     unique_count_power: float,
-    unique_count_cap: Optional[float],
 ) -> Tuple[float, float, str]:
     u_raw = int(len(unique_peptides))
     if u_raw <= 0:
@@ -117,7 +110,6 @@ def _tempered_unique_error_product_pvalue(
     u_eff = _effective_unique_count(
         u_raw=u_raw,
         power=unique_count_power,
-        cap=unique_count_cap,
     )
     temper = float(u_eff) / float(max(u_raw, 1))
 
@@ -392,7 +384,6 @@ def _unit_unique_pvalue_stats_for_genome(
     peptide_error_upper_by_peptide: Dict[str, float],
     unique_peptide_error_source: str = DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE,
     unique_count_power: float = DEFAULT_UNIQUE_COUNT_POWER,
-    unique_count_cap: Optional[float] = None,
 ) -> dict:
     U = int(observed_unique)
     mode = _normalize_unique_pvalue_mode(mode)
@@ -436,7 +427,6 @@ def _unit_unique_pvalue_stats_for_genome(
             peptide_error_upper_by_peptide=peptide_error_upper_by_peptide,
             error_source=unique_peptide_error_source,
             unique_count_power=unique_count_power,
-            unique_count_cap=unique_count_cap,
         )
         count_model = f"power:{float(unique_count_power):g}"
         p_unique_depth = p_unique
@@ -576,7 +566,6 @@ def _compute_unit_aware_single_unit_worker(args: Dict[str, object]) -> Dict[str,
     unique_count_power = float(
         context.get("unique_count_power", DEFAULT_UNIQUE_COUNT_POWER)
     )
-    unique_count_cap = context.get("unique_count_cap")
     total_theoretical_unique_peptides_all_genomes = int(context["total_theoretical_unique_peptides_all_genomes"])
     n_samples = int(args["n_samples_in_unit"])
     use_length_strata = bool(context["use_length_strata"])
@@ -645,7 +634,6 @@ def _compute_unit_aware_single_unit_worker(args: Dict[str, object]) -> Dict[str,
             peptide_error_upper_by_peptide=peptide_error_upper_by_peptide,
             unique_peptide_error_source=unique_peptide_error_source,
             unique_count_power=unique_count_power,
-            unique_count_cap=unique_count_cap,
         )
         unit_unique_stats_by_genome[genome_id] = unique_stats
 
@@ -1034,7 +1022,6 @@ class GenomePresenceScorer:
         self.unique_pvalue_mode: str = DEFAULT_UNIQUE_PVALUE_MODE
         self.unique_peptide_error_source: str = DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE
         self.unique_count_power: float = DEFAULT_UNIQUE_COUNT_POWER
-        self.unique_count_cap: Optional[float] = None
         self.genome_scores_df: Optional[pd.DataFrame] = None
 
         # Unified ranking score scales (lexicographic; unique dominates)
@@ -1532,7 +1519,6 @@ class GenomePresenceScorer:
                 peptide_error_upper_by_peptide=self.peptide_error_upper_by_peptide,
                 error_source=self.unique_peptide_error_source,
                 unique_count_power=self.unique_count_power,
-                unique_count_cap=self.unique_count_cap,
             )
             count_model = f"power:{float(self.unique_count_power):g}"
             p_unique_depth = p_unique
@@ -2741,7 +2727,6 @@ class GenomePresenceScorer:
                 peptide_error_upper_by_peptide=self.peptide_error_upper_by_peptide,
                 error_source=self.unique_peptide_error_source,
                 unique_count_power=self.unique_count_power,
-                unique_count_cap=self.unique_count_cap,
             )
             count_model = f"power:{float(self.unique_count_power):g}"
             p_unique_depth = p_unique
@@ -2827,16 +2812,11 @@ class GenomePresenceScorer:
         unique_pvalue_mode: str = DEFAULT_UNIQUE_PVALUE_MODE,
         unique_peptide_error_source: str = DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE,
         unique_count_power: float = DEFAULT_UNIQUE_COUNT_POWER,
-        unique_count_cap: Optional[float] = None,
     ) -> pd.DataFrame:
         """Add per-genome knockoff existence p/q-values."""
         unique_count_power = float(unique_count_power)
         if not np.isfinite(unique_count_power) or not (0 < unique_count_power <= 1):
             raise ValueError("unique_count_power must be in the interval (0, 1].")
-        if unique_count_cap is not None:
-            cap_value = float(unique_count_cap)
-            if not np.isfinite(cap_value) or cap_value <= 0:
-                raise ValueError("unique_count_cap must be positive or None.")
         unique_peptide_error_source = _normalize_unique_peptide_error_source(unique_peptide_error_source)
 
         out = df_scored.copy()
@@ -2888,7 +2868,6 @@ class GenomePresenceScorer:
         self.unique_pvalue_mode = mode
         self.unique_peptide_error_source = unique_peptide_error_source
         self.unique_count_power = float(unique_count_power)
-        self.unique_count_cap = unique_count_cap
         error_col = self.run_stats.get("peptide_error_col", None)
         use_per_peptide_error = bool(mode == "alpha-upper-bound" and unique_peptide_error_source == "peptide-error-column")
         uses_pep_column = bool(use_per_peptide_error and isinstance(error_col, str) and error_col.upper() == "PEP")
@@ -2896,9 +2875,6 @@ class GenomePresenceScorer:
         self.run_stats["unique_pvalue_mode"] = mode
         self.run_stats["unique_peptide_error_source"] = unique_peptide_error_source
         self.run_stats["unique_count_power"] = float(unique_count_power)
-        self.run_stats["unique_count_cap"] = (
-            float(unique_count_cap) if unique_count_cap is not None else None
-        )
         self.run_stats["unique_pvalue_count_model"] = (
             f"power:{unique_count_power:g}" if mode == "alpha-upper-bound" else "raw"
         )
@@ -3393,7 +3369,6 @@ class GenomePresenceScorer:
             "peptide_error_upper_by_peptide": self.peptide_error_upper_by_peptide,
             "unique_peptide_error_source": str(self.unique_peptide_error_source),
             "unique_count_power": float(self.unique_count_power),
-            "unique_count_cap": self.unique_count_cap,
             "lineage_map": lineage_map,
             "mode": mode,
             "knockoff_mc_iterations": int(K1),
@@ -3883,7 +3858,6 @@ class GenomePresenceScorer:
         unique_pvalue_mode: str = DEFAULT_UNIQUE_PVALUE_MODE,
         unique_peptide_error_source: str = DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE,
         unique_count_power: float = DEFAULT_UNIQUE_COUNT_POWER,
-        unique_count_cap: Optional[float] = None,
         theoretical_opportunity_cache_path: Optional[str] = None,
         rebuild_theoretical_opportunity_cache: bool = False,
         num_workers_for_theoretical_opportunity: Optional[int] = None,
@@ -3897,10 +3871,6 @@ class GenomePresenceScorer:
         unique_count_power = float(unique_count_power)
         if not np.isfinite(unique_count_power) or not (0 < unique_count_power <= 1):
             raise ValueError("unique_count_power must be in the interval (0, 1].")
-        if unique_count_cap is not None:
-            cap_value = float(unique_count_cap)
-            if not np.isfinite(cap_value) or cap_value <= 0:
-                raise ValueError("unique_count_cap must be positive or None.")
         if unit_aware:
             if not self.unit_aware_enabled:
                 raise ValueError("unit_aware=True requires read_unit_aware_peptide_file() before analyze_genomes().")
@@ -3911,7 +3881,6 @@ class GenomePresenceScorer:
         self.unique_pvalue_mode = mode
         self.unique_peptide_error_source = unique_peptide_error_source
         self.unique_count_power = float(unique_count_power)
-        self.unique_count_cap = unique_count_cap
         theoretical_opportunity_workers = (
             self.num_workers
             if num_workers_for_theoretical_opportunity is None
@@ -4294,7 +4263,6 @@ class GenomePresenceScorer:
             unique_pvalue_mode=mode,
             unique_peptide_error_source=unique_peptide_error_source,
             unique_count_power=float(unique_count_power),
-            unique_count_cap=unique_count_cap,
         )
         self.timing_stats["knockoff_pvalues"] = float(time.time() - t_knock0)
 

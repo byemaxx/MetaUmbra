@@ -321,7 +321,6 @@ Important scoring options:
 | `--unique-pvalue-mode` | `alpha-upper-bound` | Unique evidence p-value mode. `alpha-upper-bound` uses `alpha^(U_raw^power)` by default. `hypergeometric-opportunity` uses the observed genome-unique peptide pool and theoretical unique peptide opportunity. |
 | `--unique-peptide-error-source` | `global-alpha` | Error source for `alpha-upper-bound`: use the global alpha or per-peptide values from `--peptide-error-col`. |
 | `--unique-count-power` | `0.7` | Power exponent for effective unique evidence count, `U_eff = U_raw^power`. |
-| `--unique-count-cap` | none | Optional upper cap for effective unique evidence count. |
 | `--unit-aware` | off | Enable per-analysis-unit genome presence scoring for long-format multi-sample peptide tables. |
 | `--sample-id-col` | `Run` | Sample or run ID column used by `--unit-aware`. |
 | `--intensity-col` | `Precursor.Quantity` | Intensity column used to call sample-level peptide presence for `--unit-aware`. |
@@ -348,7 +347,7 @@ Important scoring options:
 | `--no-export-temp` | off | Skip diagnostic artifact exports. |
 | `--return-full-table` | off | Write the full internal result table instead of only the concise main result. |
 
-Unique p-value strength is controlled by `--unique-pvalue-mode`, `--unique-peptide-error-source`, `--single-peptide-error-rate-upper-bound`, `--unique-count-power`, and `--unique-count-cap`.
+Unique p-value strength is controlled by `--unique-pvalue-mode`, `--unique-peptide-error-source`, `--single-peptide-error-rate-upper-bound`, and `--unique-count-power`.
 
 ### Unit-aware scoring for multi-sample data
 
