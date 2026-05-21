@@ -4196,10 +4196,25 @@ class GenomePresenceScorer:
             matched_genome_ids = set(self.genome_matched_peptides.keys())
             folders = [genome_digest_dirs] if isinstance(genome_digest_dirs, str) else list(genome_digest_dirs)
             genome_files_by_id: Dict[str, Path] = {}
+            duplicate_genome_files: Dict[str, List[Path]] = defaultdict(list)
             for folder in [f for f in folders if f and os.path.exists(f)]:
                 for path in Path(folder).glob("*.tsv"):
                     if path.stem in matched_genome_ids:
-                        genome_files_by_id.setdefault(path.stem, path)
+                        if path.stem in genome_files_by_id:
+                            duplicate_genome_files[path.stem].append(path)
+                        else:
+                            genome_files_by_id[path.stem] = path
+            if duplicate_genome_files:
+                examples = []
+                for gid, paths in duplicate_genome_files.items():
+                    all_paths = [genome_files_by_id[gid]] + paths
+                    examples.append(f"{gid}: " + "; ".join(str(p) for p in all_paths))
+                raise ValueError(
+                    "Duplicate genome IDs were found across genome digest directories. "
+                    "Each genome_id/path stem must be unique for hypergeometric-opportunity scoring. "
+                    "Please remove duplicates or rename genome digest files. Examples: "
+                    + " | ".join(examples)
+                )
             genome_files_for_opportunity = [genome_files_by_id[gid] for gid in sorted(genome_files_by_id)]
             if len(genome_files_for_opportunity) != len(matched_genome_ids):
                 missing = sorted(matched_genome_ids.difference({p.stem for p in genome_files_for_opportunity}))
