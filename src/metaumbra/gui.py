@@ -406,7 +406,7 @@ class WheelChangeGuard(QObject):
     def eventFilter(self, watched, event) -> bool:
         if event.type() != QEVENT_WHEEL:
             return super().eventFilter(watched, event)
-        if isinstance(watched, (QComboBox, QSpinBox)):
+        if isinstance(watched, (QComboBox, QSpinBox, QDoubleSpinBox)):
             event.ignore()
             return True
         return super().eventFilter(watched, event)
@@ -1531,6 +1531,7 @@ class SampleUnitMappingDialog(QDialog):
                 self.metadata_sample_col_combo,
                 self._metadata_columns,
                 preferred_text=preferred_sample or self._metadata_sample_col,
+                preferred_index=0,
             )
             _set_editable_combo_items(
                 self.metadata_unit_col_combo,
@@ -2018,10 +2019,25 @@ class ScoringTab(QWidget):
         self.export_unit_derived_tables_checkbox.setToolTip(
             "Write optional unit-aware call-count, significant-call, genome-union, and matrix tables under the artifacts folder."
         )
-        self.intensity_min_value_edit = QLineEdit("0")
-        self.intensity_min_quantile_edit = QLineEdit("0")
-        self.intensity_min_quantile_edit.setToolTip(
-            "Fraction of lowest-intensity rows to remove within each sample. Use 0.05 for the lowest 5%."
+        self.export_unit_derived_tables_checkbox.setChecked(True)
+        self.intensity_min_value_spin = QSpinBox()
+        # Limit to signed 32-bit int max to avoid libshiboken overflow
+        self.intensity_min_value_spin.setRange(0, 2147483647)
+        self.intensity_min_value_spin.setSingleStep(10)
+        self.intensity_min_value_spin.setValue(0)
+        self.intensity_min_value_spin.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
+        self.intensity_min_value_spin.setToolTip(
+            "Minimum intensity required for sample-level peptide presence."
+        )
+        self.intensity_min_quantile_spin = QDoubleSpinBox()
+        # Accept percentage input 0-100 for user convenience; stored/used as fraction (0-1)
+        self.intensity_min_quantile_spin.setRange(0.0, 100.0)
+        self.intensity_min_quantile_spin.setDecimals(2)
+        self.intensity_min_quantile_spin.setSingleStep(1.0)
+        self.intensity_min_quantile_spin.setValue(0.0)
+        self.intensity_min_quantile_spin.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
+        self.intensity_min_quantile_spin.setToolTip(
+            "Percentage of lowest-intensity rows to remove within each sample. Use 5 for the lowest 5%."
         )
         metadata_row, self.metadata_table_edit = _make_path_row("Browse", self._browse_metadata_table, accept_mode="file")
         self.metadata_sample_id_col_edit = _create_editable_combo("sample_id", "Choose or type the metadata sample column")
@@ -2034,15 +2050,14 @@ class ScoringTab(QWidget):
         self.configure_sample_mapping_button = QPushButton("Configure Sample / Unit Mapping")
         self.configure_sample_mapping_button.clicked.connect(self._configure_sample_unit_mapping)
         self.sample_mapping_status_label = QLabel("No custom sample mapping configured.")
-        unit_layout.addWidget(self.export_unit_derived_tables_checkbox)
 
         self.sample_filter_box = QGroupBox("Sample Columns And Intensity Filters")
         self.sample_filter_box.setProperty("subtle", True)
         sample_filter_grid = _create_compact_grid()
         _add_compact_field(sample_filter_grid, 0, 0, "Sample ID column", self.sample_id_col_edit, None)
         _add_compact_field(sample_filter_grid, 0, 1, "Intensity column", self.intensity_col_edit, None)
-        _add_compact_field(sample_filter_grid, 1, 0, "Minimum intensity", self.intensity_min_value_edit, 110)
-        _add_compact_field(sample_filter_grid, 1, 1, "Drop lowest fraction", self.intensity_min_quantile_edit, 110)
+        _add_compact_field(sample_filter_grid, 1, 0, "Minimum intensity", self.intensity_min_value_spin, None)
+        _add_compact_field(sample_filter_grid, 1, 1, "Drop lowest percent (%)", self.intensity_min_quantile_spin, None)
         sample_filter_layout = QVBoxLayout(self.sample_filter_box)
         sample_filter_layout.addLayout(sample_filter_grid)
         unit_layout.addWidget(self.sample_filter_box)
@@ -2075,6 +2090,10 @@ class ScoringTab(QWidget):
 
         unique_box = QGroupBox("Unique Evidence Settings")
         unique_box.setProperty("subtle", True)
+        unique_box.setToolTip(
+            "Unique p-value strength is controlled by unique p-value mode, unique peptide error source, "
+            "unique evidence alpha, unique count power, and unique count cap."
+        )
         unique_layout = QVBoxLayout(unique_box)
         self.unique_pvalue_mode_combo = QComboBox()
         self.unique_pvalue_mode_combo.addItem("Alpha upper bound", "alpha-upper-bound")
@@ -2085,15 +2104,12 @@ class ScoringTab(QWidget):
         self.unique_peptide_error_source_combo.addItem("Global alpha", "global-alpha")
         self.unique_peptide_error_source_combo.addItem("Peptide error column", "peptide-error-column")
         _set_compact_control_width(self.unique_peptide_error_source_combo, 190)
-        self.min_unique_for_unique_pvalue_spin = QSpinBox()
-        self.min_unique_for_unique_pvalue_spin.setRange(0, 1000)
-        self.min_unique_for_unique_pvalue_spin.setValue(3)
         self.single_peptide_error_rate_upper_bound_edit = QLineEdit("0.3")
         self.unique_count_power_spin = QDoubleSpinBox()
         self.unique_count_power_spin.setRange(0.01, 1.0)
         self.unique_count_power_spin.setSingleStep(0.05)
         self.unique_count_power_spin.setDecimals(2)
-        self.unique_count_power_spin.setValue(0.6)
+        self.unique_count_power_spin.setValue(0.7)
         self.unique_count_cap_edit = QLineEdit("")
         self.unique_count_cap_edit.setPlaceholderText("none")
         self.theoretical_opportunity_processes_spin = _create_optional_process_spinbox()
@@ -2103,10 +2119,10 @@ class ScoringTab(QWidget):
         )
         self.rebuild_theoretical_opportunity_cache_checkbox = QCheckBox("Rebuild theoretical opportunity cache")
         self.single_peptide_error_rate_upper_bound_edit.setToolTip(
-            "Alpha used by alpha-upper-bound mode: alpha^(U_raw^power)."
+            "Global alpha used by alpha-upper-bound mode when unique peptide error source is Global alpha."
         )
         self.unique_pvalue_mode_combo.setToolTip(
-            "Choose the source for unique peptide p-values."
+            "Choose how unique evidence p-values are calculated: alpha upper bound or hypergeometric opportunity."
         )
         self.unique_peptide_error_source_combo.setToolTip(
             "Choose epsilon_i for alpha-upper-bound mode."
@@ -2115,7 +2131,7 @@ class ScoringTab(QWidget):
             "Power exponent for alpha-upper-bound mode: U_eff = U_raw^power. Set to 1.0 for raw unique count."
         )
         self.unique_count_cap_edit.setToolTip(
-            "Optional upper cap for effective unique count. Leave blank for no cap."
+            "Optional upper cap for effective unique count in alpha-upper-bound mode. Leave blank for no cap."
         )
         theoretical_cache_row, self.theoretical_opportunity_cache_edit = _make_path_row(
             "Browse", self._browse_theoretical_opportunity_cache, accept_mode="file"
@@ -2130,12 +2146,11 @@ class ScoringTab(QWidget):
             self.unique_peptide_error_source_combo,
             190,
         )
-        _add_compact_field(unique_grid, 0, 2, "Minimum unique peptides", self.min_unique_for_unique_pvalue_spin, 110)
         self.unique_alpha_label = QLabel("Unique evidence alpha")
         self.unique_alpha_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
         _set_compact_control_width(self.single_peptide_error_rate_upper_bound_edit, 130)
-        unique_grid.addWidget(self.unique_alpha_label, 1, 4)
-        unique_grid.addWidget(self.single_peptide_error_rate_upper_bound_edit, 1, 5)
+        unique_grid.addWidget(self.unique_alpha_label, 0, 4)
+        unique_grid.addWidget(self.single_peptide_error_rate_upper_bound_edit, 0, 5)
         self.unique_count_power_label = QLabel("Unique count power")
         self.unique_count_power_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
         _set_compact_control_width(self.unique_count_power_spin, 110)
@@ -2149,8 +2164,8 @@ class ScoringTab(QWidget):
         self.theoretical_opportunity_processes_label = QLabel("Exact-mode processes")
         self.theoretical_opportunity_processes_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
         _set_compact_control_width(self.theoretical_opportunity_processes_spin, 160)
-        unique_grid.addWidget(self.theoretical_opportunity_processes_label, 1, 2)
-        unique_grid.addWidget(self.theoretical_opportunity_processes_spin, 1, 3)
+        unique_grid.addWidget(self.theoretical_opportunity_processes_label, 0, 4)
+        unique_grid.addWidget(self.theoretical_opportunity_processes_spin, 0, 5)
         unique_layout.addLayout(unique_grid)
         unique_form = QFormLayout()
         self.theoretical_opportunity_cache_label = QLabel("Theoretical opportunity cache")
@@ -2228,26 +2243,59 @@ class ScoringTab(QWidget):
         artifact_grid.addWidget(self.compute_coverage_checkbox, 2, 0, 1, 2)
         artifact_grid.addWidget(self.export_temp_checkbox, 2, 2, 1, 2)
         artifact_grid.addWidget(self.return_full_table_checkbox, 3, 0, 1, 2)
+        artifact_grid.addWidget(self.export_unit_derived_tables_checkbox, 3, 2, 1, 2)
         cache_output_layout.addLayout(artifact_grid)
         options_layout.addWidget(cache_output_box)
 
         genome_filter_box = QGroupBox("Genome Selection Filters")
         genome_filter_box.setProperty("subtle", True)
         genome_filter_layout = QHBoxLayout(genome_filter_box)
+
+        exclude_filter_panel = QWidget()
+        exclude_filter_layout = QVBoxLayout(exclude_filter_panel)
+        exclude_filter_layout.setContentsMargins(0, 0, 0, 0)
+        exclude_filter_layout.setSpacing(8)
+        exclude_filter_header = QHBoxLayout()
+        exclude_filter_header.setContentsMargins(0, 0, 0, 0)
+        exclude_filter_label = QLabel("Excluded genomes")
+        self.load_last_excluded_genomes_button = QPushButton("Load Last")
+        self.clear_excluded_genomes_button = QPushButton("Clear All")
+        exclude_filter_header.addWidget(exclude_filter_label)
+        exclude_filter_header.addStretch(1)
+        exclude_filter_header.addWidget(self.load_last_excluded_genomes_button)
+        exclude_filter_header.addWidget(self.clear_excluded_genomes_button)
         self.exclude_text = FileContentTextEdit()
         self.exclude_text.setPlaceholderText(
             "Excluded genome IDs.\n"
             "One genome ID per line, or comma-separated.\n"
             "Genome IDs should match digest TSV filenames without the .tsv suffix."
         )
+
+        selected_filter_panel = QWidget()
+        selected_filter_layout = QVBoxLayout(selected_filter_panel)
+        selected_filter_layout.setContentsMargins(0, 0, 0, 0)
+        selected_filter_layout.setSpacing(8)
+        selected_filter_header = QHBoxLayout()
+        selected_filter_header.setContentsMargins(0, 0, 0, 0)
+        selected_filter_label = QLabel("Only run these genome IDs")
+        self.load_last_selected_genomes_button = QPushButton("Load Last")
+        self.clear_selected_genomes_button = QPushButton("Clear All")
+        selected_filter_header.addWidget(selected_filter_label)
+        selected_filter_header.addStretch(1)
+        selected_filter_header.addWidget(self.load_last_selected_genomes_button)
+        selected_filter_header.addWidget(self.clear_selected_genomes_button)
         self.selected_genomes_text = FileContentTextEdit()
         self.selected_genomes_text.setPlaceholderText(
             "Only run these genome IDs.\n"
             "Leave empty to run all candidates.\n"
             "One genome ID per line, or comma-separated."
         )
-        genome_filter_layout.addWidget(self.exclude_text, 1)
-        genome_filter_layout.addWidget(self.selected_genomes_text, 1)
+        exclude_filter_layout.addLayout(exclude_filter_header)
+        exclude_filter_layout.addWidget(self.exclude_text, 1)
+        selected_filter_layout.addLayout(selected_filter_header)
+        selected_filter_layout.addWidget(self.selected_genomes_text, 1)
+        genome_filter_layout.addWidget(exclude_filter_panel, 1)
+        genome_filter_layout.addWidget(selected_filter_panel, 1)
         options_layout.addWidget(genome_filter_box)
         layout.addWidget(self.more_options)
         layout.addStretch(1)
@@ -2257,6 +2305,10 @@ class ScoringTab(QWidget):
         self.genome_lineage_table_edit.textChanged.connect(self._sync_genome_lineage_column_visibility)
         self.metadata_table_edit.textChanged.connect(self._update_metadata_table_column_options)
         self.unit_aware_checkbox.toggled.connect(self._sync_unit_aware_visibility)
+        self.load_last_excluded_genomes_button.clicked.connect(self._load_last_excluded_genomes)
+        self.clear_excluded_genomes_button.clicked.connect(self.exclude_text.clear)
+        self.load_last_selected_genomes_button.clicked.connect(self._load_last_selected_genomes)
+        self.clear_selected_genomes_button.clicked.connect(self.selected_genomes_text.clear)
         self._sync_unit_aware_visibility()
 
     def _suggest_output_tsv_path(self, peptide_table_path: str) -> str:
@@ -2429,6 +2481,7 @@ class ScoringTab(QWidget):
             self.metadata_sample_id_col_edit,
             columns,
             preferred_text=preferred_sample or "sample_id",
+            preferred_index=0,
         )
         _set_editable_combo_items(
             self.metadata_analysis_unit_col_edit,
@@ -2526,10 +2579,9 @@ class ScoringTab(QWidget):
             peptide_error_cutoff = _parse_required_float(
                 self.peptide_error_cutoff_edit.text(), "Peptide error cutoff"
             )
-            intensity_min_value = _parse_required_float(self.intensity_min_value_edit.text(), "Minimum intensity")
-            intensity_min_quantile = _parse_required_float(
-                self.intensity_min_quantile_edit.text(), "Minimum within-sample intensity quantile"
-            )
+            intensity_min_value = int(self.intensity_min_value_spin.value())
+            # spin provides percent (0-100); convert to fraction for backend (0-1)
+            intensity_min_quantile = float(self.intensity_min_quantile_spin.value()) / 100.0
             try:
                 peptide_stat = Path(peptide_table_path).expanduser().stat()
                 table_signature = (int(peptide_stat.st_size), int(peptide_stat.st_mtime_ns))
@@ -2545,7 +2597,7 @@ class ScoringTab(QWidget):
                 float(peptide_error_cutoff),
                 self.peptide_decoy_flag_col_edit.currentText().strip(),
                 self.decoy_flag_value_edit.currentText().strip(),
-                float(intensity_min_value),
+                int(intensity_min_value),
                 float(intensity_min_quantile),
             )
             if self._sample_unit_preview_cache_key == cache_key:
@@ -2693,6 +2745,41 @@ class ScoringTab(QWidget):
         self.sample_mapping_status_label.setVisible(unit_aware)
         self._sync_unique_mode_visibility()
 
+    def _load_last_excluded_genomes(self) -> None:
+        found, values = self._read_saved_genome_filter_values("exclude_genome_ids")
+        if found:
+            self.exclude_text.setPlainText("\n".join(values))
+            return
+        QMessageBox.information(self, "No Saved Filters", "No saved excluded genome IDs were found.")
+
+    def _load_last_selected_genomes(self) -> None:
+        found, values = self._read_saved_genome_filter_values("selected_genome_ids")
+        if found:
+            self.selected_genomes_text.setPlainText("\n".join(values))
+            return
+        QMessageBox.information(self, "No Saved Filters", "No saved selected genome IDs were found.")
+
+    def _read_saved_genome_filter_values(self, key: str) -> tuple[bool, list[str]]:
+        state_path = _default_gui_state_path()
+        if not state_path.exists():
+            return False, []
+        try:
+            with open(state_path, "r", encoding="utf-8") as handle:
+                state = json.load(handle)
+        except Exception as exc:
+            QMessageBox.warning(self, "Cannot Load Saved Filters", str(exc))
+            return False, []
+
+        filters = state.get("genome_selection_filters", {})
+        if not isinstance(filters, dict) or key not in filters:
+            return False, []
+        raw_values = filters.get(key, [])
+        if isinstance(raw_values, str):
+            return True, _parse_text_list(raw_values)
+        if isinstance(raw_values, list):
+            return True, [str(value).strip() for value in raw_values if str(value).strip()]
+        return True, []
+
     def _add_genome_dir(self) -> None:
         path = _choose_directory(
             self,
@@ -2739,14 +2826,11 @@ class ScoringTab(QWidget):
                 self.unique_count_cap_edit.text(),
                 "Unique count cap",
             ),
-            min_unique_for_unique_pvalue=int(self.min_unique_for_unique_pvalue_spin.value()),
             unit_aware=self.unit_aware_checkbox.isChecked(),
             sample_id_col=self.sample_id_col_edit.currentText().strip(),
             intensity_col=self.intensity_col_edit.currentText().strip(),
-            intensity_min_value=_parse_required_float(self.intensity_min_value_edit.text(), "Minimum intensity"),
-            intensity_min_quantile=_parse_required_float(
-                self.intensity_min_quantile_edit.text(), "Minimum within-sample intensity quantile"
-            ),
+            intensity_min_value=int(self.intensity_min_value_spin.value()),
+                intensity_min_quantile=float(self.intensity_min_quantile_spin.value()) / 100.0,
             metadata_table_path=self.metadata_table_edit.text().strip(),
             metadata_sample_id_col=self.metadata_sample_id_col_edit.currentText().strip(),
             metadata_analysis_unit_col=self.metadata_analysis_unit_col_edit.currentText().strip(),
@@ -2850,11 +2934,26 @@ class ScoringTab(QWidget):
         self.unique_count_cap_edit.setText(
             "" if config.unique_count_cap is None else str(config.unique_count_cap)
         )
-        self.min_unique_for_unique_pvalue_spin.setValue(int(config.min_unique_for_unique_pvalue))
         self.unit_aware_checkbox.setChecked(bool(config.unit_aware))
         self.export_unit_derived_tables_checkbox.setChecked(bool(config.export_unit_derived_tables))
-        self.intensity_min_value_edit.setText(str(config.intensity_min_value))
-        self.intensity_min_quantile_edit.setText(str(config.intensity_min_quantile))
+        # Clamp to QSpinBox maximum to avoid overflow
+        try:
+            iv = int(config.intensity_min_value)
+        except Exception:
+            iv = 0
+        if iv > 2147483647:
+            iv = 2147483647
+        self.intensity_min_value_spin.setValue(iv)
+        # config stores fraction (0-1); display percent (0-100)
+        try:
+            q = float(config.intensity_min_quantile)
+        except Exception:
+            q = 0.0
+        if q < 0.0:
+            q = 0.0
+        if q > 1.0:
+            q = 1.0
+        self.intensity_min_quantile_spin.setValue(q * 100.0)
         self.metadata_table_edit.setText(config.metadata_table_path)
         self.metadata_sample_id_col_edit.setEditText(config.metadata_sample_id_col)
         self.metadata_analysis_unit_col_edit.setEditText(config.metadata_analysis_unit_col)
@@ -3195,14 +3294,14 @@ class MainWindow(QMainWindow):
                 color: #596879;
                 padding-left: 6px;
             }
-            QLineEdit, QComboBox, QSpinBox, QTextEdit, QPlainTextEdit, QListWidget {
+            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit, QListWidget {
                 background: #ffffff;
                 border: 1px solid #c7d0da;
                 border-radius: 3px;
                 padding: 6px 9px;
                 selection-background-color: #cfe0ff;
             }
-            QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QTextEdit:focus, QPlainTextEdit:focus, QListWidget:focus {
+            QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QTextEdit:focus, QPlainTextEdit:focus, QListWidget:focus {
                 border-color: #2563eb;
                 background: #ffffff;
             }
@@ -3698,6 +3797,10 @@ class MainWindow(QMainWindow):
                     "table_path": self.scoring_tab.genome_lineage_table_edit.text().strip(),
                     "genome_id_col": self.scoring_tab.genome_lineage_genome_id_col_edit.currentText().strip(),
                     "lineage_col": self.scoring_tab.genome_lineage_lineage_col_edit.currentText().strip(),
+                },
+                "genome_selection_filters": {
+                    "exclude_genome_ids": _parse_text_list(self.scoring_tab.exclude_text.toPlainText()),
+                    "selected_genome_ids": _parse_text_list(self.scoring_tab.selected_genomes_text.toPlainText()),
                 },
             }
             with open(_default_gui_state_path(), "w", encoding="utf-8") as f:

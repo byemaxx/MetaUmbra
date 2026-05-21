@@ -49,7 +49,7 @@ THEORETICAL_OPPORTUNITY_CACHE_VERSION = 2
 THEORETICAL_OPPORTUNITY_MAX_SHARDS = 256
 COUNT_DTYPE = np.int32
 DEFAULT_UNIQUE_PVALUE_MODE = "alpha-upper-bound"
-DEFAULT_UNIQUE_COUNT_POWER = 0.6
+DEFAULT_UNIQUE_COUNT_POWER = 0.7
 DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE = "global-alpha"
 UNIQUE_PVALUE_CANONICAL_MODES = (
     "hypergeometric-opportunity",
@@ -384,7 +384,6 @@ def _unit_unique_pvalue_stats_for_genome(
     matched_peptides: Set[str],
     observed_unique: int,
     observed_unique_pool_size: int,
-    min_unique_for_unique_pvalue: int,
     mode: str,
     peptide_deg: Dict[str, int],
     genome_theoretical_unique_peptides: Dict[str, int],
@@ -401,13 +400,13 @@ def _unit_unique_pvalue_stats_for_genome(
     alpha = float(min(max(single_peptide_error_rate_upper_bound, 1e-12), 1.0))
     S = int(observed_unique_pool_size)
     A = int(genome_theoretical_unique_peptides.get(gid, 0))
-    A_total = int(max(total_theoretical_unique_peptides_all_genomes, 1))
+    A_total = int(total_theoretical_unique_peptides_all_genomes)
     theoretical_unique: object = pd.NA
     p_unique = 1.0
     p_unique_depth = 1.0
     expected = 0.0
     fold = 0.0
-    gate_pass = False
+    has_unique_evidence = bool(U > 0)
     null_model = ""
     unique_effective_count = float(U)
     count_model = "raw"
@@ -416,9 +415,8 @@ def _unit_unique_pvalue_stats_for_genome(
         theoretical_unique = int(A)
         expected = float(S) * float(A) / float(A_total) if A_total > 0 else 0.0
         fold = float(U) / max(expected, 1e-12)
-        gate_pass = bool(U >= int(min_unique_for_unique_pvalue))
         null_model = "hypergeometric"
-        if gate_pass and S > 0 and A > 0 and A_total > 0:
+        if U > 0 and S > 0 and A > 0 and A_total > 0:
             p_unique_depth = _unit_hypergeom_tail_pvalue(
                 observed=U,
                 universe_size=A_total,
@@ -442,7 +440,6 @@ def _unit_unique_pvalue_stats_for_genome(
         )
         count_model = f"power:{float(unique_count_power):g}"
         p_unique_depth = p_unique
-        gate_pass = U > 0
         null_model = error_source_used
 
     return {
@@ -454,7 +451,7 @@ def _unit_unique_pvalue_stats_for_genome(
         "unique_depth_null_model": null_model,
         "unique_pvalue_mode": mode,
         "unique_peptide_error_source": null_model if mode == "alpha-upper-bound" else "",
-        "unique_gate_pass": bool(gate_pass),
+        "has_unique_evidence": bool(has_unique_evidence),
         "theoretical_unique_peptides": theoretical_unique,
         "unique_effective_count": float(unique_effective_count),
         "unique_pvalue_count_model": count_model,
@@ -566,7 +563,6 @@ def _compute_unit_aware_single_unit_worker(args: Dict[str, object]) -> Dict[str,
     peptide_error_upper_by_peptide: Dict[str, float] = context["peptide_error_upper_by_peptide"]  # type: ignore[assignment]
     lineage_map: Dict[str, object] = context["lineage_map"]  # type: ignore[assignment]
     mode = str(context["mode"])
-    gate_min = int(context["min_unique_for_unique_pvalue"])
     K1 = int(context["knockoff_mc_iterations"])
     K2_raw = context.get("knockoff_stage2_mc_iterations")
     K2 = int(K2_raw) if K2_raw is not None else None
@@ -641,7 +637,6 @@ def _compute_unit_aware_single_unit_worker(args: Dict[str, object]) -> Dict[str,
             matched_peptides=unit_matched_peptides_by_genome[genome_id],
             observed_unique=int(metrics["num_peptides_unique"]),
             observed_unique_pool_size=observed_unique_pool_size,
-            min_unique_for_unique_pvalue=gate_min,
             mode=mode,
             peptide_deg=peptide_deg,
             genome_theoretical_unique_peptides=genome_theoretical_unique_peptides,
@@ -776,7 +771,7 @@ def _compute_unit_aware_single_unit_worker(args: Dict[str, object]) -> Dict[str,
                 "observed_unique_peptide_pool_size": int(observed_unique_pool_size),
                 "expected_unique_null": float(unique_stats["unique_expected_null"]),
                 "unique_depth_fold": float(unique_stats["unique_depth_fold"]),
-                "unique_gate_pass": bool(unique_stats["unique_gate_pass"]),
+                "has_unique_evidence": bool(unique_stats["has_unique_evidence"]),
                 "pvalue_unique": float(p_unique_values[genome_idx]),
                 "pvalue_unique_depth": float(unique_stats["p_unique_depth"]),
                 "pvalue_shared": float(p_shared_values[genome_idx]),
@@ -1036,7 +1031,6 @@ class GenomePresenceScorer:
         self.observed_matchable_peptides: int = 0
         self.observed_unique_peptide_pool_size: int = 0
         self.total_theoretical_unique_peptides_all_genomes: int = 0
-        self.min_unique_for_unique_pvalue: int = 3
         self.unique_pvalue_mode: str = DEFAULT_UNIQUE_PVALUE_MODE
         self.unique_peptide_error_source: str = DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE
         self.unique_count_power: float = DEFAULT_UNIQUE_COUNT_POWER
@@ -1512,7 +1506,7 @@ class GenomePresenceScorer:
         S = int(self.observed_unique_peptide_pool_size)
         expected = 0.0
         fold = 0.0
-        gate_pass = False
+        has_unique_evidence = bool(U > 0)
         null_model = ""
         theoretical_unique: Optional[int] = None
         unique_effective_count = float(U)
@@ -1521,15 +1515,14 @@ class GenomePresenceScorer:
 
         if mode == "hypergeometric-opportunity":
             A = int(self.genome_theoretical_unique_peptides.get(gid, 0))
-            A_total = int(max(self.total_theoretical_unique_peptides_all_genomes, 1))
+            A_total = int(self.total_theoretical_unique_peptides_all_genomes)
             theoretical_unique = int(A)
-            expected = float(S) * float(A) / float(A_total)
+            expected = float(S) * float(A) / float(A_total) if A_total > 0 else 0.0
             fold = float(U) / max(expected, 1e-12)
             null_model = "hypergeometric"
-            if U >= int(self.min_unique_for_unique_pvalue) and A > 0 and S > 0 and A_total > 0:
+            if U > 0 and A > 0 and S > 0 and A_total > 0:
                 p_unique_depth = self._hypergeom_tail_pvalue(U, A_total, A, S)
                 p_unique = p_unique_depth
-                gate_pass = True
         elif mode == "alpha-upper-bound":
             matched = self.genome_matched_peptides.get(gid, set())
             uniq = sorted(p for p in matched if int((self.peptide_degeneracy or {}).get(p, 1)) == 1)
@@ -1543,7 +1536,6 @@ class GenomePresenceScorer:
             )
             count_model = f"power:{float(self.unique_count_power):g}"
             p_unique_depth = p_unique
-            gate_pass = U > 0
             null_model = error_source_used
         else:
             raise ValueError(f"Unsupported unique_pvalue_mode: {mode!r}.")
@@ -1557,7 +1549,7 @@ class GenomePresenceScorer:
             "unique_depth_null_model": null_model,
             "unique_pvalue_mode": mode,
             "unique_peptide_error_source": error_source_used,
-            "unique_gate_pass": bool(gate_pass),
+            "has_unique_evidence": bool(has_unique_evidence),
             "theoretical_unique_peptides": theoretical_unique,
             "unique_effective_count": float(unique_effective_count),
             "unique_pvalue_count_model": count_model,
@@ -2702,7 +2694,6 @@ class GenomePresenceScorer:
         matched_peptides: Set[str],
         observed_unique: int,
         observed_unique_pool_size: int,
-        min_unique_for_unique_pvalue: int,
         mode: str,
         peptide_deg: Dict[str, int],
     ) -> dict:
@@ -2713,13 +2704,13 @@ class GenomePresenceScorer:
         alpha = float(min(max(self.single_peptide_error_rate_upper_bound, 1e-12), 1.0))
         S = int(observed_unique_pool_size)
         A = int(self.genome_theoretical_unique_peptides.get(gid, 0))
-        A_total = int(max(self.total_theoretical_unique_peptides_all_genomes, 1))
+        A_total = int(self.total_theoretical_unique_peptides_all_genomes)
         theoretical_unique: object = pd.NA
         p_unique = 1.0
         p_unique_depth = 1.0
         expected = 0.0
         fold = 0.0
-        gate_pass = False
+        has_unique_evidence = bool(U > 0)
         null_model = ""
         unique_effective_count = float(U)
         count_model = "raw"
@@ -2729,9 +2720,8 @@ class GenomePresenceScorer:
             theoretical_unique = int(A)
             expected = float(S) * float(A) / float(A_total) if A_total > 0 else 0.0
             fold = float(U) / max(expected, 1e-12)
-            gate_pass = bool(U >= int(min_unique_for_unique_pvalue))
             null_model = "hypergeometric"
-            if gate_pass and S > 0 and A > 0 and A_total > 0:
+            if U > 0 and S > 0 and A > 0 and A_total > 0:
                 p_unique_depth = self._hypergeom_tail_pvalue(
                     observed=U,
                     universe_size=A_total,
@@ -2755,7 +2745,6 @@ class GenomePresenceScorer:
             )
             count_model = f"power:{float(self.unique_count_power):g}"
             p_unique_depth = p_unique
-            gate_pass = U > 0
             null_model = error_source_used
 
         return {
@@ -2767,7 +2756,7 @@ class GenomePresenceScorer:
             "unique_depth_null_model": null_model,
             "unique_pvalue_mode": mode,
             "unique_peptide_error_source": error_source_used,
-            "unique_gate_pass": bool(gate_pass),
+            "has_unique_evidence": bool(has_unique_evidence),
             "theoretical_unique_peptides": theoretical_unique,
             "unique_effective_count": float(unique_effective_count),
             "unique_pvalue_count_model": count_model,
@@ -2837,7 +2826,6 @@ class GenomePresenceScorer:
         df_scored: pd.DataFrame,
         unique_pvalue_mode: str = DEFAULT_UNIQUE_PVALUE_MODE,
         unique_peptide_error_source: str = DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE,
-        min_unique_for_unique_pvalue: int = 3,
         unique_count_power: float = DEFAULT_UNIQUE_COUNT_POWER,
         unique_count_cap: Optional[float] = None,
     ) -> pd.DataFrame:
@@ -2862,7 +2850,7 @@ class GenomePresenceScorer:
         out["unique_observed"] = 0
         out["unique_expected_null"] = 0.0
         out["unique_depth_fold"] = 0.0
-        out["unique_gate_pass"] = False
+        out["has_unique_evidence"] = False
         out["unique_depth_null_model"] = ""
         out["theoretical_unique_peptides"] = pd.NA
         out["unique_pvalue_mode"] = unique_pvalue_mode
@@ -2897,11 +2885,8 @@ class GenomePresenceScorer:
             K2 = int(max(50, self.knockoff_stage2_mc_iterations))
         peptide_error_upper = float(min(max(self.single_peptide_error_rate_upper_bound, 1e-12), 1.0))
         mode = _normalize_unique_pvalue_mode(unique_pvalue_mode)
-        if int(min_unique_for_unique_pvalue) < 0:
-            raise ValueError("min_unique_for_unique_pvalue must be >= 0.")
         self.unique_pvalue_mode = mode
         self.unique_peptide_error_source = unique_peptide_error_source
-        self.min_unique_for_unique_pvalue = int(min_unique_for_unique_pvalue)
         self.unique_count_power = float(unique_count_power)
         self.unique_count_cap = unique_count_cap
         error_col = self.run_stats.get("peptide_error_col", None)
@@ -2910,7 +2895,6 @@ class GenomePresenceScorer:
         source_col_display = str(error_col) if error_col is not None else "none"
         self.run_stats["unique_pvalue_mode"] = mode
         self.run_stats["unique_peptide_error_source"] = unique_peptide_error_source
-        self.run_stats["min_unique_for_unique_pvalue"] = int(min_unique_for_unique_pvalue)
         self.run_stats["unique_count_power"] = float(unique_count_power)
         self.run_stats["unique_count_cap"] = (
             float(unique_count_cap) if unique_count_cap is not None else None
@@ -2924,7 +2908,7 @@ class GenomePresenceScorer:
         if mode == "hypergeometric-opportunity":
             self.logger.info(
                 "Unique p-value mode: [hypergeometric-opportunity] "
-                f"null_model=hypergeometric, min_unique={int(min_unique_for_unique_pvalue)}, "
+                "null_model=hypergeometric, "
                 f"observed_unique_pool={int(self.observed_unique_peptide_pool_size)}, "
                 f"theoretical_unique_universe={int(self.total_theoretical_unique_peptides_all_genomes)}"
             )
@@ -3289,7 +3273,6 @@ class GenomePresenceScorer:
         peptide_deg: Dict[str, int],
         peptide_unique_owner: Dict[str, str],
         mode: str,
-        min_unique_for_unique_pvalue: int,
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Compute per-analysis-unit genome presence using already scanned genome matches."""
         from scipy.sparse import csr_matrix
@@ -3370,7 +3353,6 @@ class GenomePresenceScorer:
                 "Unit-aware hypergeometric-opportunity p-values require theoretical unique peptide opportunity."
             )
 
-        gate_min = int(min_unique_for_unique_pvalue)
         K1 = int(max(50, self.knockoff_mc_iterations))
         K2 = int(max(50, self.knockoff_stage2_mc_iterations)) if self.knockoff_stage2_mc_iterations is not None else None
         ranges = list(self.knockoff_stage2_p_exist_ranges or [])
@@ -3414,7 +3396,6 @@ class GenomePresenceScorer:
             "unique_count_cap": self.unique_count_cap,
             "lineage_map": lineage_map,
             "mode": mode,
-            "min_unique_for_unique_pvalue": int(gate_min),
             "knockoff_mc_iterations": int(K1),
             "knockoff_stage2_mc_iterations": K2,
             "knockoff_stage2_p_exist_ranges": ranges,
@@ -3492,7 +3473,7 @@ class GenomePresenceScorer:
                     "Lineage": lineage_map.get(str(genome_id), pd.NA),
                     "n_units_tested": n_units,
                     "n_units_matched_ge_1": int((matched_counts >= 1).sum()),
-                    "n_units_unique_ge_3": int((unique_counts >= 3).sum()),
+                    "n_units_with_unique_evidence": int((unique_counts > 0).sum()),
                     "n_units_q_le_0_05": int((qvals <= 0.05).sum()),
                     "n_units_q_le_0_01": int((qvals <= 0.01).sum()),
                     "best_qvalue": float(qvals.min()) if len(qvals) else 1.0,
@@ -3701,7 +3682,7 @@ class GenomePresenceScorer:
             "n_units_q_le_0_01",
             "fraction_units_q_le_0_01",
             "n_units_matched_ge_1",
-            "n_units_unique_ge_3",
+            "n_units_with_unique_evidence",
             "best_qvalue",
             "median_qvalue",
             "best_presence_rank",
@@ -3901,7 +3882,6 @@ class GenomePresenceScorer:
         use_cache_if_exists: bool = True,
         unique_pvalue_mode: str = DEFAULT_UNIQUE_PVALUE_MODE,
         unique_peptide_error_source: str = DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE,
-        min_unique_for_unique_pvalue: int = 3,
         unique_count_power: float = DEFAULT_UNIQUE_COUNT_POWER,
         unique_count_cap: Optional[float] = None,
         theoretical_opportunity_cache_path: Optional[str] = None,
@@ -3914,8 +3894,6 @@ class GenomePresenceScorer:
         """End-to-end analysis producing a genome-level q-value (q_presence)."""
         mode = _normalize_unique_pvalue_mode(unique_pvalue_mode)
         unique_peptide_error_source = _normalize_unique_peptide_error_source(unique_peptide_error_source)
-        if int(min_unique_for_unique_pvalue) < 0:
-            raise ValueError("min_unique_for_unique_pvalue must be >= 0.")
         unique_count_power = float(unique_count_power)
         if not np.isfinite(unique_count_power) or not (0 < unique_count_power <= 1):
             raise ValueError("unique_count_power must be in the interval (0, 1].")
@@ -3932,7 +3910,6 @@ class GenomePresenceScorer:
         self._last_unit_genome_presence_df = None
         self.unique_pvalue_mode = mode
         self.unique_peptide_error_source = unique_peptide_error_source
-        self.min_unique_for_unique_pvalue = int(min_unique_for_unique_pvalue)
         self.unique_count_power = float(unique_count_power)
         self.unique_count_cap = unique_count_cap
         theoretical_opportunity_workers = (
@@ -4301,7 +4278,6 @@ class GenomePresenceScorer:
             df_scored,
             unique_pvalue_mode=mode,
             unique_peptide_error_source=unique_peptide_error_source,
-            min_unique_for_unique_pvalue=int(min_unique_for_unique_pvalue),
             unique_count_power=float(unique_count_power),
             unique_count_cap=unique_count_cap,
         )
@@ -4329,7 +4305,6 @@ class GenomePresenceScorer:
                 peptide_deg=peptide_deg,
                 peptide_unique_owner=peptide_unique_owner,
                 mode=mode,
-                min_unique_for_unique_pvalue=int(min_unique_for_unique_pvalue),
             )
             mapping_df = self.sample_unit_mapping_df if self.sample_unit_mapping_df is not None else pd.DataFrame()
             self.timing_stats["unit_aware_outputs"] = float(time.time() - t_unit0)
@@ -4355,7 +4330,7 @@ class GenomePresenceScorer:
         source_cols.extend([
             "unique_expected_null",
             "unique_depth_fold",
-            "unique_gate_pass",
+            "has_unique_evidence",
             "p_shared_knock",
             "p_unique",
             "p_unique_depth",

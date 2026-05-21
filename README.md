@@ -107,6 +107,7 @@ Key output columns include:
 | `theoretical_unique_peptides` | Theoretical peptides unique to this genome among the analyzed genome set, included for `hypergeometric-opportunity` output |
 | `expected_unique_null` | Expected observed genome-unique peptides under the selected adaptive null |
 | `unique_depth_fold` | Observed unique peptides divided by expected unique peptides under the null |
+| `has_unique_evidence` | Whether the genome has at least one observed unique peptide |
 | `pvalue_shared` | Shared-peptide knockoff p-value |
 | `pvalue_unique` | Unique-evidence p-value |
 | `pvalue` | Genome-level p-value |

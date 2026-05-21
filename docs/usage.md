@@ -318,8 +318,10 @@ Important scoring options:
 | `--peptide-score-col` | `Evidence` | Peptide score column. If missing, all peptides receive score `1`. |
 | `--peptide-error-col` | `Q.Value` | Peptide error, FDR, PEP, or q-value column used for filtering. |
 | `--peptide-error-cutoff` | `0.05` | Keep peptides with error values less than or equal to this cutoff. |
-| `--unique-pvalue-mode` | `hypergeometric-opportunity` | Unique evidence p-value mode. `hypergeometric-opportunity` uses the observed genome-unique peptide pool and theoretical unique peptide opportunity. `upper-bound` keeps the legacy `alpha^U` mode. `peptide-column` multiplies values from `--peptide-error-col`. |
-| `--min-unique-for-unique-pvalue` | `3` | Minimum observed genome-unique peptides required before unique evidence contributes to the combined p-value. |
+| `--unique-pvalue-mode` | `alpha-upper-bound` | Unique evidence p-value mode. `alpha-upper-bound` uses `alpha^(U_raw^power)` by default. `hypergeometric-opportunity` uses the observed genome-unique peptide pool and theoretical unique peptide opportunity. |
+| `--unique-peptide-error-source` | `global-alpha` | Error source for `alpha-upper-bound`: use the global alpha or per-peptide values from `--peptide-error-col`. |
+| `--unique-count-power` | `0.7` | Power exponent for effective unique evidence count, `U_eff = U_raw^power`. |
+| `--unique-count-cap` | none | Optional upper cap for effective unique evidence count. |
 | `--unit-aware` | off | Enable per-analysis-unit genome presence scoring for long-format multi-sample peptide tables. |
 | `--sample-id-col` | `Run` | Sample or run ID column used by `--unit-aware`. |
 | `--intensity-col` | `Precursor.Quantity` | Intensity column used to call sample-level peptide presence for `--unit-aware`. |
@@ -332,7 +334,7 @@ Important scoring options:
 | `--theoretical-opportunity-cache` | auto | Optional path for the theoretical opportunity cache used by `hypergeometric-opportunity`. |
 | `--rebuild-theoretical-opportunity-cache` | off | Rebuild the theoretical opportunity cache even if it already exists. |
 | `--num-workers-for-theoretical-opportunity` | same as `--num-workers` | Optional worker process count for `hypergeometric-opportunity` theoretical opportunity sharding and reduction. |
-| `--single-peptide-error-rate-upper-bound` | `0.3` | Alpha used only by `--unique-pvalue-mode upper-bound` for `alpha^U`. This is separate from peptide filtering. |
+| `--single-peptide-error-rate-upper-bound` | `0.3` | Global alpha used by `--unique-pvalue-mode alpha-upper-bound` when `--unique-peptide-error-source global-alpha` is selected. This is separate from peptide filtering. |
 | `--peptide-decoy-flag-col` | `Reverse` | Decoy flag column. Pass an empty string to disable. |
 | `--decoy-flag-value` | `+` | Value treated as a decoy marker. |
 | `--num-workers` | `max(1, cpu_count - 1)` | Worker process count for genome scanning. On Windows, use 60 or fewer workers because `ProcessPoolExecutor` has a platform worker limit. |
@@ -345,6 +347,8 @@ Important scoring options:
 | `--no-compute-coverage` | off | Skip cumulative coverage calculations. |
 | `--no-export-temp` | off | Skip diagnostic artifact exports. |
 | `--return-full-table` | off | Write the full internal result table instead of only the concise main result. |
+
+Unique p-value strength is controlled by `--unique-pvalue-mode`, `--unique-peptide-error-source`, `--single-peptide-error-rate-upper-bound`, `--unique-count-power`, and `--unique-count-cap`.
 
 ### Unit-aware scoring for multi-sample data
 
@@ -477,9 +481,9 @@ The default scoring output is a concise TSV table with one row per genome.
 | `theoretical_unique_peptides` | Theoretical peptides unique to this genome among the analyzed genome set. Included in concise output only for `hypergeometric-opportunity`. |
 | `expected_unique_null` | Expected observed genome-unique peptides under the selected adaptive null. |
 | `unique_depth_fold` | Observed unique peptides divided by `expected_unique_null`. |
-| `unique_gate_pass` | `true` when the observed unique count passes the configured minimum unique evidence gate. |
+| `has_unique_evidence` | `true` when the genome has at least one observed unique peptide. |
 | `pvalue_shared` | Shared-peptide knockoff p-value. |
-| `pvalue_unique` | Unique-evidence p-value after applying the configured mode and minimum evidence gate. |
+| `pvalue_unique` | Unique-evidence p-value after applying the configured mode. |
 | `pvalue_unique_depth` | Depth-adjusted unique-evidence p-value before combination. |
 | `pvalue` | Genome-level presence p-value in the concise output table. |
 | `qvalue` | BH-adjusted genome-level q-value in the concise output table. |
@@ -525,9 +529,9 @@ genome_by_unit_qvalue_matrix.tsv
 - `genome_by_unit_q001_matrix.tsv` and `genome_by_unit_q005_matrix.tsv`: binary genome x unit pass matrices.
 - `genome_by_unit_qvalue_matrix.tsv`: genome x unit q-value matrix for downstream heatmaps or manual inspection.
 
-The unit-level table contains one row per `analysis_unit_id` and genome, including `presence_rank`, `qvalue`, `pvalue`, q-value pass flags, matched/unique peptide counts, `theoretical_unique_peptides`, `observed_unique_peptide_pool_size`, `expected_unique_null`, `unique_depth_fold`, `pvalue_unique`, `pvalue_shared`, `presence_score`, `n_samples_in_unit`, `unit_presence_rule`, and `unit_shared_mode`.
+The unit-level table contains one row per `analysis_unit_id` and genome, including `presence_rank`, `qvalue`, `pvalue`, q-value pass flags, matched/unique peptide counts, `has_unique_evidence`, `theoretical_unique_peptides`, `observed_unique_peptide_pool_size`, `expected_unique_null`, `unique_depth_fold`, `pvalue_unique`, `pvalue_shared`, `presence_score`, `n_samples_in_unit`, `unit_presence_rule`, and `unit_shared_mode`.
 
-The cohort summary answers how often each genome is supported across units. It includes counts such as `n_units_tested`, `n_units_q_le_0_05`, `n_units_q_le_0_01`, `n_units_matched_ge_1`, `n_units_unique_ge_3`, plus best/median q-values and matched/unique peptide totals across units.
+The cohort summary answers how often each genome is supported across units. It includes counts such as `n_units_tested`, `n_units_q_le_0_05`, `n_units_q_le_0_01`, `n_units_matched_ge_1`, `n_units_with_unique_evidence`, plus best/median q-values and matched/unique peptide totals across units.
 
 ### Diagnostic artifacts
 

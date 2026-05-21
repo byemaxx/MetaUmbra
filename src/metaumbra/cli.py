@@ -135,17 +135,17 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=MetaUmbraHelpFormatter,
     )
     _add_common_version_flag(digest_parser)
-    digest_input = digest_parser.add_mutually_exclusive_group(required=True)
     digest_required = digest_parser.add_argument_group("Required arguments")
     digest_optional = digest_parser.add_argument_group("Optional arguments")
+    digest_input = digest_required.add_mutually_exclusive_group(required=True)
 
     _add_argument(
-        digest_required,
+        digest_input,
         "--input-file",
         help="Input FASTA file to digest in single-file mode. Mutually exclusive with --input-dir.",
     )
     _add_argument(
-        digest_required,
+        digest_input,
         "--input-dir",
         help="Directory of FASTA files to digest in batch mode. Mutually exclusive with --input-file.",
     )
@@ -241,7 +241,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Unique evidence p-value mode. 'hypergeometric-opportunity' uses the observed genome-unique peptide pool and "
             "genome-specific theoretical unique peptide opportunity. 'alpha-upper-bound' uses alpha^(U_raw^power) "
-            "and is the default; power=1.0 recovers alpha^U_raw."
+            "and is the default; power=1.0 recovers alpha^U_raw. Unique p-value strength is controlled by this mode, "
+            "--unique-peptide-error-source, --single-peptide-error-rate-upper-bound, --unique-count-power, and --unique-count-cap."
         ),
     )
     _add_argument(
@@ -259,7 +260,7 @@ def build_parser() -> argparse.ArgumentParser:
         score_optional,
         "--unique-count-power",
         type=float,
-        default=0.6,
+        default=0.7,
         help=(
             "Power exponent for effective unique evidence count: U_eff = U_raw^power. "
             "Lower values are more conservative; 1.0 recovers the raw unique count."
@@ -272,13 +273,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         display_default="none",
         help="Optional upper cap for effective unique evidence count.",
-    )
-    _add_argument(
-        score_optional,
-        "--min-unique-for-unique-pvalue",
-        type=int,
-        default=3,
-        help="Minimum observed genome-unique peptides required before unique evidence contributes to the p-value.",
     )
     _add_argument(
         score_optional,
@@ -536,7 +530,6 @@ def _run_score(args: argparse.Namespace) -> int:
         unique_peptide_error_source=args.unique_peptide_error_source,
         unique_count_power=args.unique_count_power,
         unique_count_cap=args.unique_count_cap,
-        min_unique_for_unique_pvalue=args.min_unique_for_unique_pvalue,
         unit_aware=args.unit_aware,
         sample_id_col=args.sample_id_col,
         intensity_col=args.intensity_col,

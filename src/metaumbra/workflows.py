@@ -48,9 +48,8 @@ class ScoringConfig:
     single_peptide_error_rate_upper_bound: float = 0.3
     unique_pvalue_mode: str = "alpha-upper-bound"
     unique_peptide_error_source: str = "global-alpha"
-    unique_count_power: float = 0.6
+    unique_count_power: float = 0.7
     unique_count_cap: Optional[float] = None
-    min_unique_for_unique_pvalue: int = 3
     theoretical_opportunity_cache_path: str = ""
     rebuild_theoretical_opportunity_cache: bool = False
     num_workers_for_theoretical_opportunity: Optional[int] = None
@@ -532,7 +531,6 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
             unique_peptide_error_source=str(config.unique_peptide_error_source),
             unique_count_power=float(config.unique_count_power),
             unique_count_cap=config.unique_count_cap,
-            min_unique_for_unique_pvalue=int(config.min_unique_for_unique_pvalue),
             theoretical_opportunity_cache_path=theoretical_cache_path or None,
             rebuild_theoretical_opportunity_cache=bool(config.rebuild_theoretical_opportunity_cache),
             num_workers_for_theoretical_opportunity=config.num_workers_for_theoretical_opportunity,
