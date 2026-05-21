@@ -135,17 +135,17 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=MetaUmbraHelpFormatter,
     )
     _add_common_version_flag(digest_parser)
-    digest_input = digest_parser.add_mutually_exclusive_group(required=True)
     digest_required = digest_parser.add_argument_group("Required arguments")
     digest_optional = digest_parser.add_argument_group("Optional arguments")
+    digest_input = digest_required.add_mutually_exclusive_group(required=True)
 
     _add_argument(
-        digest_required,
+        digest_input,
         "--input-file",
         help="Input FASTA file to digest in single-file mode. Mutually exclusive with --input-dir.",
     )
     _add_argument(
-        digest_required,
+        digest_input,
         "--input-dir",
         help="Directory of FASTA files to digest in batch mode. Mutually exclusive with --input-file.",
     )
@@ -228,19 +228,126 @@ def build_parser() -> argparse.ArgumentParser:
         "--single-peptide-error-rate-upper-bound",
         type=float,
         default=0.3,
-        help="Per-peptide false-match probability upper bound used for unique evidence p-value alpha^U.",
+        help="Alpha upper bound for one unique evidence unit in alpha^(U_raw^power).",
     )
     _add_argument(
         score_optional,
         "--unique-pvalue-mode",
-        choices=("upper-bound", "peptide-column"),
-        default="upper-bound",
-        help=(
-            "Unique peptide p-value source. 'upper-bound' uses "
-            "--single-peptide-error-rate-upper-bound as alpha in alpha^U. "
-            "'peptide-column' multiplies values from --peptide-error-col, "
-            "falling back to the upper bound when a peptide value is missing."
+        choices=(
+            "hypergeometric-opportunity",
+            "alpha-upper-bound",
         ),
+        default="alpha-upper-bound",
+        help=(
+            "Unique evidence p-value mode. 'hypergeometric-opportunity' uses the observed genome-unique peptide pool and "
+            "genome-specific theoretical unique peptide opportunity. 'alpha-upper-bound' uses alpha^(U_raw^power) "
+            "and is the default; power=1.0 recovers alpha^U_raw. Unique p-value strength is controlled by this mode, "
+            "--unique-peptide-error-source, --single-peptide-error-rate-upper-bound, --unique-count-power, and --unique-count-cap."
+        ),
+    )
+    _add_argument(
+        score_optional,
+        "--unique-peptide-error-source",
+        choices=("global-alpha", "peptide-error-column"),
+        default="global-alpha",
+        help=(
+            "Error source epsilon_i for alpha-upper-bound mode. 'global-alpha' uses "
+            "--single-peptide-error-rate-upper-bound for every unique peptide. "
+            "'peptide-error-column' uses values from --peptide-error-col for each unique peptide."
+        ),
+    )
+    _add_argument(
+        score_optional,
+        "--unique-count-power",
+        type=float,
+        default=0.7,
+        help=(
+            "Power exponent for effective unique evidence count: U_eff = U_raw^power. "
+            "Lower values are more conservative; 1.0 recovers the raw unique count."
+        ),
+    )
+    _add_argument(
+        score_optional,
+        "--unique-count-cap",
+        type=float,
+        default=None,
+        display_default="none",
+        help="Optional upper cap for effective unique evidence count.",
+    )
+    _add_argument(
+        score_optional,
+        "--unit-aware",
+        action="store_true",
+        help="Enable analysis-unit aware scoring for long-format multi-sample peptide tables.",
+    )
+    _add_argument(score_optional, "--sample-id-col", default="Run", help="Sample/run ID column for --unit-aware input.")
+    _add_argument(
+        score_optional,
+        "--intensity-col",
+        default="Precursor.Quantity",
+        help="Intensity column used for unit-aware sample-level peptide presence filtering.",
+    )
+    _add_argument(
+        score_optional,
+        "--intensity-min-value",
+        type=float,
+        default=0.0,
+        help="Minimum intensity for unit-aware sample-level peptide presence.",
+    )
+    _add_argument(
+        score_optional,
+        "--intensity-min-quantile",
+        type=float,
+        default=0.0,
+        help="Within-sample intensity quantile cutoff for unit-aware peptide presence.",
+    )
+    _add_argument(
+        score_optional,
+        "--metadata-table",
+        default="",
+        display_default="none",
+        help="Optional sample-to-analysis-unit metadata TSV/CSV for --unit-aware scoring.",
+    )
+    _add_argument(
+        score_optional,
+        "--metadata-sample-id-col",
+        default="sample_id",
+        help="Sample ID column in --metadata-table.",
+    )
+    _add_argument(
+        score_optional,
+        "--metadata-analysis-unit-col",
+        default="analysis_unit_id",
+        help="Analysis unit column in --metadata-table.",
+    )
+    _add_argument(
+        score_optional,
+        "--export-unit-derived-tables",
+        action="store_true",
+        help=(
+            "When --unit-aware is enabled, export derived unit-aware tables under "
+            "<stem>_artifacts/unit_aware/."
+        ),
+    )
+    _add_argument(
+        score_optional,
+        "--theoretical-opportunity-cache",
+        default="",
+        display_default="auto",
+        help="Optional path to the theoretical opportunity cache used by hypergeometric-opportunity mode.",
+    )
+    _add_argument(
+        score_optional,
+        "--rebuild-theoretical-opportunity-cache",
+        action="store_true",
+        help="Rebuild the theoretical opportunity cache even if an existing cache is available.",
+    )
+    _add_argument(
+        score_optional,
+        "--num-workers-for-theoretical-opportunity",
+        type=int,
+        display_default="same as --num-workers",
+        help="Worker process count for hypergeometric-opportunity theoretical opportunity sharding and reduction.",
     )
     _add_argument(
         score_optional,
@@ -420,6 +527,21 @@ def _run_score(args: argparse.Namespace) -> int:
         peptide_error_cutoff=args.peptide_error_cutoff,
         single_peptide_error_rate_upper_bound=args.single_peptide_error_rate_upper_bound,
         unique_pvalue_mode=args.unique_pvalue_mode,
+        unique_peptide_error_source=args.unique_peptide_error_source,
+        unique_count_power=args.unique_count_power,
+        unique_count_cap=args.unique_count_cap,
+        unit_aware=args.unit_aware,
+        sample_id_col=args.sample_id_col,
+        intensity_col=args.intensity_col,
+        intensity_min_value=args.intensity_min_value,
+        intensity_min_quantile=args.intensity_min_quantile,
+        metadata_table_path=args.metadata_table,
+        metadata_sample_id_col=args.metadata_sample_id_col,
+        metadata_analysis_unit_col=args.metadata_analysis_unit_col,
+        export_unit_derived_tables=args.export_unit_derived_tables,
+        theoretical_opportunity_cache_path=args.theoretical_opportunity_cache,
+        rebuild_theoretical_opportunity_cache=args.rebuild_theoretical_opportunity_cache,
+        num_workers_for_theoretical_opportunity=args.num_workers_for_theoretical_opportunity,
         peptide_decoy_flag_col=args.peptide_decoy_flag_col,
         decoy_flag_value=args.decoy_flag_value,
         exclude_genome_ids=exclude_genome_ids,
@@ -472,3 +594,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
+

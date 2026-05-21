@@ -8,7 +8,7 @@ import os
 import sys
 import traceback
 import warnings
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from pathlib import Path
 
 if __package__ in {None, ""}:
@@ -42,6 +42,7 @@ try:
         QComboBox,
         QDialog,
         QDialogButtonBox,
+        QDoubleSpinBox,
         QFileDialog,
         QFormLayout,
         QGridLayout,
@@ -51,15 +52,19 @@ try:
         QLineEdit,
         QListWidget,
         QMainWindow,
+        QMenu,
         QMessageBox,
         QPlainTextEdit,
         QProgressBar,
+        QProgressDialog,
         QPushButton,
         QScrollArea,
         QSizePolicy,
         QSplitter,
         QSpinBox,
         QTabWidget,
+        QTableWidget,
+        QTableWidgetItem,
         QTextEdit,
         QVBoxLayout,
         QWidget,
@@ -75,6 +80,7 @@ except ImportError as pyside_exc:
             QComboBox,
             QDialog,
             QDialogButtonBox,
+            QDoubleSpinBox,
             QFileDialog,
             QFormLayout,
             QGridLayout,
@@ -84,15 +90,19 @@ except ImportError as pyside_exc:
             QLineEdit,
             QListWidget,
             QMainWindow,
+            QMenu,
             QMessageBox,
             QPlainTextEdit,
             QProgressBar,
+            QProgressDialog,
             QPushButton,
             QScrollArea,
             QSizePolicy,
             QSplitter,
             QSpinBox,
             QTabWidget,
+            QTableWidget,
+            QTableWidgetItem,
             QTextEdit,
             QVBoxLayout,
             QWidget,
@@ -125,6 +135,10 @@ QT_RICH_TEXT = _qt_value(Qt, "TextFormat", "RichText")
 QT_TEXT_BROWSER_INTERACTION = _qt_value(Qt, "TextInteractionFlag", "TextBrowserInteraction")
 QT_TOP_RIGHT_CORNER = _qt_value(Qt, "Corner", "TopRightCorner")
 QT_VERTICAL = _qt_value(Qt, "Orientation", "Vertical")
+QT_CUSTOM_CONTEXT_MENU = _qt_value(Qt, "ContextMenuPolicy", "CustomContextMenu")
+QT_CHECKED = _qt_value(Qt, "CheckState", "Checked")
+QT_UNCHECKED = _qt_value(Qt, "CheckState", "Unchecked")
+QT_ITEM_IS_EDITABLE = _qt_value(Qt, "ItemFlag", "ItemIsEditable")
 QEVENT_WHEEL = _qt_value(QEvent, "Type", "Wheel")
 QSIZE_IGNORED = _qt_value(QSizePolicy, "Policy", "Ignored")
 QSIZE_EXPANDING = _qt_value(QSizePolicy, "Policy", "Expanding")
@@ -392,7 +406,7 @@ class WheelChangeGuard(QObject):
     def eventFilter(self, watched, event) -> bool:
         if event.type() != QEVENT_WHEEL:
             return super().eventFilter(watched, event)
-        if isinstance(watched, (QComboBox, QSpinBox)):
+        if isinstance(watched, (QComboBox, QSpinBox, QDoubleSpinBox)):
             event.ignore()
             return True
         return super().eventFilter(watched, event)
@@ -443,6 +457,16 @@ def _parse_required_float(raw_value: str, field_name: str) -> float:
         raise ValueError(f"{field_name} must be a number.") from exc
 
 
+def _parse_optional_float(raw_value: str, field_name: str) -> float | None:
+    value = raw_value.strip()
+    if not value:
+        return None
+    try:
+        return float(value)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a number or blank.") from exc
+
+
 def _parse_text_list(raw_text: str) -> list[str]:
     values = []
     for chunk in raw_text.replace(",", "\n").splitlines():
@@ -481,6 +505,14 @@ def _create_process_spinbox() -> QSpinBox:
     spinbox = QSpinBox()
     spinbox.setRange(1, MAX_PROCESS_COUNT)
     spinbox.setValue(DEFAULT_PROCESS_COUNT)
+    return spinbox
+
+
+def _create_optional_process_spinbox() -> QSpinBox:
+    spinbox = QSpinBox()
+    spinbox.setRange(0, MAX_PROCESS_COUNT)
+    spinbox.setSpecialValueText("Same as Processes")
+    spinbox.setValue(0)
     return spinbox
 
 
@@ -547,13 +579,14 @@ def _add_compact_field(
     label_text: str,
     widget: QWidget,
     widget_width: int | None = 150,
-) -> None:
+) -> QLabel:
     label = QLabel(label_text)
     label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
     if widget_width is not None:
         _set_compact_control_width(widget, widget_width)
     grid.addWidget(label, row, column * 2)
     grid.addWidget(widget, row, column * 2 + 1)
+    return label
 
 
 def _create_editable_combo(default_text: str = "", placeholder: str = "") -> QComboBox:
@@ -664,6 +697,351 @@ def _read_table_columns(table_path: str) -> list[str]:
             if any(cols):
                 return cols
     return []
+
+
+def _normalize_column_key(name: str) -> str:
+    return "".join(char.lower() for char in str(name) if char.isalnum())
+
+
+def _resolve_table_column(columns: list[str], preferred: str, candidates: list[str]) -> str:
+    if preferred and preferred in columns:
+        return preferred
+    lookup: dict[str, str] = {}
+    for column in columns:
+        key = _normalize_column_key(column)
+        if key and key not in lookup:
+            lookup[key] = column
+    for candidate in [preferred, *candidates]:
+        if not candidate:
+            continue
+        resolved = lookup.get(_normalize_column_key(candidate))
+        if resolved:
+            return resolved
+    return ""
+
+
+def _strip_raw_suffix_from_sample_ids(values):
+    return values.astype("string").str.strip().str.replace(r"\.raw$", "", case=False, regex=True)
+
+
+def _infer_decoy_flag_value_from_values(values, configured_value: str) -> str:
+    configured = str(configured_value)
+    if configured == "":
+        return configured
+    value_set: set[str] = set()
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text and text != "<NA>":
+            value_set.add(text)
+    if configured in value_set or configured != "+":
+        return configured
+    for candidate in ("True", "true", "1", "decoy", "Decoy", "DECOY", "T", "t"):
+        if candidate in value_set:
+            return candidate
+    return configured
+
+
+def _drop_duplicate_pairs_with_pyarrow(df, first_col: str, second_col: str):
+    try:
+        import pyarrow as pa
+    except ImportError as exc:
+        raise RuntimeError("pyarrow is required to inspect parquet sample IDs.") from exc
+    table = pa.Table.from_pandas(df[[first_col, second_col]], preserve_index=False)
+    return table.group_by([first_col, second_col], use_threads=True).aggregate([]).to_pandas()
+
+
+def _read_parquet_sample_unit_preview_rows_fast(
+    path: str,
+    columns: list[str],
+    sample_id_col: str,
+    peptide_seq_col: str,
+    intensity_col: str,
+    peptide_error_col: str,
+    peptide_error_cutoff: float,
+    peptide_decoy_flag_col: str,
+    decoy_flag_value: str,
+    intensity_min_value: float,
+) -> list[dict[str, object]]:
+    import numpy as np
+    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
+    sample_col = _resolve_table_column(columns, sample_id_col, ["Run", "File.Name", "Raw.File", "Sample", "Sample.Name"])
+    seq_col = _resolve_table_column(
+        columns,
+        peptide_seq_col,
+        ["Stripped.Sequence", "Base Sequence", "Sequence", "Peptide.Sequence", "PeptideSequence"],
+    )
+    intensity_col = _resolve_table_column(columns, intensity_col, ["Precursor.Quantity", "Precursor.Normalised", "Intensity"])
+    error_col = _resolve_table_column(columns, peptide_error_col, ["Q.Value", "QValue", "Qval", "QVal", "PEP", "FDR"])
+    decoy_col = _resolve_table_column(columns, peptide_decoy_flag_col, ["Reverse", "Target/Decoy", "TargetDecoy", "Decoy"])
+    required = [sample_col, seq_col, intensity_col]
+    if not all(required):
+        raise ValueError(
+            "Unable to resolve sample, peptide sequence, and intensity columns from the parquet table."
+        )
+
+    read_cols = list(dict.fromkeys(required + [col for col in [decoy_col, error_col] if col]))
+    raw_table = pq.read_table(path, columns=read_cols, use_threads=True)
+    if decoy_col:
+        decoy = pc.utf8_trim_whitespace(pc.cast(raw_table[decoy_col], pa.string(), safe=False))
+        effective_decoy_value = _infer_decoy_flag_value_from_values(pc.unique(decoy).to_pylist(), decoy_flag_value)
+        decoy_keep = pc.or_(pc.is_null(decoy), pc.not_equal(decoy, effective_decoy_value))
+        raw_table = raw_table.filter(decoy_keep)
+
+    sample = pc.utf8_trim_whitespace(pc.cast(raw_table[sample_col], pa.string(), safe=False))
+    sample = pc.replace_substring_regex(sample, pattern=r"(?i)\.raw$", replacement="")
+    peptide = pc.utf8_trim_whitespace(pc.cast(raw_table[seq_col], pa.string(), safe=False))
+    intensity = pc.cast(raw_table[intensity_col], pa.float64(), safe=False)
+
+    normalized = pa.table(
+        {
+            "sample_id": sample,
+            "peptide": peptide,
+            "intensity": intensity,
+            "row_id": pa.array(np.arange(raw_table.num_rows, dtype=np.int64)),
+        }
+    )
+
+    sample_valid = pc.and_(pc.is_valid(normalized["sample_id"]), pc.not_equal(normalized["sample_id"], ""))
+    sample_rows = normalized.filter(sample_valid).select(["sample_id", "row_id"])
+    if sample_rows.num_rows == 0:
+        return []
+
+    total_by_sample = sample_rows.group_by(["sample_id"], use_threads=True).aggregate(
+        [("sample_id", "count"), ("row_id", "min")]
+    )
+    total_df = total_by_sample.to_pandas().rename(
+        columns={"sample_id_count": "n_total_rows", "row_id_min": "_first_row"}
+    )
+
+    valid_mask = pc.and_(
+        sample_valid,
+        pc.and_(
+            pc.and_(pc.is_valid(normalized["peptide"]), pc.not_equal(normalized["peptide"], "")),
+            pc.and_(
+                pc.is_valid(normalized["intensity"]),
+                pc.greater(normalized["intensity"], float(intensity_min_value)),
+            ),
+        ),
+    )
+    if error_col:
+        error = pc.cast(raw_table[error_col], pa.float64(), safe=False)
+        valid_mask = pc.and_(
+            valid_mask,
+            pc.and_(pc.is_valid(error), pc.less_equal(error, float(peptide_error_cutoff))),
+        )
+
+    valid_pairs = normalized.filter(valid_mask).select(["sample_id", "peptide"])
+    if valid_pairs.num_rows:
+        unique_pairs = valid_pairs.group_by(["sample_id", "peptide"], use_threads=True).aggregate([])
+        valid_by_sample = unique_pairs.group_by(["sample_id"], use_threads=True).aggregate([("peptide", "count")])
+        valid_df = valid_by_sample.to_pandas().rename(columns={"peptide_count": "n_valid_peptides"})
+    else:
+        valid_df = pd.DataFrame({"sample_id": [], "n_valid_peptides": []})
+
+    preview_df = total_df.merge(valid_df, on="sample_id", how="left")
+    preview_df["n_valid_peptides"] = preview_df["n_valid_peptides"].fillna(0).astype(int)
+    preview_df["n_total_rows"] = preview_df["n_total_rows"].astype(int)
+    preview_df = preview_df.sort_values("_first_row", kind="mergesort")
+
+    return [
+        {
+            "included": bool(int(row.n_valid_peptides) > 0),
+            "sample_id": str(row.sample_id),
+            "analysis_unit_id": str(row.sample_id),
+            "n_total_rows": int(row.n_total_rows),
+            "n_valid_peptides": int(row.n_valid_peptides),
+        }
+        for row in preview_df.itertuples(index=False)
+    ]
+
+
+def _read_delimited_table_for_columns(path: str, columns: list[str]):
+    import pandas as pd
+
+    with open(path, "r", encoding="utf-8-sig", newline="") as handle:
+        sample = handle.read(4096)
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters="\t,;")
+        sep = dialect.delimiter
+    except csv.Error:
+        sep = "\t"
+    return pd.read_csv(path, sep=sep, usecols=columns, dtype="string")
+
+
+def _read_sample_unit_preview_rows(
+    peptide_table_path: str,
+    sample_id_col: str,
+    peptide_seq_col: str,
+    intensity_col: str,
+    peptide_error_col: str,
+    peptide_error_cutoff: float,
+    peptide_decoy_flag_col: str,
+    decoy_flag_value: str,
+    intensity_min_value: float,
+    intensity_min_quantile: float,
+) -> list[dict[str, object]]:
+    import pandas as pd
+
+    path = str(Path(peptide_table_path).expanduser())
+    if not path or not os.path.isfile(path):
+        raise FileNotFoundError("Please choose an existing peptide table first.")
+
+    if not 0.0 <= float(intensity_min_quantile) <= 1.0:
+        raise ValueError("Minimum within-sample intensity quantile must be between 0 and 1.")
+
+    is_parquet_input = _is_parquet_path(path)
+    if is_parquet_input:
+        try:
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+        except ImportError as exc:
+            raise RuntimeError("pyarrow is required to inspect parquet sample IDs.") from exc
+        columns = list(pq.read_schema(path).names)
+        if float(intensity_min_quantile) == 0.0:
+            try:
+                return _read_parquet_sample_unit_preview_rows_fast(
+                    path=path,
+                    columns=columns,
+                    sample_id_col=sample_id_col,
+                    peptide_seq_col=peptide_seq_col,
+                    intensity_col=intensity_col,
+                    peptide_error_col=peptide_error_col,
+                    peptide_error_cutoff=peptide_error_cutoff,
+                    peptide_decoy_flag_col=peptide_decoy_flag_col,
+                    decoy_flag_value=decoy_flag_value,
+                    intensity_min_value=intensity_min_value,
+                )
+            except (pa.ArrowInvalid, pa.ArrowNotImplementedError, pa.ArrowTypeError):
+                pass
+        sample_col = _resolve_table_column(columns, sample_id_col, ["Run", "File.Name", "Raw.File", "Sample", "Sample.Name"])
+        seq_col = _resolve_table_column(
+            columns,
+            peptide_seq_col,
+            ["Stripped.Sequence", "Base Sequence", "Sequence", "Peptide.Sequence", "PeptideSequence"],
+        )
+        intensity_col = _resolve_table_column(columns, intensity_col, ["Precursor.Quantity", "Precursor.Normalised", "Intensity"])
+        error_col = _resolve_table_column(columns, peptide_error_col, ["Q.Value", "QValue", "Qval", "QVal", "PEP", "FDR"])
+        decoy_col = _resolve_table_column(columns, peptide_decoy_flag_col, ["Reverse", "Target/Decoy", "TargetDecoy", "Decoy"])
+        required = [sample_col, seq_col, intensity_col]
+        if not all(required):
+            raise ValueError(
+                "Unable to resolve sample, peptide sequence, and intensity columns from the parquet table."
+            )
+        read_cols = list(dict.fromkeys(required + [col for col in [decoy_col, error_col] if col]))
+        df = pq.read_table(path, columns=read_cols, use_threads=True).to_pandas()
+    else:
+        columns = _read_table_columns(path)
+        sample_col = _resolve_table_column(columns, sample_id_col, ["Run", "File.Name", "Raw.File", "Sample", "Sample.Name"])
+        seq_col = _resolve_table_column(
+            columns,
+            peptide_seq_col,
+            ["Stripped.Sequence", "Base Sequence", "Sequence", "Peptide.Sequence", "PeptideSequence"],
+        )
+        intensity_col = _resolve_table_column(columns, intensity_col, ["Precursor.Quantity", "Precursor.Normalised", "Intensity"])
+        error_col = _resolve_table_column(columns, peptide_error_col, ["Q.Value", "QValue", "Qval", "QVal", "PEP", "FDR"])
+        decoy_col = _resolve_table_column(columns, peptide_decoy_flag_col, ["Reverse", "Target/Decoy", "TargetDecoy", "Decoy"])
+        required = [sample_col, seq_col, intensity_col]
+        if not all(required):
+            raise ValueError(
+                "Unable to resolve sample, peptide sequence, and intensity columns from the peptide table."
+            )
+        read_cols = list(dict.fromkeys(required + [col for col in [decoy_col, error_col] if col]))
+        df = _read_delimited_table_for_columns(path, read_cols)
+
+    df = df.copy()
+    df[sample_col] = df[sample_col].astype("string").str.strip()
+    if is_parquet_input:
+        df[sample_col] = _strip_raw_suffix_from_sample_ids(df[sample_col])
+    df[seq_col] = df[seq_col].astype("string").str.strip()
+    if decoy_col and decoy_col in df.columns:
+        df[decoy_col] = df[decoy_col].astype("string").str.strip()
+        effective_decoy_value = _infer_decoy_flag_value_from_values(df[decoy_col].dropna().unique()[:50], decoy_flag_value)
+        df = df[(df[decoy_col] != effective_decoy_value) | (df[decoy_col].isna())].copy()
+    df[intensity_col] = pd.to_numeric(df[intensity_col], errors="coerce")
+    if error_col and error_col in df.columns:
+        df[error_col] = pd.to_numeric(df[error_col], errors="coerce")
+
+    sample_mask = df[sample_col].notna() & (df[sample_col] != "")
+    total_by_sample = df.loc[sample_mask].groupby(sample_col).size().astype(int)
+
+    valid = df[
+        sample_mask
+        & df[seq_col].notna()
+        & (df[seq_col] != "")
+        & df[intensity_col].notna()
+        & (df[intensity_col] > float(intensity_min_value))
+    ].copy()
+    if error_col and error_col in valid.columns:
+        valid = valid[valid[error_col].notna() & (valid[error_col] <= float(peptide_error_cutoff))].copy()
+    quantile = float(intensity_min_quantile)
+    if quantile > 0.0 and len(valid) > 0:
+        thresholds = valid.groupby(sample_col)[intensity_col].transform(lambda values: values.quantile(quantile))
+        valid = valid[valid[intensity_col] >= thresholds].copy()
+
+    pair_source = valid[[sample_col, seq_col]]
+    if is_parquet_input:
+        valid_pairs = _drop_duplicate_pairs_with_pyarrow(pair_source, sample_col, seq_col)
+    else:
+        valid_pairs = pair_source.drop_duplicates()
+    valid_by_sample = valid_pairs.groupby(sample_col).size().astype(int) if len(valid_pairs) else pd.Series(dtype=int)
+    sample_ids = [str(value) for value in pd.unique(df.loc[sample_mask, sample_col])]
+    return [
+        {
+            "included": bool(int(valid_by_sample.get(sample_id, 0)) > 0),
+            "sample_id": sample_id,
+            "analysis_unit_id": sample_id,
+            "n_total_rows": int(total_by_sample.get(sample_id, 0)),
+            "n_valid_peptides": int(valid_by_sample.get(sample_id, 0)),
+        }
+        for sample_id in sample_ids
+    ]
+
+
+def _read_sample_unit_mapping_table(path: str, sample_col: str, unit_col: str) -> dict[str, str]:
+    import pandas as pd
+
+    path = str(Path(path).expanduser())
+    if not path or not os.path.isfile(path):
+        raise FileNotFoundError(f"Metadata table not found: {path}")
+    sep = "," if Path(path).suffix.lower() == ".csv" else "\t"
+    df = pd.read_csv(path, sep=sep, dtype="string")
+    missing = [column for column in [sample_col, unit_col] if column not in df.columns]
+    if missing:
+        raise ValueError(f"Metadata table is missing columns: {missing}")
+    df = df[[sample_col, unit_col]].copy()
+    df[sample_col] = df[sample_col].astype("string").str.strip()
+    df[unit_col] = df[unit_col].astype("string").str.strip()
+    df = df[df[sample_col].notna() & (df[sample_col] != "") & df[unit_col].notna() & (df[unit_col] != "")]
+    df = df.drop_duplicates(subset=[sample_col], keep="first")
+    return dict(zip(df[sample_col].astype(str), df[unit_col].astype(str)))
+
+
+def _read_metadata_rows_by_sample(path: str, sample_col: str) -> tuple[list[str], dict[str, dict[str, str]]]:
+    import pandas as pd
+
+    path = str(Path(path).expanduser())
+    if not path or not os.path.isfile(path):
+        raise FileNotFoundError(f"Metadata table not found: {path}")
+    sep = "," if Path(path).suffix.lower() == ".csv" else "\t"
+    df = pd.read_csv(path, sep=sep, dtype="string")
+    if sample_col not in df.columns:
+        raise ValueError(f"Metadata table is missing sample column: {sample_col}")
+    columns = [str(column) for column in df.columns]
+    df = df.copy()
+    for column in columns:
+        df[column] = df[column].astype("string").fillna("").str.strip()
+    df = df[df[sample_col] != ""].drop_duplicates(subset=[sample_col], keep="first")
+    records = {
+        str(row[sample_col]): {column: str(row[column]) for column in columns}
+        for row in df.to_dict(orient="records")
+    }
+    return columns, records
 
 
 def _initial_dialog_path(current_value: str = "", fallback_dir: str = "", default_name: str = "") -> str:
@@ -1097,6 +1475,414 @@ class ParquetExtractionDialog(QDialog):
         super().accept()
 
 
+class SortableTableWidgetItem(QTableWidgetItem):
+    def __init__(self, text: object, sort_value: object | None = None):
+        super().__init__(str(text))
+        self._sort_value = sort_value if sort_value is not None else str(text)
+
+    def __lt__(self, other) -> bool:
+        other_value = getattr(other, "_sort_value", other.text() if other is not None else "")
+        try:
+            return float(self._sort_value) < float(other_value)
+        except (TypeError, ValueError):
+            return str(self._sort_value).casefold() < str(other_value).casefold()
+
+
+class SampleUnitMappingDialog(QDialog):
+    def __init__(
+        self,
+        rows: list[dict[str, object]],
+        metadata_path: str = "",
+        metadata_sample_col: str = "sample_id",
+        metadata_unit_col: str = "analysis_unit_id",
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Configure Sample / Unit Mapping")
+        self.resize(860, 560)
+        self._metadata_path = metadata_path.strip()
+        self._metadata_sample_col = metadata_sample_col or "sample_id"
+        self._metadata_unit_col = metadata_unit_col or "analysis_unit_id"
+        self._metadata_columns: list[str] = _read_table_columns(self._metadata_path) if self._metadata_path else []
+        self._metadata_rows_by_sample: dict[str, dict[str, str]] = {}
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        metadata_row = QHBoxLayout()
+        self.metadata_sample_col_combo = _create_editable_combo(
+            self._metadata_sample_col,
+            "Metadata sample ID column",
+        )
+        self.metadata_unit_col_combo = _create_editable_combo(
+            self._metadata_unit_col,
+            "Metadata column to use as analysis_unit_id",
+        )
+        if self._metadata_columns:
+            preferred_sample = _pick_preferred_column(
+                self._metadata_columns,
+                [self._metadata_sample_col, "sample_id", "SampleID", "sample", "Run", "File.Name", "Raw.File"],
+            )
+            preferred_unit = _pick_preferred_column(
+                self._metadata_columns,
+                [self._metadata_unit_col, "analysis_unit_id", "unit_id", "Unit", "Group", "Condition"],
+            )
+            _set_editable_combo_items(
+                self.metadata_sample_col_combo,
+                self._metadata_columns,
+                preferred_text=preferred_sample or self._metadata_sample_col,
+                preferred_index=0,
+            )
+            _set_editable_combo_items(
+                self.metadata_unit_col_combo,
+                self._metadata_columns,
+                preferred_text=preferred_unit or self._metadata_unit_col,
+                preferred_index=1,
+            )
+        apply_metadata_button = QPushButton("Apply Metadata Unit")
+        apply_metadata_button.clicked.connect(lambda: self._apply_metadata_unit_column(show_errors=True))
+        has_metadata = bool(self._metadata_path and self._metadata_columns)
+        self.metadata_sample_col_combo.setEnabled(has_metadata)
+        self.metadata_unit_col_combo.setEnabled(has_metadata)
+        apply_metadata_button.setEnabled(has_metadata)
+        metadata_row.addWidget(QLabel("Metadata sample"))
+        metadata_row.addWidget(self.metadata_sample_col_combo, 1)
+        metadata_row.addWidget(QLabel("Unit column"))
+        metadata_row.addWidget(self.metadata_unit_col_combo, 1)
+        metadata_row.addWidget(apply_metadata_button)
+        layout.addLayout(metadata_row)
+
+        top_row = QHBoxLayout()
+        self.group_name_edit = QLineEdit()
+        self.group_name_edit.setPlaceholderText("analysis_unit_id for selected rows")
+        set_group_button = QPushButton("Set Selected Group")
+        set_group_button.clicked.connect(self._set_selected_group)
+        reset_button = QPushButton("Reset To Sample IDs")
+        reset_button.clicked.connect(self._reset_to_sample_ids)
+        import_button = QPushButton("Import Mapping")
+        import_button.clicked.connect(self._import_mapping)
+        export_button = QPushButton("Export Mapping")
+        export_button.clicked.connect(self._export_mapping)
+        top_row.addWidget(QLabel("Group"))
+        top_row.addWidget(self.group_name_edit, 1)
+        top_row.addWidget(set_group_button)
+        top_row.addWidget(reset_button)
+        top_row.addWidget(import_button)
+        top_row.addWidget(export_button)
+        layout.addLayout(top_row)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(
+            ["Include", "sample_id", "analysis_unit_id", "n_total_rows", "n_valid_peptides"]
+        )
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows if hasattr(QTableWidget, "SelectionBehavior") else 1)
+        self.table.setAlternatingRowColors(True)
+        self.table.setContextMenuPolicy(QT_CUSTOM_CONTEXT_MENU)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
+        header = self.table.horizontalHeader()
+        if header is not None:
+            try:
+                header.setStretchLastSection(True)
+            except Exception:
+                pass
+            try:
+                header.setSortIndicatorShown(True)
+            except Exception:
+                pass
+        layout.addWidget(self.table, 1)
+
+        self.summary_label = QLabel("")
+        layout.addWidget(self.summary_label)
+
+        buttons = QDialogButtonBox(QDIALOG_BUTTON_OK | QDIALOG_BUTTON_CANCEL)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self._load_rows(rows)
+        self.table.setSortingEnabled(True)
+        if self._metadata_path:
+            self._apply_metadata_unit_column(show_errors=True)
+        self.metadata_unit_col_combo.currentIndexChanged.connect(
+            lambda _index: self._apply_metadata_unit_column(show_errors=False)
+        )
+        self.table.itemChanged.connect(self._handle_item_changed)
+
+    def _readonly_item(self, text: object) -> QTableWidgetItem:
+        item = SortableTableWidgetItem(text)
+        item.setFlags(item.flags() & ~QT_ITEM_IS_EDITABLE)
+        return item
+
+    def _load_rows(self, rows: list[dict[str, object]]) -> None:
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            included = bool(row.get("included", True))
+            include_item = SortableTableWidgetItem("", sort_value=1 if included else 0)
+            include_item.setFlags(include_item.flags() & ~QT_ITEM_IS_EDITABLE)
+            include_item.setCheckState(QT_CHECKED if included else QT_UNCHECKED)
+            self.table.setItem(row_index, 0, include_item)
+            sample_id = str(row.get("sample_id", ""))
+            self.table.setItem(row_index, 1, self._readonly_item(sample_id))
+            self.table.setItem(row_index, 2, SortableTableWidgetItem(str(row.get("analysis_unit_id", sample_id))))
+            total_rows = int(row.get("n_total_rows", 0) or 0)
+            valid_peptides = int(row.get("n_valid_peptides", 0) or 0)
+            total_item = SortableTableWidgetItem(total_rows, sort_value=total_rows)
+            total_item.setFlags(total_item.flags() & ~QT_ITEM_IS_EDITABLE)
+            valid_item = SortableTableWidgetItem(valid_peptides, sort_value=valid_peptides)
+            valid_item.setFlags(valid_item.flags() & ~QT_ITEM_IS_EDITABLE)
+            self.table.setItem(row_index, 3, total_item)
+            self.table.setItem(row_index, 4, valid_item)
+        self.table.setSortingEnabled(True)
+        self._update_summary()
+
+    def _selected_row_indexes(self) -> list[int]:
+        rows = {index.row() for index in self.table.selectedIndexes()}
+        return sorted(row for row in rows if 0 <= row < self.table.rowCount())
+
+    def _row_sample_id(self, row: int) -> str:
+        sample_item = self.table.item(row, 1)
+        return sample_item.text().strip() if sample_item is not None else ""
+
+    def _set_row_included(self, row: int, included: bool) -> None:
+        include_item = self.table.item(row, 0)
+        if include_item is None:
+            return
+        include_item.setCheckState(QT_CHECKED if included else QT_UNCHECKED)
+        if hasattr(include_item, "_sort_value"):
+            include_item._sort_value = 1 if included else 0
+
+    def _set_all_included(self, included: bool) -> None:
+        sorting_enabled = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
+        self.table.blockSignals(True)
+        for row in range(self.table.rowCount()):
+            self._set_row_included(row, included)
+        self.table.blockSignals(False)
+        self.table.setSortingEnabled(sorting_enabled)
+        self._update_summary()
+
+    def _invert_included(self) -> None:
+        sorting_enabled = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
+        self.table.blockSignals(True)
+        for row in range(self.table.rowCount()):
+            include_item = self.table.item(row, 0)
+            checked = include_item is not None and include_item.checkState() == QT_CHECKED
+            self._set_row_included(row, not checked)
+        self.table.blockSignals(False)
+        self.table.setSortingEnabled(sorting_enabled)
+        self._update_summary()
+
+    def _metadata_group_values(self, column: str) -> list[str]:
+        values = {
+            str(record.get(column, "")).strip()
+            for record in self._metadata_rows_by_sample.values()
+            if str(record.get(column, "")).strip()
+        }
+        return sorted(values, key=lambda value: value.casefold())
+
+    def _set_included_by_metadata_group(self, column: str, value: str, mode: str) -> None:
+        sorting_enabled = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
+        self.table.blockSignals(True)
+        for row in range(self.table.rowCount()):
+            sample_id = self._row_sample_id(row)
+            record = self._metadata_rows_by_sample.get(sample_id, {})
+            matches = str(record.get(column, "")).strip() == value
+            if mode == "only":
+                self._set_row_included(row, matches)
+            elif mode == "include" and matches:
+                self._set_row_included(row, True)
+            elif mode == "exclude" and matches:
+                self._set_row_included(row, False)
+        self.table.blockSignals(False)
+        self.table.setSortingEnabled(sorting_enabled)
+        self._update_summary()
+
+    def _add_metadata_group_actions(self, menu: QMenu, title: str, column: str, mode: str) -> None:
+        submenu = menu.addMenu(title)
+        values = self._metadata_group_values(column)
+        if not values:
+            action = submenu.addAction("No metadata groups available")
+            action.setEnabled(False)
+            return
+        for value in values[:40]:
+            submenu.addAction(value, lambda _checked=False, selected=value: self._set_included_by_metadata_group(column, selected, mode))
+        if len(values) > 40:
+            action = submenu.addAction(f"Showing first 40 of {len(values)} groups")
+            action.setEnabled(False)
+
+    def _show_context_menu(self, position) -> None:
+        menu = QMenu(self)
+        menu.addAction("Check All Samples", lambda: self._set_all_included(True))
+        menu.addAction("Uncheck All Samples", lambda: self._set_all_included(False))
+        menu.addAction("Invert Checked Samples", self._invert_included)
+        unit_col = self.metadata_unit_col_combo.currentText().strip()
+        if self._metadata_rows_by_sample and unit_col:
+            menu.addSeparator()
+            self._add_metadata_group_actions(menu, f"Check {unit_col} Group", unit_col, "include")
+            self._add_metadata_group_actions(menu, f"Check Only {unit_col} Group", unit_col, "only")
+            self._add_metadata_group_actions(menu, f"Uncheck {unit_col} Group", unit_col, "exclude")
+        exec_method = getattr(menu, "exec", None) or getattr(menu, "exec_", None)
+        exec_method(self.table.viewport().mapToGlobal(position))
+
+    def _handle_item_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() == 0 and hasattr(item, "_sort_value"):
+            item._sort_value = 1 if item.checkState() == QT_CHECKED else 0
+        self._update_summary()
+
+    def _set_selected_group(self) -> None:
+        group_name = self.group_name_edit.text().strip()
+        if not group_name:
+            QMessageBox.warning(self, "Missing Group", "Enter an analysis_unit_id first.")
+            return
+        rows = self._selected_row_indexes()
+        if not rows:
+            QMessageBox.warning(self, "No Rows Selected", "Select one or more sample rows first.")
+            return
+        sorting_enabled = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
+        for row in rows:
+            item = self.table.item(row, 2)
+            if item is not None:
+                item.setText(group_name)
+        self.table.setSortingEnabled(sorting_enabled)
+        self._update_summary()
+
+    def _reset_to_sample_ids(self) -> None:
+        sorting_enabled = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
+        for row in range(self.table.rowCount()):
+            sample_item = self.table.item(row, 1)
+            unit_item = self.table.item(row, 2)
+            if sample_item is not None and unit_item is not None:
+                unit_item.setText(sample_item.text())
+        self.table.setSortingEnabled(sorting_enabled)
+        self._update_summary()
+
+    def _apply_mapping(self, mapping: dict[str, str]) -> None:
+        sorting_enabled = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
+        for row in range(self.table.rowCount()):
+            sample_item = self.table.item(row, 1)
+            unit_item = self.table.item(row, 2)
+            if sample_item is None or unit_item is None:
+                continue
+            sample_id = sample_item.text().strip()
+            if sample_id in mapping:
+                unit_item.setText(mapping[sample_id])
+        self.table.setSortingEnabled(sorting_enabled)
+        self._update_summary()
+
+    def _apply_metadata_unit_column(self, show_errors: bool = False) -> None:
+        if not self._metadata_path:
+            return
+        sample_col = self.metadata_sample_col_combo.currentText().strip() or self._metadata_sample_col
+        unit_col = self.metadata_unit_col_combo.currentText().strip() or self._metadata_unit_col
+        if not sample_col or not unit_col:
+            return
+        try:
+            columns, rows_by_sample = _read_metadata_rows_by_sample(self._metadata_path, sample_col)
+            if unit_col not in columns:
+                raise ValueError(f"Metadata table is missing unit column: {unit_col}")
+        except Exception as exc:
+            if show_errors:
+                QMessageBox.warning(self, "Metadata Import Failed", str(exc))
+            return
+        self._metadata_sample_col = sample_col
+        self._metadata_unit_col = unit_col
+        self._metadata_columns = columns
+        self._metadata_rows_by_sample = rows_by_sample
+        mapping = {
+            sample_id: str(record.get(unit_col, "")).strip()
+            for sample_id, record in rows_by_sample.items()
+            if str(record.get(unit_col, "")).strip()
+        }
+        self._apply_mapping(mapping)
+
+    def _import_mapping(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import sample mapping",
+            "",
+            "TSV/CSV files (*.tsv *.txt *.csv);;All files (*.*)",
+        )
+        if not path:
+            return
+        try:
+            self._apply_mapping(
+                _read_sample_unit_mapping_table(
+                    path,
+                    self._metadata_sample_col,
+                    self._metadata_unit_col,
+                )
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Import Failed", str(exc))
+
+    def _export_mapping(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export sample mapping",
+            "sample_unit_mapping.tsv",
+            "TSV files (*.tsv);;All files (*.*)",
+        )
+        if not path:
+            return
+        try:
+            rows = self.mapping_rows()
+            with open(path, "w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["sample_id", "analysis_unit_id", "n_valid_peptides", "n_total_rows", "included"],
+                    delimiter="\t",
+                )
+                writer.writeheader()
+                writer.writerows(rows)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Failed", str(exc))
+
+    def _update_summary(self) -> None:
+        rows = self.mapping_rows()
+        included = [row for row in rows if row["included"]]
+        units = {row["analysis_unit_id"] for row in included if row["analysis_unit_id"]}
+        self.summary_label.setText(
+            f"{len(included)} included sample(s), {len(units)} analysis unit(s)."
+        )
+
+    def mapping_rows(self) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        for row in range(self.table.rowCount()):
+            include_item = self.table.item(row, 0)
+            sample_item = self.table.item(row, 1)
+            unit_item = self.table.item(row, 2)
+            total_item = self.table.item(row, 3)
+            valid_item = self.table.item(row, 4)
+            sample_id = sample_item.text().strip() if sample_item is not None else ""
+            unit_id = unit_item.text().strip() if unit_item is not None else ""
+            if not unit_id:
+                unit_id = sample_id
+            rows.append(
+                {
+                    "sample_id": sample_id,
+                    "analysis_unit_id": unit_id,
+                    "n_total_rows": int(total_item.text()) if total_item is not None and total_item.text().isdigit() else 0,
+                    "n_valid_peptides": int(valid_item.text()) if valid_item is not None and valid_item.text().isdigit() else 0,
+                    "included": bool(include_item is None or include_item.checkState() == QT_CHECKED),
+                }
+            )
+        return rows
+
+    def accept(self) -> None:
+        for row in self.mapping_rows():
+            if row["included"] and (not row["sample_id"] or not row["analysis_unit_id"]):
+                QMessageBox.critical(self, "Invalid Mapping", "Included rows require sample_id and analysis_unit_id.")
+                return
+        super().accept()
+
+
 class ScoringTab(QWidget):
     def __init__(self):
         super().__init__()
@@ -1105,6 +1891,10 @@ class ScoringTab(QWidget):
         outer_layout.setSpacing(10)
         self._last_auto_output_tsv = ""
         self._last_browse_dir = ""
+        self._sample_unit_mapping_rows: list[dict[str, object]] = []
+        self._sample_unit_mapping_source_path = ""
+        self._sample_unit_preview_cache_key: tuple[object, ...] | None = None
+        self._sample_unit_preview_cache_rows: list[dict[str, object]] = []
 
         scroll, layout = _create_scroll_form_host()
         outer_layout.addWidget(scroll, 1)
@@ -1154,7 +1944,9 @@ class ScoringTab(QWidget):
         self.peptide_score_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
         mapping_grid = _create_compact_grid()
         _add_compact_field(mapping_grid, 0, 0, "Sequence column", self.peptide_seq_col_edit, None)
-        _add_compact_field(mapping_grid, 0, 1, "Score column", self.peptide_score_col_edit, None)
+        self.peptide_score_col_label = _add_compact_field(
+            mapping_grid, 0, 1, "Score column", self.peptide_score_col_edit, None
+        )
         mapping_layout.addLayout(mapping_grid)
         self.lineage_columns_box = QGroupBox("Genome-Lineage Columns")
         self.lineage_columns_box.setProperty("subtle", True)
@@ -1180,42 +1972,216 @@ class ScoringTab(QWidget):
         self.more_options = CollapsibleOptions()
         options_layout = QVBoxLayout(self.more_options.body)
 
-        columns_box = QGroupBox("Peptide Table Columns")
+        columns_box = QGroupBox("Peptide Row Filtering")
         columns_box.setProperty("subtle", True)
         columns_grid = _create_compact_grid()
         self.peptide_error_col_edit = _create_editable_combo("Q.Value")
+        self.peptide_error_cutoff_edit = QLineEdit("0.05")
         self.peptide_decoy_flag_col_edit = _create_editable_combo("Reverse")
+        self.sample_id_col_edit = _create_editable_combo("Run")
+        self.intensity_col_edit = _create_editable_combo("Precursor.Quantity")
         self.decoy_flag_value_edit = _create_editable_combo("+", "Decoy flag value")
         self.decoy_flag_value_edit.addItems(["+", "decoy", "1", "True", "FALSE", "T", "F"])
         self.decoy_flag_value_edit.setEditText("+")
+        self.peptide_error_cutoff_edit.setToolTip("Filters input peptide rows by the selected error/FDR column.")
         self.peptide_error_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
         self.peptide_decoy_flag_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
-        _add_compact_field(columns_grid, 0, 0, "Error column", self.peptide_error_col_edit, None)
-        _add_compact_field(columns_grid, 0, 1, "Decoy flag column", self.peptide_decoy_flag_col_edit, None)
-        _add_compact_field(columns_grid, 0, 2, "Decoy flag value", self.decoy_flag_value_edit, 80)
+        self.sample_id_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
+        self.intensity_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
+        _add_compact_field(columns_grid, 0, 0, "Error column", self.peptide_error_col_edit, 170)
+        _add_compact_field(columns_grid, 0, 1, "Peptide error cutoff", self.peptide_error_cutoff_edit, 90)
+        self.peptide_decoy_flag_col_label = _add_compact_field(
+            columns_grid, 0, 2, "Decoy flag column", self.peptide_decoy_flag_col_edit, 170
+        )
+        self.decoy_flag_value_label = _add_compact_field(
+            columns_grid, 0, 3, "Decoy flag value", self.decoy_flag_value_edit, 90
+        )
         columns_layout = QVBoxLayout(columns_box)
         columns_layout.addLayout(columns_grid)
-        options_layout.addWidget(columns_box)
+        layout.addWidget(columns_box)
 
-        runtime_box = QGroupBox("Runtime And Knockoff Settings")
+        self.unit_aware_checkbox = QCheckBox("Enable unit-aware multi-sample scoring")
+        self.unit_aware_checkbox.setToolTip(
+            "Interpret the observed peptide table as long-format sample evidence and score genome presence per analysis unit."
+        )
+        unit_aware_row = QWidget()
+        unit_aware_row.setObjectName("InlineOptionRow")
+        unit_aware_row_layout = QHBoxLayout(unit_aware_row)
+        unit_aware_row_layout.setContentsMargins(10, 6, 10, 6)
+        unit_aware_row_layout.addWidget(self.unit_aware_checkbox)
+        unit_aware_row_layout.addStretch(1)
+        layout.addWidget(unit_aware_row)
+
+        self.unit_box = QGroupBox("Unit-aware Sample Definition")
+        self.unit_box.setProperty("subtle", True)
+        unit_layout = QVBoxLayout(self.unit_box)
+        self.export_unit_derived_tables_checkbox = QCheckBox("Export derived unit-aware tables")
+        self.export_unit_derived_tables_checkbox.setToolTip(
+            "Write optional unit-aware call-count, significant-call, genome-union, and matrix tables under the artifacts folder."
+        )
+        self.export_unit_derived_tables_checkbox.setChecked(True)
+        self.intensity_min_value_spin = QSpinBox()
+        # Limit to signed 32-bit int max to avoid libshiboken overflow
+        self.intensity_min_value_spin.setRange(0, 2147483647)
+        self.intensity_min_value_spin.setSingleStep(10)
+        self.intensity_min_value_spin.setValue(0)
+        self.intensity_min_value_spin.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
+        self.intensity_min_value_spin.setToolTip(
+            "Minimum intensity required for sample-level peptide presence."
+        )
+        self.intensity_min_quantile_spin = QDoubleSpinBox()
+        # Accept percentage input 0-100 for user convenience; stored/used as fraction (0-1)
+        self.intensity_min_quantile_spin.setRange(0.0, 100.0)
+        self.intensity_min_quantile_spin.setDecimals(2)
+        self.intensity_min_quantile_spin.setSingleStep(1.0)
+        self.intensity_min_quantile_spin.setValue(0.0)
+        self.intensity_min_quantile_spin.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
+        self.intensity_min_quantile_spin.setToolTip(
+            "Percentage of lowest-intensity rows to remove within each sample. Use 5 for the lowest 5%."
+        )
+        metadata_row, self.metadata_table_edit = _make_path_row("Browse", self._browse_metadata_table, accept_mode="file")
+        self.metadata_sample_id_col_edit = _create_editable_combo("sample_id", "Choose or type the metadata sample column")
+        self.metadata_analysis_unit_col_edit = _create_editable_combo(
+            "analysis_unit_id",
+            "Choose or type the metadata analysis-unit column",
+        )
+        self.metadata_sample_id_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
+        self.metadata_analysis_unit_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
+        self.configure_sample_mapping_button = QPushButton("Configure Sample / Unit Mapping")
+        self.configure_sample_mapping_button.clicked.connect(self._configure_sample_unit_mapping)
+        self.sample_mapping_status_label = QLabel("No custom sample mapping configured.")
+
+        self.sample_filter_box = QGroupBox("Sample Columns And Intensity Filters")
+        self.sample_filter_box.setProperty("subtle", True)
+        sample_filter_grid = _create_compact_grid()
+        _add_compact_field(sample_filter_grid, 0, 0, "Sample ID column", self.sample_id_col_edit, None)
+        _add_compact_field(sample_filter_grid, 0, 1, "Intensity column", self.intensity_col_edit, None)
+        _add_compact_field(sample_filter_grid, 1, 0, "Minimum intensity", self.intensity_min_value_spin, None)
+        _add_compact_field(sample_filter_grid, 1, 1, "Drop lowest percent (%)", self.intensity_min_quantile_spin, None)
+        sample_filter_layout = QVBoxLayout(self.sample_filter_box)
+        sample_filter_layout.addLayout(sample_filter_grid)
+        unit_layout.addWidget(self.sample_filter_box)
+
+        self.metadata_box = QGroupBox("Sample / Unit Mapping")
+        self.metadata_box.setProperty("subtle", True)
+        metadata_layout = QVBoxLayout(self.metadata_box)
+        metadata_grid = _create_compact_grid()
+        metadata_table_label = QLabel("Metadata table")
+        metadata_table_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
+        metadata_grid.addWidget(metadata_table_label, 0, 0)
+        metadata_grid.addWidget(metadata_row, 0, 1, 1, 5)
+        _add_compact_field(metadata_grid, 1, 0, "Metadata sample ID column", self.metadata_sample_id_col_edit, None)
+        _add_compact_field(
+            metadata_grid,
+            1,
+            1,
+            "Metadata analysis unit column",
+            self.metadata_analysis_unit_col_edit,
+            None,
+        )
+        metadata_layout.addLayout(metadata_grid)
+        unit_layout.addWidget(self.metadata_box)
+
+        unit_output_grid = _create_compact_grid()
+        unit_output_grid.addWidget(self.configure_sample_mapping_button, 0, 0, 1, 2)
+        unit_output_grid.addWidget(self.sample_mapping_status_label, 0, 2, 1, 2)
+        unit_layout.addLayout(unit_output_grid)
+        layout.addWidget(self.unit_box)
+
+        unique_box = QGroupBox("Unique Evidence Settings")
+        unique_box.setProperty("subtle", True)
+        unique_box.setToolTip(
+            "Unique p-value strength is controlled by unique p-value mode, unique peptide error source, "
+            "unique evidence alpha, unique count power, and unique count cap."
+        )
+        unique_layout = QVBoxLayout(unique_box)
+        self.unique_pvalue_mode_combo = QComboBox()
+        self.unique_pvalue_mode_combo.addItem("Alpha upper bound", "alpha-upper-bound")
+        self.unique_pvalue_mode_combo.addItem("Hypergeometric opportunity", "hypergeometric-opportunity")
+        self.unique_pvalue_mode_combo.setMinimumWidth(260)
+        _set_compact_control_width(self.unique_pvalue_mode_combo, 260)
+        self.unique_peptide_error_source_combo = QComboBox()
+        self.unique_peptide_error_source_combo.addItem("Global alpha", "global-alpha")
+        self.unique_peptide_error_source_combo.addItem("Peptide error column", "peptide-error-column")
+        _set_compact_control_width(self.unique_peptide_error_source_combo, 190)
+        self.single_peptide_error_rate_upper_bound_edit = QLineEdit("0.3")
+        self.unique_count_power_spin = QDoubleSpinBox()
+        self.unique_count_power_spin.setRange(0.01, 1.0)
+        self.unique_count_power_spin.setSingleStep(0.05)
+        self.unique_count_power_spin.setDecimals(2)
+        self.unique_count_power_spin.setValue(0.7)
+        self.unique_count_cap_edit = QLineEdit("")
+        self.unique_count_cap_edit.setPlaceholderText("none")
+        self.theoretical_opportunity_processes_spin = _create_optional_process_spinbox()
+        self.theoretical_opportunity_processes_spin.setToolTip(
+            "Optional worker count for hypergeometric-opportunity theoretical opportunity sharding.\n"
+            "Use 0 to reuse the main Processes setting."
+        )
+        self.rebuild_theoretical_opportunity_cache_checkbox = QCheckBox("Rebuild theoretical opportunity cache")
+        self.single_peptide_error_rate_upper_bound_edit.setToolTip(
+            "Global alpha used by alpha-upper-bound mode when unique peptide error source is Global alpha."
+        )
+        self.unique_pvalue_mode_combo.setToolTip(
+            "Choose how unique evidence p-values are calculated: alpha upper bound or hypergeometric opportunity."
+        )
+        self.unique_peptide_error_source_combo.setToolTip(
+            "Choose epsilon_i for alpha-upper-bound mode."
+        )
+        self.unique_count_power_spin.setToolTip(
+            "Power exponent for alpha-upper-bound mode: U_eff = U_raw^power. Set to 1.0 for raw unique count."
+        )
+        self.unique_count_cap_edit.setToolTip(
+            "Optional upper cap for effective unique count in alpha-upper-bound mode. Leave blank for no cap."
+        )
+        theoretical_cache_row, self.theoretical_opportunity_cache_edit = _make_path_row(
+            "Browse", self._browse_theoretical_opportunity_cache, accept_mode="file"
+        )
+        unique_grid = _create_compact_grid()
+        _add_compact_field(unique_grid, 0, 0, "Unique p-value mode", self.unique_pvalue_mode_combo, 260)
+        self.unique_peptide_error_source_label = _add_compact_field(
+            unique_grid,
+            0,
+            1,
+            "Unique peptide error source",
+            self.unique_peptide_error_source_combo,
+            190,
+        )
+        self.unique_alpha_label = QLabel("Unique evidence alpha")
+        self.unique_alpha_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
+        _set_compact_control_width(self.single_peptide_error_rate_upper_bound_edit, 130)
+        unique_grid.addWidget(self.unique_alpha_label, 0, 4)
+        unique_grid.addWidget(self.single_peptide_error_rate_upper_bound_edit, 0, 5)
+        self.unique_count_power_label = QLabel("Unique count power")
+        self.unique_count_power_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
+        _set_compact_control_width(self.unique_count_power_spin, 110)
+        unique_grid.addWidget(self.unique_count_power_label, 1, 0)
+        unique_grid.addWidget(self.unique_count_power_spin, 1, 1)
+        self.unique_count_cap_label = QLabel("Unique count cap")
+        self.unique_count_cap_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
+        _set_compact_control_width(self.unique_count_cap_edit, 130)
+        unique_grid.addWidget(self.unique_count_cap_label, 1, 2)
+        unique_grid.addWidget(self.unique_count_cap_edit, 1, 3)
+        self.theoretical_opportunity_processes_label = QLabel("Exact-mode processes")
+        self.theoretical_opportunity_processes_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
+        _set_compact_control_width(self.theoretical_opportunity_processes_spin, 160)
+        unique_grid.addWidget(self.theoretical_opportunity_processes_label, 0, 4)
+        unique_grid.addWidget(self.theoretical_opportunity_processes_spin, 0, 5)
+        unique_layout.addLayout(unique_grid)
+        unique_form = QFormLayout()
+        self.theoretical_opportunity_cache_label = QLabel("Theoretical opportunity cache")
+        unique_form.addRow(self.theoretical_opportunity_cache_label, theoretical_cache_row)
+        unique_form.addRow("", self.rebuild_theoretical_opportunity_cache_checkbox)
+        _polish_form_layout(unique_form)
+        unique_layout.addLayout(unique_form)
+        options_layout.addWidget(unique_box)
+
+        runtime_box = QGroupBox("Knockoff Runtime")
         runtime_box.setProperty("subtle", True)
         runtime_layout = QVBoxLayout(runtime_box)
         self.processes_spin = _create_process_spinbox()
-        self.peptide_error_cutoff_edit = QLineEdit("0.05")
-        self.single_peptide_error_rate_upper_bound_edit = QLineEdit("0.3")
-        self.unique_pvalue_mode_combo = QComboBox()
-        self.unique_pvalue_mode_combo.addItem("Upper bound alpha^U", "upper-bound")
-        self.unique_pvalue_mode_combo.addItem("Peptide column product", "peptide-column")
-        self.peptide_error_cutoff_edit.setToolTip("Filters input peptide rows by the selected error/FDR column.")
-        self.single_peptide_error_rate_upper_bound_edit.setToolTip(
-            "Alpha used by default unique evidence p-value bound: alpha^U."
-        )
-        self.unique_pvalue_mode_combo.setToolTip(
-            "Choose whether unique peptide p-values use the configured alpha upper bound or values from the peptide error column."
-        )
         self.knockoff_mc_iterations_edit = QLineEdit("500")
         self.knockoff_stage2_mc_iterations_edit = QLineEdit("2000")
-        self.knockoff_stage2_ranges_edit = QLineEdit("0.005-0.02, 0.02-0.08")
+        self.knockoff_stage2_ranges_edit = QLineEdit("0.01-0.05")
         self.knockoff_random_seed_edit = QLineEdit("1")
         self.knockoff_top_n_targets_spin = QSpinBox()
         self.knockoff_top_n_targets_spin.setRange(0, 1000000)
@@ -1225,31 +2191,15 @@ class ScoringTab(QWidget):
             "Use 0 to evaluate all candidate genomes.\n"
             "This is mainly a speed optimization for very large runs."
         )
-        cache_row, self.cache_path_edit = _make_path_row("Browse", self._browse_cache_path, accept_mode="file")
-        self.export_peptide_contrib_topn_spin = QSpinBox()
-        self.export_peptide_contrib_topn_spin.setRange(0, 1000000)
-        self.export_peptide_contrib_topn_spin.setValue(0)
         runtime_grid = _create_compact_grid()
         _add_compact_field(runtime_grid, 0, 0, "Processes", self.processes_spin, 110)
-        _add_compact_field(runtime_grid, 0, 1, "Peptide error cutoff", self.peptide_error_cutoff_edit, 110)
-        _add_compact_field(
-            runtime_grid,
-            0,
-            2,
-            "Unique alpha upper bound",
-            self.single_peptide_error_rate_upper_bound_edit,
-            130,
-        )
+        _add_compact_field(runtime_grid, 0, 1, "Top genomes", self.knockoff_top_n_targets_spin, 110)
         _add_compact_field(runtime_grid, 1, 0, "Random seed", self.knockoff_random_seed_edit, 110)
         _add_compact_field(runtime_grid, 1, 1, "Knockoff MC", self.knockoff_mc_iterations_edit, 110)
         _add_compact_field(runtime_grid, 1, 2, "Stage 2 MC", self.knockoff_stage2_mc_iterations_edit, 110)
-        _add_compact_field(runtime_grid, 2, 0, "Top genomes", self.knockoff_top_n_targets_spin, 110)
-        _add_compact_field(runtime_grid, 2, 1, "Export contrib top-N", self.export_peptide_contrib_topn_spin, 110)
-        _add_compact_field(runtime_grid, 2, 2, "Unique p-value mode", self.unique_pvalue_mode_combo, 160)
         runtime_layout.addLayout(runtime_grid)
         runtime_form = QFormLayout()
         runtime_form.addRow("Stage 2 p ranges", self.knockoff_stage2_ranges_edit)
-        runtime_form.addRow("Matched peptide cache", cache_row)
         runtime_form.addRow(
             _make_wrapped_label(
                 f"Default processes = CPU cores minus one. Maximum allowed here is {MAX_PROCESS_COUNT}."
@@ -1264,35 +2214,16 @@ class ScoringTab(QWidget):
         runtime_layout.addLayout(runtime_form)
         options_layout.addWidget(runtime_box)
 
-        exclude_box = QGroupBox("Excluded Genome IDs")
-        exclude_box.setProperty("subtle", True)
-        exclude_layout = QVBoxLayout(exclude_box)
-        self.exclude_text = FileContentTextEdit()
-        self.exclude_text.setPlaceholderText(
-            "One genome ID per line, or comma-separated.\n"
-            "Genome IDs should match digest TSV filenames without the .tsv suffix."
-        )
-        exclude_layout.addWidget(self.exclude_text)
+        self.unique_pvalue_mode_combo.currentIndexChanged.connect(self._sync_unique_mode_visibility)
+        self.unique_peptide_error_source_combo.currentIndexChanged.connect(self._sync_unique_mode_visibility)
 
-        selected_box = QGroupBox("Only Run Genome IDs")
-        selected_box.setProperty("subtle", True)
-        selected_layout = QVBoxLayout(selected_box)
-        self.selected_genomes_text = FileContentTextEdit()
-        self.selected_genomes_text.setPlaceholderText(
-            "Optional. If provided, MetaUmbra will only run these genome IDs.\n"
-            "One genome ID per line, or comma-separated.\n"
-            "Genome IDs should match digest TSV filenames without the .tsv suffix."
-        )
-        selected_layout.addWidget(self.selected_genomes_text)
-        genome_id_boxes_row = QHBoxLayout()
-        genome_id_boxes_row.setSpacing(12)
-        genome_id_boxes_row.addWidget(exclude_box, 1)
-        genome_id_boxes_row.addWidget(selected_box, 1)
-        options_layout.addLayout(genome_id_boxes_row)
-
-        flags_box = QGroupBox("Flags")
-        flags_box.setProperty("subtle", True)
-        flags_layout = QGridLayout(flags_box)
+        cache_output_box = QGroupBox("Cache And Output Artifacts")
+        cache_output_box.setProperty("subtle", True)
+        cache_output_layout = QVBoxLayout(cache_output_box)
+        cache_row, self.cache_path_edit = _make_path_row("Browse", self._browse_cache_path, accept_mode="file")
+        self.export_peptide_contrib_topn_spin = QSpinBox()
+        self.export_peptide_contrib_topn_spin.setRange(0, 1000000)
+        self.export_peptide_contrib_topn_spin.setValue(0)
         self.save_cache_checkbox = QCheckBox("Save matched-peptide cache")
         self.save_cache_checkbox.setChecked(True)
         self.use_cache_if_exists_checkbox = QCheckBox("Reuse cache if it already exists")
@@ -1301,18 +2232,84 @@ class ScoringTab(QWidget):
         self.export_temp_checkbox = QCheckBox("Export temp artifacts")
         self.export_temp_checkbox.setChecked(True)
         self.return_full_table_checkbox = QCheckBox("Return full internal table")
-        flags_layout.addWidget(self.save_cache_checkbox, 0, 0)
-        flags_layout.addWidget(self.use_cache_if_exists_checkbox, 0, 1)
-        flags_layout.addWidget(self.compute_coverage_checkbox, 1, 0)
-        flags_layout.addWidget(self.export_temp_checkbox, 1, 1)
-        flags_layout.addWidget(self.return_full_table_checkbox, 2, 0)
-        options_layout.addWidget(flags_box)
+        cache_form = QFormLayout()
+        cache_form.addRow("Matched peptide cache", cache_row)
+        _polish_form_layout(cache_form)
+        cache_output_layout.addLayout(cache_form)
+        artifact_grid = _create_compact_grid()
+        _add_compact_field(artifact_grid, 0, 0, "Export contrib top-N", self.export_peptide_contrib_topn_spin, 120)
+        artifact_grid.addWidget(self.save_cache_checkbox, 1, 0, 1, 2)
+        artifact_grid.addWidget(self.use_cache_if_exists_checkbox, 1, 2, 1, 2)
+        artifact_grid.addWidget(self.compute_coverage_checkbox, 2, 0, 1, 2)
+        artifact_grid.addWidget(self.export_temp_checkbox, 2, 2, 1, 2)
+        artifact_grid.addWidget(self.return_full_table_checkbox, 3, 0, 1, 2)
+        artifact_grid.addWidget(self.export_unit_derived_tables_checkbox, 3, 2, 1, 2)
+        cache_output_layout.addLayout(artifact_grid)
+        options_layout.addWidget(cache_output_box)
+
+        genome_filter_box = QGroupBox("Genome Selection Filters")
+        genome_filter_box.setProperty("subtle", True)
+        genome_filter_layout = QHBoxLayout(genome_filter_box)
+
+        exclude_filter_panel = QWidget()
+        exclude_filter_layout = QVBoxLayout(exclude_filter_panel)
+        exclude_filter_layout.setContentsMargins(0, 0, 0, 0)
+        exclude_filter_layout.setSpacing(8)
+        exclude_filter_header = QHBoxLayout()
+        exclude_filter_header.setContentsMargins(0, 0, 0, 0)
+        exclude_filter_label = QLabel("Excluded genomes")
+        self.load_last_excluded_genomes_button = QPushButton("Load Last")
+        self.clear_excluded_genomes_button = QPushButton("Clear All")
+        exclude_filter_header.addWidget(exclude_filter_label)
+        exclude_filter_header.addStretch(1)
+        exclude_filter_header.addWidget(self.load_last_excluded_genomes_button)
+        exclude_filter_header.addWidget(self.clear_excluded_genomes_button)
+        self.exclude_text = FileContentTextEdit()
+        self.exclude_text.setPlaceholderText(
+            "Excluded genome IDs.\n"
+            "One genome ID per line, or comma-separated.\n"
+            "Genome IDs should match digest TSV filenames without the .tsv suffix."
+        )
+
+        selected_filter_panel = QWidget()
+        selected_filter_layout = QVBoxLayout(selected_filter_panel)
+        selected_filter_layout.setContentsMargins(0, 0, 0, 0)
+        selected_filter_layout.setSpacing(8)
+        selected_filter_header = QHBoxLayout()
+        selected_filter_header.setContentsMargins(0, 0, 0, 0)
+        selected_filter_label = QLabel("Only run these genome IDs")
+        self.load_last_selected_genomes_button = QPushButton("Load Last")
+        self.clear_selected_genomes_button = QPushButton("Clear All")
+        selected_filter_header.addWidget(selected_filter_label)
+        selected_filter_header.addStretch(1)
+        selected_filter_header.addWidget(self.load_last_selected_genomes_button)
+        selected_filter_header.addWidget(self.clear_selected_genomes_button)
+        self.selected_genomes_text = FileContentTextEdit()
+        self.selected_genomes_text.setPlaceholderText(
+            "Only run these genome IDs.\n"
+            "Leave empty to run all candidates.\n"
+            "One genome ID per line, or comma-separated."
+        )
+        exclude_filter_layout.addLayout(exclude_filter_header)
+        exclude_filter_layout.addWidget(self.exclude_text, 1)
+        selected_filter_layout.addLayout(selected_filter_header)
+        selected_filter_layout.addWidget(self.selected_genomes_text, 1)
+        genome_filter_layout.addWidget(exclude_filter_panel, 1)
+        genome_filter_layout.addWidget(selected_filter_panel, 1)
+        options_layout.addWidget(genome_filter_box)
         layout.addWidget(self.more_options)
         layout.addStretch(1)
         self.peptide_table_edit.textChanged.connect(self._update_auto_output_tsv_from_peptide_table)
         self.peptide_table_edit.textChanged.connect(self._update_peptide_table_column_options)
         self.genome_lineage_table_edit.textChanged.connect(self._update_genome_lineage_column_options)
         self.genome_lineage_table_edit.textChanged.connect(self._sync_genome_lineage_column_visibility)
+        self.metadata_table_edit.textChanged.connect(self._update_metadata_table_column_options)
+        self.unit_aware_checkbox.toggled.connect(self._sync_unit_aware_visibility)
+        self.load_last_excluded_genomes_button.clicked.connect(self._load_last_excluded_genomes)
+        self.clear_excluded_genomes_button.clicked.connect(self.exclude_text.clear)
+        self.load_last_selected_genomes_button.clicked.connect(self._load_last_selected_genomes)
+        self.clear_selected_genomes_button.clicked.connect(self.selected_genomes_text.clear)
+        self._sync_unit_aware_visibility()
 
     def _suggest_output_tsv_path(self, peptide_table_path: str) -> str:
         peptide_path = Path(peptide_table_path.strip())
@@ -1347,10 +2344,20 @@ class ScoringTab(QWidget):
                 _clear_editable_combo_items(self.peptide_score_col_edit, "Evidence")
                 _clear_editable_combo_items(self.peptide_error_col_edit, "Q.Value")
                 _clear_editable_combo_items(self.peptide_decoy_flag_col_edit, "Reverse")
+                _clear_editable_combo_items(self.sample_id_col_edit, "Run")
+                _clear_editable_combo_items(self.intensity_col_edit, "Precursor.Quantity")
                 return
             preferred_seq = _pick_preferred_column(
                 columns,
                 ["Stripped.Sequence", "StrippedSequence", "Sequence", "Peptide.Sequence", "PeptideSequence"],
+            )
+            preferred_sample = _pick_preferred_column(
+                columns,
+                ["Run", "File.Name", "Raw.File", "Sample", "Sample.Name"],
+            )
+            preferred_intensity = _pick_preferred_column(
+                columns,
+                ["Precursor.Quantity", "Precursor.Normalised", "Intensity"],
             )
             preferred_score = _pick_preferred_column(columns, ["Evidence", "Score", "CScore"])
             preferred_error = _pick_preferred_column(
@@ -1381,6 +2388,16 @@ class ScoringTab(QWidget):
                 columns,
                 preferred_text=preferred_decoy or "Reverse",
             )
+            _set_editable_combo_items(
+                self.sample_id_col_edit,
+                columns,
+                preferred_text=preferred_sample or "Run",
+            )
+            _set_editable_combo_items(
+                self.intensity_col_edit,
+                columns,
+                preferred_text=preferred_intensity or "Precursor.Quantity",
+            )
             return
         columns = _read_table_columns(path_value)
         if not columns:
@@ -1388,8 +2405,12 @@ class ScoringTab(QWidget):
             _clear_editable_combo_items(self.peptide_score_col_edit, "Evidence")
             _clear_editable_combo_items(self.peptide_error_col_edit, "Q.Value")
             _clear_editable_combo_items(self.peptide_decoy_flag_col_edit, "Reverse")
+            _clear_editable_combo_items(self.sample_id_col_edit, "Run")
+            _clear_editable_combo_items(self.intensity_col_edit, "Precursor.Quantity")
             return
         _set_editable_combo_items(self.peptide_seq_col_edit, columns, preferred_text="Sequence")
+        preferred_sample = _pick_preferred_column(columns, ["Run", "File.Name", "Raw.File", "Sample", "Sample.Name"])
+        preferred_intensity = _pick_preferred_column(columns, ["Precursor.Quantity", "Precursor.Normalised", "Intensity"])
         preferred_score = _pick_preferred_column(columns, ["Evidence", "score", "Score"]) or "Evidence"
         preferred_error = _pick_preferred_column(columns, ["Q.Value", "QValue", "Qval", "QVal", "FDR", "PEP"])
         preferred_decoy = _pick_preferred_column(
@@ -1407,6 +2428,12 @@ class ScoringTab(QWidget):
             columns,
             preferred_text=preferred_decoy or "Reverse",
         )
+        _set_editable_combo_items(self.sample_id_col_edit, columns, preferred_text=preferred_sample or "Run")
+        _set_editable_combo_items(
+            self.intensity_col_edit,
+            columns,
+            preferred_text=preferred_intensity or "Precursor.Quantity",
+        )
 
     def _update_genome_lineage_column_options(self) -> None:
         columns = _read_table_columns(self.genome_lineage_table_edit.text())
@@ -1423,6 +2450,43 @@ class ScoringTab(QWidget):
             self.genome_lineage_lineage_col_edit,
             columns,
             preferred_text="Lineage",
+            preferred_index=1,
+        )
+
+    def _update_metadata_table_column_options(self) -> None:
+        columns = _read_table_columns(self.metadata_table_edit.text())
+        if not columns:
+            _clear_editable_combo_items(self.metadata_sample_id_col_edit, "sample_id")
+            _clear_editable_combo_items(self.metadata_analysis_unit_col_edit, "analysis_unit_id")
+            return
+        preferred_sample = _pick_preferred_column(
+            columns,
+            ["sample_id", "SampleID", "sample", "Sample", "Run", "File.Name", "Raw.File", "Sample.Name"],
+        )
+        preferred_unit = _pick_preferred_column(
+            columns,
+            [
+                "analysis_unit_id",
+                "AnalysisUnitID",
+                "analysis_unit",
+                "unit_id",
+                "Unit",
+                "Group",
+                "group",
+                "Condition",
+                "condition",
+            ],
+        )
+        _set_editable_combo_items(
+            self.metadata_sample_id_col_edit,
+            columns,
+            preferred_text=preferred_sample or "sample_id",
+            preferred_index=0,
+        )
+        _set_editable_combo_items(
+            self.metadata_analysis_unit_col_edit,
+            columns,
+            preferred_text=preferred_unit or "analysis_unit_id",
             preferred_index=1,
         )
 
@@ -1456,6 +2520,10 @@ class ScoringTab(QWidget):
                 out_path = Path(path)
                 suggested = out_path.with_name(f"{out_path.stem}_artifacts") / "matched_peptides.pkl"
                 self.cache_path_edit.setText(str(suggested))
+            if not self.theoretical_opportunity_cache_edit.text().strip():
+                out_path = Path(path)
+                suggested = out_path.with_name(f"{out_path.stem}_artifacts") / "theoretical_opportunity_cache.pkl"
+                self.theoretical_opportunity_cache_edit.setText(str(suggested))
 
     def _browse_genome_lineage_table(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -1468,6 +2536,158 @@ class ScoringTab(QWidget):
             self.genome_lineage_table_edit.setText(path)
             self._last_browse_dir = _remember_dialog_directory(path)
 
+    def _browse_metadata_table(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select sample metadata table",
+            _initial_dialog_path(self.metadata_table_edit.text(), self._last_browse_dir),
+            "TSV/CSV files (*.tsv *.txt *.csv);;All files (*.*)",
+        )
+        if path:
+            self.metadata_table_edit.setText(path)
+            self._last_browse_dir = _remember_dialog_directory(path)
+
+    def _update_sample_mapping_status(self) -> None:
+        if not self._sample_unit_mapping_rows:
+            self.sample_mapping_status_label.setText("No custom sample mapping configured.")
+            return
+        included = [row for row in self._sample_unit_mapping_rows if bool(row.get("included", True))]
+        units = {str(row.get("analysis_unit_id", "")).strip() for row in included if str(row.get("analysis_unit_id", "")).strip()}
+        self.sample_mapping_status_label.setText(
+            f"Custom mapping: {len(included)} included sample(s), {len(units)} unit(s)."
+        )
+
+    def _configure_sample_unit_mapping(self) -> None:
+        loading_dialog = QProgressDialog(
+            "Loading sample/unit mapping preview...\nThis can take a while for large parquet or long tables.",
+            "",
+            0,
+            0,
+            self,
+        )
+        loading_dialog.setWindowTitle("Loading Samples")
+        loading_dialog.setMinimumDuration(0)
+        loading_dialog.setCancelButton(None)
+        loading_dialog.setAutoClose(False)
+        loading_dialog.setAutoReset(False)
+        self.configure_sample_mapping_button.setEnabled(False)
+        loading_dialog.show()
+        QApplication.processEvents()
+        dialog = None
+        try:
+            peptide_table_path = self.peptide_table_edit.text().strip()
+            peptide_error_cutoff = _parse_required_float(
+                self.peptide_error_cutoff_edit.text(), "Peptide error cutoff"
+            )
+            intensity_min_value = int(self.intensity_min_value_spin.value())
+            # spin provides percent (0-100); convert to fraction for backend (0-1)
+            intensity_min_quantile = float(self.intensity_min_quantile_spin.value()) / 100.0
+            try:
+                peptide_stat = Path(peptide_table_path).expanduser().stat()
+                table_signature = (int(peptide_stat.st_size), int(peptide_stat.st_mtime_ns))
+            except OSError:
+                table_signature = (None, None)
+            cache_key = (
+                peptide_table_path,
+                table_signature,
+                self.sample_id_col_edit.currentText().strip(),
+                self.peptide_seq_col_edit.currentText().strip(),
+                self.intensity_col_edit.currentText().strip(),
+                self.peptide_error_col_edit.currentText().strip(),
+                float(peptide_error_cutoff),
+                self.peptide_decoy_flag_col_edit.currentText().strip(),
+                self.decoy_flag_value_edit.currentText().strip(),
+                int(intensity_min_value),
+                float(intensity_min_quantile),
+            )
+            if self._sample_unit_preview_cache_key == cache_key:
+                rows = [dict(row) for row in self._sample_unit_preview_cache_rows]
+            else:
+                rows = _read_sample_unit_preview_rows(
+                    peptide_table_path=peptide_table_path,
+                    sample_id_col=self.sample_id_col_edit.currentText().strip(),
+                    peptide_seq_col=self.peptide_seq_col_edit.currentText().strip(),
+                    intensity_col=self.intensity_col_edit.currentText().strip(),
+                    peptide_error_col=self.peptide_error_col_edit.currentText().strip(),
+                    peptide_error_cutoff=peptide_error_cutoff,
+                    peptide_decoy_flag_col=self.peptide_decoy_flag_col_edit.currentText().strip(),
+                    decoy_flag_value=self.decoy_flag_value_edit.currentText().strip(),
+                    intensity_min_value=intensity_min_value,
+                    intensity_min_quantile=intensity_min_quantile,
+                )
+                self._sample_unit_preview_cache_key = cache_key
+                self._sample_unit_preview_cache_rows = [dict(row) for row in rows]
+            if self._sample_unit_mapping_rows and self._sample_unit_mapping_source_path == peptide_table_path:
+                existing = {
+                    str(row.get("sample_id", "")): row
+                    for row in self._sample_unit_mapping_rows
+                    if str(row.get("sample_id", ""))
+                }
+                for row in rows:
+                    previous = existing.get(str(row.get("sample_id", "")))
+                    if previous:
+                        row["analysis_unit_id"] = previous.get("analysis_unit_id", row["sample_id"])
+                        row["included"] = bool(previous.get("included", row.get("included", True)))
+            loading_dialog.setLabelText("Opening sample/unit mapping editor...")
+            QApplication.processEvents()
+            dialog = SampleUnitMappingDialog(
+                rows=rows,
+                metadata_path=self.metadata_table_edit.text().strip(),
+                metadata_sample_col=self.metadata_sample_id_col_edit.currentText().strip() or "sample_id",
+                metadata_unit_col=self.metadata_analysis_unit_col_edit.currentText().strip() or "analysis_unit_id",
+                parent=self,
+            )
+        except Exception as exc:
+            loading_dialog.close()
+            self.configure_sample_mapping_button.setEnabled(True)
+            QMessageBox.critical(self, "Cannot Read Samples", str(exc))
+            return
+        finally:
+            loading_dialog.close()
+            self.configure_sample_mapping_button.setEnabled(True)
+
+        if dialog is None:
+            return
+        if _exec_qt_object(dialog) != QDIALOG_ACCEPTED:
+            return
+        self._sample_unit_mapping_rows = dialog.mapping_rows()
+        self._sample_unit_mapping_source_path = peptide_table_path
+        self.unit_aware_checkbox.setChecked(True)
+        self._update_sample_mapping_status()
+
+    def _materialize_sample_unit_mapping(self, config: ScoringConfig) -> None:
+        if not self._sample_unit_mapping_rows:
+            return
+        if self._sample_unit_mapping_source_path and self._sample_unit_mapping_source_path != config.peptide_table_path:
+            raise ValueError(
+                "The custom sample/unit mapping was created for a different peptide table. "
+                "Open Configure Sample / Unit Mapping again for the current input."
+            )
+        out_path = Path(config.output_tsv_path).expanduser()
+        mapping_path = out_path.with_name(f"{out_path.stem}_gui_sample_unit_mapping.tsv")
+        rows = [
+            {
+                "sample_id": str(row.get("sample_id", "")).strip(),
+                "analysis_unit_id": str(row.get("analysis_unit_id", "")).strip(),
+                "included": "true" if bool(row.get("included", True)) else "false",
+                "n_valid_peptides": int(row.get("n_valid_peptides", 0) or 0),
+                "n_total_rows": int(row.get("n_total_rows", 0) or 0),
+            }
+            for row in self._sample_unit_mapping_rows
+            if str(row.get("sample_id", "")).strip()
+        ]
+        with open(mapping_path, "w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=["sample_id", "analysis_unit_id", "included", "n_valid_peptides", "n_total_rows"],
+                delimiter="\t",
+            )
+            writer.writeheader()
+            writer.writerows(rows)
+        config.metadata_table_path = str(mapping_path)
+        config.metadata_sample_id_col = "sample_id"
+        config.metadata_analysis_unit_col = "analysis_unit_id"
+
     def _browse_cache_path(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
             self,
@@ -1478,6 +2698,87 @@ class ScoringTab(QWidget):
         if path:
             self.cache_path_edit.setText(path)
             self._last_browse_dir = _remember_dialog_directory(path)
+
+    def _browse_theoretical_opportunity_cache(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Select theoretical opportunity cache",
+            _initial_dialog_path(
+                self.theoretical_opportunity_cache_edit.text(),
+                self._last_browse_dir,
+                "theoretical_opportunity_cache.pkl",
+            ),
+            "Pickle files (*.pkl);;All files (*.*)",
+        )
+        if path:
+            self.theoretical_opportunity_cache_edit.setText(path)
+            self._last_browse_dir = _remember_dialog_directory(path)
+
+    def _sync_unique_mode_visibility(self) -> None:
+        mode = str(self.unique_pvalue_mode_combo.currentData() or "alpha-upper-bound")
+        error_source = str(self.unique_peptide_error_source_combo.currentData() or "global-alpha")
+        show_alpha_mode = mode == "alpha-upper-bound"
+        show_alpha = show_alpha_mode and error_source == "global-alpha"
+        show_effective_count = show_alpha_mode
+        self.unique_peptide_error_source_label.setVisible(show_alpha_mode)
+        self.unique_peptide_error_source_combo.setVisible(show_alpha_mode)
+        show_exact_cache = mode == "hypergeometric-opportunity"
+        self.unique_alpha_label.setVisible(show_alpha)
+        self.single_peptide_error_rate_upper_bound_edit.setVisible(show_alpha)
+        self.unique_count_power_label.setVisible(show_effective_count)
+        self.unique_count_power_spin.setVisible(show_effective_count)
+        self.unique_count_cap_label.setVisible(show_effective_count)
+        self.unique_count_cap_edit.setVisible(show_effective_count)
+        self.theoretical_opportunity_cache_label.setVisible(show_exact_cache)
+        self.theoretical_opportunity_cache_edit.parentWidget().setVisible(show_exact_cache)
+        self.rebuild_theoretical_opportunity_cache_checkbox.setVisible(show_exact_cache)
+        self.theoretical_opportunity_processes_label.setVisible(show_exact_cache)
+        self.theoretical_opportunity_processes_spin.setVisible(show_exact_cache)
+
+    def _sync_unit_aware_visibility(self) -> None:
+        unit_aware = self.unit_aware_checkbox.isChecked()
+        self.unit_box.setVisible(unit_aware)
+        self.sample_filter_box.setVisible(unit_aware)
+        self.metadata_box.setVisible(unit_aware)
+        self.export_unit_derived_tables_checkbox.setVisible(unit_aware)
+        self.configure_sample_mapping_button.setVisible(unit_aware)
+        self.sample_mapping_status_label.setVisible(unit_aware)
+        self._sync_unique_mode_visibility()
+
+    def _load_last_excluded_genomes(self) -> None:
+        found, values = self._read_saved_genome_filter_values("exclude_genome_ids")
+        if found:
+            self.exclude_text.setPlainText("\n".join(values))
+            return
+        QMessageBox.information(self, "No Saved Filters", "No saved excluded genome IDs were found.")
+
+    def _load_last_selected_genomes(self) -> None:
+        found, values = self._read_saved_genome_filter_values("selected_genome_ids")
+        if found:
+            self.selected_genomes_text.setPlainText("\n".join(values))
+            return
+        QMessageBox.information(self, "No Saved Filters", "No saved selected genome IDs were found.")
+
+    def _read_saved_genome_filter_values(self, key: str) -> tuple[bool, list[str]]:
+        state_path = _default_gui_state_path()
+        if not state_path.exists():
+            return False, []
+        try:
+            with open(state_path, "r", encoding="utf-8") as handle:
+                state = json.load(handle)
+        except Exception as exc:
+            QMessageBox.warning(self, "Cannot Load Saved Filters", str(exc))
+            return False, []
+
+        filters = state.get("genome_selection_filters", {})
+        if not isinstance(filters, dict) or key not in filters:
+            return False, []
+        raw_values = filters.get(key, [])
+        if isinstance(raw_values, str):
+            return True, _parse_text_list(raw_values)
+        if isinstance(raw_values, list):
+            return True, [str(value).strip() for value in raw_values if str(value).strip()]
+        return True, []
 
     def _add_genome_dir(self) -> None:
         path = _choose_directory(
@@ -1516,9 +2817,31 @@ class ScoringTab(QWidget):
             ),
             single_peptide_error_rate_upper_bound=_parse_required_float(
                 self.single_peptide_error_rate_upper_bound_edit.text(),
-                "Unique alpha upper bound",
+                "Unique evidence alpha",
             ),
-            unique_pvalue_mode=str(self.unique_pvalue_mode_combo.currentData() or "upper-bound"),
+            unique_pvalue_mode=str(self.unique_pvalue_mode_combo.currentData() or "alpha-upper-bound"),
+            unique_peptide_error_source=str(self.unique_peptide_error_source_combo.currentData() or "global-alpha"),
+            unique_count_power=float(self.unique_count_power_spin.value()),
+            unique_count_cap=_parse_optional_float(
+                self.unique_count_cap_edit.text(),
+                "Unique count cap",
+            ),
+            unit_aware=self.unit_aware_checkbox.isChecked(),
+            sample_id_col=self.sample_id_col_edit.currentText().strip(),
+            intensity_col=self.intensity_col_edit.currentText().strip(),
+            intensity_min_value=int(self.intensity_min_value_spin.value()),
+                intensity_min_quantile=float(self.intensity_min_quantile_spin.value()) / 100.0,
+            metadata_table_path=self.metadata_table_edit.text().strip(),
+            metadata_sample_id_col=self.metadata_sample_id_col_edit.currentText().strip(),
+            metadata_analysis_unit_col=self.metadata_analysis_unit_col_edit.currentText().strip(),
+            export_unit_derived_tables=self.export_unit_derived_tables_checkbox.isChecked(),
+            theoretical_opportunity_cache_path=self.theoretical_opportunity_cache_edit.text().strip(),
+            rebuild_theoretical_opportunity_cache=self.rebuild_theoretical_opportunity_cache_checkbox.isChecked(),
+            num_workers_for_theoretical_opportunity=(
+                int(self.theoretical_opportunity_processes_spin.value())
+                if self.theoretical_opportunity_processes_spin.value() > 0
+                else None
+            ),
             peptide_decoy_flag_col=self.peptide_decoy_flag_col_edit.currentText().strip(),
             decoy_flag_value=self.decoy_flag_value_edit.currentText().strip(),
             exclude_genome_ids=_parse_text_list(self.exclude_text.toPlainText()),
@@ -1544,6 +2867,8 @@ class ScoringTab(QWidget):
             export_peptide_contrib_topN=int(self.export_peptide_contrib_topn_spin.value()),
             return_full_table=self.return_full_table_checkbox.isChecked(),
         )
+        if not config.unit_aware:
+            config.export_unit_derived_tables = False
 
         if require_required_fields:
             if not config.peptide_table_path:
@@ -1562,12 +2887,29 @@ class ScoringTab(QWidget):
                 raise ValueError("Please provide the sequence column name.")
             if not config.peptide_score_col:
                 raise ValueError("Please provide the score column name.")
+            if config.unit_aware:
+                if not config.sample_id_col:
+                    raise ValueError("Please provide the sample ID column name for unit-aware scoring.")
+                if not config.intensity_col:
+                    raise ValueError("Please provide the intensity column name for unit-aware scoring.")
+                if config.intensity_min_quantile < 0 or config.intensity_min_quantile > 1:
+                    raise ValueError("Minimum within-sample intensity quantile must be between 0 and 1.")
+                if config.metadata_table_path and not self._sample_unit_mapping_rows:
+                    _require_existing_file(config.metadata_table_path, "sample metadata table")
+                    if not config.metadata_sample_id_col:
+                        raise ValueError("Please provide the metadata sample ID column name.")
+                    if not config.metadata_analysis_unit_col:
+                        raise ValueError("Please provide the metadata analysis unit column name.")
             if not config.genome_digest_dirs:
                 raise ValueError("Please add at least one genome digest directory.")
             for genome_dir in config.genome_digest_dirs:
                 _require_existing_directory(genome_dir, "Genome digest directory")
             if config.matched_peptides_cache_path:
                 _require_output_parent_directory(config.matched_peptides_cache_path, "matched peptide cache")
+            if config.theoretical_opportunity_cache_path:
+                _require_output_parent_directory(config.theoretical_opportunity_cache_path, "theoretical opportunity cache")
+            if config.unit_aware:
+                self._materialize_sample_unit_mapping(config)
         return config
 
     def load_config(self, config: ScoringConfig) -> None:
@@ -1580,12 +2922,52 @@ class ScoringTab(QWidget):
         self.peptide_seq_col_edit.setEditText(config.peptide_seq_col)
         self.peptide_score_col_edit.setEditText(config.peptide_score_col)
         self.peptide_error_col_edit.setEditText(config.peptide_error_col)
+        self.sample_id_col_edit.setEditText(config.sample_id_col)
+        self.intensity_col_edit.setEditText(config.intensity_col)
         self.peptide_error_cutoff_edit.setText(str(config.peptide_error_cutoff))
         self.single_peptide_error_rate_upper_bound_edit.setText(
             str(config.single_peptide_error_rate_upper_bound)
         )
-        mode_index = self.unique_pvalue_mode_combo.findData(config.unique_pvalue_mode)
-        self.unique_pvalue_mode_combo.setCurrentIndex(max(mode_index, 0))
+        _set_combo_to_data(self.unique_pvalue_mode_combo, str(config.unique_pvalue_mode))
+        _set_combo_to_data(self.unique_peptide_error_source_combo, str(config.unique_peptide_error_source))
+        self.unique_count_power_spin.setValue(float(config.unique_count_power))
+        self.unique_count_cap_edit.setText(
+            "" if config.unique_count_cap is None else str(config.unique_count_cap)
+        )
+        self.unit_aware_checkbox.setChecked(bool(config.unit_aware))
+        self.export_unit_derived_tables_checkbox.setChecked(bool(config.export_unit_derived_tables))
+        # Clamp to QSpinBox maximum to avoid overflow
+        try:
+            iv = int(config.intensity_min_value)
+        except Exception:
+            iv = 0
+        if iv > 2147483647:
+            iv = 2147483647
+        self.intensity_min_value_spin.setValue(iv)
+        # config stores fraction (0-1); display percent (0-100)
+        try:
+            q = float(config.intensity_min_quantile)
+        except Exception:
+            q = 0.0
+        if q < 0.0:
+            q = 0.0
+        if q > 1.0:
+            q = 1.0
+        self.intensity_min_quantile_spin.setValue(q * 100.0)
+        self.metadata_table_edit.setText(config.metadata_table_path)
+        self.metadata_sample_id_col_edit.setEditText(config.metadata_sample_id_col)
+        self.metadata_analysis_unit_col_edit.setEditText(config.metadata_analysis_unit_col)
+        self._sample_unit_mapping_rows = []
+        self._sample_unit_mapping_source_path = config.peptide_table_path
+        self._update_sample_mapping_status()
+        self.theoretical_opportunity_cache_edit.setText(config.theoretical_opportunity_cache_path)
+        self.rebuild_theoretical_opportunity_cache_checkbox.setChecked(bool(config.rebuild_theoretical_opportunity_cache))
+        self.theoretical_opportunity_processes_spin.setValue(
+            int(config.num_workers_for_theoretical_opportunity)
+            if config.num_workers_for_theoretical_opportunity is not None
+            else 0
+        )
+        self._sync_unit_aware_visibility()
         self.peptide_decoy_flag_col_edit.setEditText(config.peptide_decoy_flag_col)
         self.decoy_flag_value_edit.setEditText(config.decoy_flag_value)
         self.processes_spin.setValue(config.num_workers if config.num_workers is not None else DEFAULT_PROCESS_COUNT)
@@ -1605,6 +2987,7 @@ class ScoringTab(QWidget):
         self.compute_coverage_checkbox.setChecked(config.compute_coverage)
         self.export_temp_checkbox.setChecked(config.export_temp)
         self.return_full_table_checkbox.setChecked(config.return_full_table)
+        self._sync_unit_aware_visibility()
         self._last_browse_dir = _remember_dialog_directory(
             config.peptide_table_path
             or config.genome_lineage_table_path
@@ -1883,6 +3266,11 @@ class MainWindow(QMainWindow):
             QWidget#FormCanvas {
                 background: transparent;
             }
+            QWidget#InlineOptionRow {
+                background: #f8fafc;
+                border: 1px solid #dde3ea;
+                border-radius: 3px;
+            }
             QLabel#StatusBadge {
                 padding: 5px 10px;
                 border-radius: 3px;
@@ -1906,14 +3294,14 @@ class MainWindow(QMainWindow):
                 color: #596879;
                 padding-left: 6px;
             }
-            QLineEdit, QComboBox, QSpinBox, QTextEdit, QPlainTextEdit, QListWidget {
+            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit, QListWidget {
                 background: #ffffff;
                 border: 1px solid #c7d0da;
                 border-radius: 3px;
                 padding: 6px 9px;
                 selection-background-color: #cfe0ff;
             }
-            QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QTextEdit:focus, QPlainTextEdit:focus, QListWidget:focus {
+            QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QTextEdit:focus, QPlainTextEdit:focus, QListWidget:focus {
                 border-color: #2563eb;
                 background: #ffffff;
             }
@@ -2316,6 +3704,8 @@ class MainWindow(QMainWindow):
                 "selected_tab": self._current_tab_key(),
                 "digest": asdict(self.digest_tab.build_config(require_required_fields=False)),
                 "scoring": asdict(self.scoring_tab.build_config(require_required_fields=False)),
+                "scoring_sample_unit_mapping_rows": self.scoring_tab._sample_unit_mapping_rows,
+                "scoring_sample_unit_mapping_source_path": self.scoring_tab._sample_unit_mapping_source_path,
             }
         except Exception as exc:
             QMessageBox.critical(self, "Cannot Save Config", str(exc))
@@ -2349,7 +3739,17 @@ class MainWindow(QMainWindow):
             payload = json.load(handle)
 
         self.digest_tab.load_config(DigestConfig(**payload.get("digest", {})))
-        self.scoring_tab.load_config(ScoringConfig(**payload.get("scoring", {})))
+        scoring_payload = payload.get("scoring", {})
+        if not isinstance(scoring_payload, dict):
+            scoring_payload = {}
+        scoring_fields = {field.name for field in fields(ScoringConfig)}
+        self.scoring_tab.load_config(ScoringConfig(**{k: v for k, v in scoring_payload.items() if k in scoring_fields}))
+        if isinstance(payload.get("scoring_sample_unit_mapping_rows"), list):
+            self.scoring_tab._sample_unit_mapping_rows = list(payload["scoring_sample_unit_mapping_rows"])
+            self.scoring_tab._sample_unit_mapping_source_path = str(
+                payload.get("scoring_sample_unit_mapping_source_path") or self.scoring_tab.peptide_table_edit.text().strip()
+            )
+            self.scoring_tab._update_sample_mapping_status()
         selected_tab = payload.get("selected_tab", "scoring")
         if isinstance(selected_tab, int):
             selected_tab = "scoring" if selected_tab == 0 else "digest"
@@ -2381,70 +3781,27 @@ class MainWindow(QMainWindow):
         try:
             state_dir = _default_user_config_dir()
             state_dir.mkdir(parents=True, exist_ok=True)
-            
-            try:
-                ko_mc = int(self.scoring_tab.knockoff_mc_iterations_edit.text() or 500)
-            except ValueError:
-                ko_mc = 500
-                
-            try:
-                ko_stage2_mc = int(self.scoring_tab.knockoff_stage2_mc_iterations_edit.text()) if self.scoring_tab.knockoff_stage2_mc_iterations_edit.text().strip() else None
-            except ValueError:
-                ko_stage2_mc = None
-                
-            try:
-                ko_seed = int(self.scoring_tab.knockoff_random_seed_edit.text() or 1)
-            except ValueError:
-                ko_seed = 1
-
-            try:
-                ko_ranges = _parse_range_pairs(self.scoring_tab.knockoff_stage2_ranges_edit.text())
-            except Exception:
-                ko_ranges = []
-
-            try:
-                err_cutoff = float(self.scoring_tab.peptide_error_cutoff_edit.text() or 0.05)
-            except ValueError:
-                err_cutoff = 0.05
-
-            try:
-                single_err_bound = float(self.scoring_tab.single_peptide_error_rate_upper_bound_edit.text() or 0.3)
-            except ValueError:
-                single_err_bound = 0.3
 
             state = {
-                "version": 1,
-                "last_browse_dir": self.scoring_tab._last_browse_dir,
-                "last_peptide_table_dir": _remember_dialog_directory(self.scoring_tab.peptide_table_edit.text()),
-                "last_output_dir": _remember_dialog_directory(self.scoring_tab.output_tsv_edit.text()),
-
-                "genome_digest_dirs": [self.scoring_tab.genome_dir_list.item(i).text() for i in range(self.scoring_tab.genome_dir_list.count())],
-                "genome_lineage_table_path": self.scoring_tab.genome_lineage_table_edit.text().strip(),
-                "genome_lineage_genome_id_col": self.scoring_tab.genome_lineage_genome_id_col_edit.currentText().strip(),
-                "genome_lineage_lineage_col": self.scoring_tab.genome_lineage_lineage_col_edit.currentText().strip(),
-
-                "peptide_seq_col": self.scoring_tab.peptide_seq_col_edit.currentText().strip(),
-                "peptide_score_col": self.scoring_tab.peptide_score_col_edit.currentText().strip(),
-                "peptide_error_col": self.scoring_tab.peptide_error_col_edit.currentText().strip(),
-                "peptide_error_cutoff": err_cutoff,
-                "single_peptide_error_rate_upper_bound": single_err_bound,
-                "unique_pvalue_mode": str(self.scoring_tab.unique_pvalue_mode_combo.currentData() or "upper-bound"),
-                "peptide_decoy_flag_col": self.scoring_tab.peptide_decoy_flag_col_edit.currentText().strip(),
-                "decoy_flag_value": self.scoring_tab.decoy_flag_value_edit.currentText().strip(),
-
-                "num_workers": self.scoring_tab.processes_spin.value(),
-                "knockoff_mc_iterations": ko_mc,
-                "knockoff_stage2_mc_iterations": ko_stage2_mc,
-                "knockoff_stage2_p_exist_ranges": ko_ranges,
-                "knockoff_random_seed": ko_seed,
-                "knockoff_top_n_targets": self.scoring_tab.knockoff_top_n_targets_spin.value() if self.scoring_tab.knockoff_top_n_targets_spin.value() > 0 else None,
-
-                "use_cache_if_exists": self.scoring_tab.use_cache_if_exists_checkbox.isChecked(),
-                "save_matched_peptides_cache": self.scoring_tab.save_cache_checkbox.isChecked(),
-                "compute_coverage": self.scoring_tab.compute_coverage_checkbox.isChecked(),
-                "export_temp": self.scoring_tab.export_temp_checkbox.isChecked(),
-                "export_peptide_contrib_topN": self.scoring_tab.export_peptide_contrib_topn_spin.value(),
-                "return_full_table": self.scoring_tab.return_full_table_checkbox.isChecked()
+                "version": 2,
+                "genome_digest": {
+                    "directories": [
+                        self.scoring_tab.genome_dir_list.item(i).text()
+                        for i in range(self.scoring_tab.genome_dir_list.count())
+                    ],
+                    "theoretical_opportunity_cache_path": (
+                        self.scoring_tab.theoretical_opportunity_cache_edit.text().strip()
+                    ),
+                },
+                "genome_lineage": {
+                    "table_path": self.scoring_tab.genome_lineage_table_edit.text().strip(),
+                    "genome_id_col": self.scoring_tab.genome_lineage_genome_id_col_edit.currentText().strip(),
+                    "lineage_col": self.scoring_tab.genome_lineage_lineage_col_edit.currentText().strip(),
+                },
+                "genome_selection_filters": {
+                    "exclude_genome_ids": _parse_text_list(self.scoring_tab.exclude_text.toPlainText()),
+                    "selected_genome_ids": _parse_text_list(self.scoring_tab.selected_genomes_text.toPlainText()),
+                },
             }
             with open(_default_gui_state_path(), "w", encoding="utf-8") as f:
                 json.dump(state, f, indent=2)
@@ -2466,75 +3823,38 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            if "last_browse_dir" in state:
-                path = state["last_browse_dir"]
-                if path and Path(path).exists():
-                    self.scoring_tab._last_browse_dir = path
-            
-            if "genome_digest_dirs" in state:
+            genome_digest_state = state.get("genome_digest", {})
+            restored_digest_dirs: list[str] = []
+            saved_digest_dirs: list[str] = []
+            if isinstance(genome_digest_state, dict):
+                raw_dirs = genome_digest_state.get("directories", [])
+                if isinstance(raw_dirs, list):
+                    saved_digest_dirs = [str(d) for d in raw_dirs if str(d).strip()]
+
                 self.scoring_tab._clear_genome_dirs()
-                for d in state["genome_digest_dirs"]:
+                for d in saved_digest_dirs:
                     if Path(d).exists() and Path(d).is_dir():
                         self.scoring_tab.genome_dir_list.addItem(d)
+                        restored_digest_dirs.append(d)
 
-            if "genome_lineage_table_path" in state:
-                p = state["genome_lineage_table_path"]
+                if saved_digest_dirs and restored_digest_dirs == saved_digest_dirs:
+                    cache_path = str(genome_digest_state.get("theoretical_opportunity_cache_path") or "").strip()
+                    self.scoring_tab.theoretical_opportunity_cache_edit.setText(cache_path)
+
+            genome_lineage_state = state.get("genome_lineage", {})
+            if isinstance(genome_lineage_state, dict):
+                p = str(genome_lineage_state.get("table_path") or "").strip()
                 if p and Path(p).exists() and Path(p).is_file():
                     self.scoring_tab.genome_lineage_table_edit.setText(p)
 
-            def _set_combo(combo, val):
-                if val is not None:
-                    combo.setEditText(str(val))
-                    
-            _set_combo(self.scoring_tab.genome_lineage_genome_id_col_edit, state.get("genome_lineage_genome_id_col"))
-            _set_combo(self.scoring_tab.genome_lineage_lineage_col_edit, state.get("genome_lineage_lineage_col"))
-            _set_combo(self.scoring_tab.peptide_seq_col_edit, state.get("peptide_seq_col", "Sequence"))
-            _set_combo(self.scoring_tab.peptide_score_col_edit, state.get("peptide_score_col", "Evidence"))
-            _set_combo(self.scoring_tab.peptide_error_col_edit, state.get("peptide_error_col", "Q.Value"))
-            _set_combo(self.scoring_tab.peptide_decoy_flag_col_edit, state.get("peptide_decoy_flag_col", "Reverse"))
-            _set_combo(self.scoring_tab.decoy_flag_value_edit, state.get("decoy_flag_value", "+"))
+                genome_id_col = genome_lineage_state.get("genome_id_col")
+                if genome_id_col is not None:
+                    self.scoring_tab.genome_lineage_genome_id_col_edit.setEditText(str(genome_id_col))
+                lineage_col = genome_lineage_state.get("lineage_col")
+                if lineage_col is not None:
+                    self.scoring_tab.genome_lineage_lineage_col_edit.setEditText(str(lineage_col))
 
-            if "peptide_error_cutoff" in state:
-                self.scoring_tab.peptide_error_cutoff_edit.setText(str(state["peptide_error_cutoff"]))
-            if "single_peptide_error_rate_upper_bound" in state:
-                self.scoring_tab.single_peptide_error_rate_upper_bound_edit.setText(str(state["single_peptide_error_rate_upper_bound"]))
-            
-            if "unique_pvalue_mode" in state:
-                mode_index = self.scoring_tab.unique_pvalue_mode_combo.findData(state["unique_pvalue_mode"])
-                self.scoring_tab.unique_pvalue_mode_combo.setCurrentIndex(max(mode_index, 0))
-
-            if "num_workers" in state and state["num_workers"] is not None:
-                self.scoring_tab.processes_spin.setValue(state["num_workers"])
-            
-            if "knockoff_mc_iterations" in state:
-                self.scoring_tab.knockoff_mc_iterations_edit.setText(str(state["knockoff_mc_iterations"]))
-            
-            if "knockoff_stage2_mc_iterations" in state:
-                val = state["knockoff_stage2_mc_iterations"]
-                self.scoring_tab.knockoff_stage2_mc_iterations_edit.setText("" if val is None else str(val))
-            
-            if "knockoff_stage2_p_exist_ranges" in state:
-                self.scoring_tab.knockoff_stage2_ranges_edit.setText(_format_range_pairs(state["knockoff_stage2_p_exist_ranges"]))
-
-            if "knockoff_random_seed" in state:
-                self.scoring_tab.knockoff_random_seed_edit.setText(str(state["knockoff_random_seed"]))
-                
-            if "knockoff_top_n_targets" in state:
-                val = state["knockoff_top_n_targets"]
-                self.scoring_tab.knockoff_top_n_targets_spin.setValue(val if val is not None else 0)
-
-            if "use_cache_if_exists" in state:
-                self.scoring_tab.use_cache_if_exists_checkbox.setChecked(bool(state["use_cache_if_exists"]))
-            if "save_matched_peptides_cache" in state:
-                self.scoring_tab.save_cache_checkbox.setChecked(bool(state["save_matched_peptides_cache"]))
-            if "compute_coverage" in state:
-                self.scoring_tab.compute_coverage_checkbox.setChecked(bool(state["compute_coverage"]))
-            if "export_temp" in state:
-                self.scoring_tab.export_temp_checkbox.setChecked(bool(state["export_temp"]))
-            if "export_peptide_contrib_topN" in state:
-                self.scoring_tab.export_peptide_contrib_topn_spin.setValue(int(state["export_peptide_contrib_topN"]))
-            if "return_full_table" in state:
-                self.scoring_tab.return_full_table_checkbox.setChecked(bool(state["return_full_table"]))
+            self.scoring_tab._sync_unit_aware_visibility()
             
             self.scoring_tab._sync_genome_lineage_column_visibility()
         except Exception as exc:
@@ -2574,3 +3894,4 @@ def main() -> None:
 if __name__ == "__main__":
     mp.freeze_support()
     main()
+

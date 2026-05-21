@@ -46,7 +46,22 @@ class ScoringConfig:
     peptide_error_col: str = "Q.Value"
     peptide_error_cutoff: float = 0.05
     single_peptide_error_rate_upper_bound: float = 0.3
-    unique_pvalue_mode: str = "upper-bound"
+    unique_pvalue_mode: str = "alpha-upper-bound"
+    unique_peptide_error_source: str = "global-alpha"
+    unique_count_power: float = 0.7
+    unique_count_cap: Optional[float] = None
+    theoretical_opportunity_cache_path: str = ""
+    rebuild_theoretical_opportunity_cache: bool = False
+    num_workers_for_theoretical_opportunity: Optional[int] = None
+    unit_aware: bool = False
+    sample_id_col: str = "Run"
+    intensity_col: str = "Precursor.Quantity"
+    intensity_min_value: float = 0.0
+    intensity_min_quantile: float = 0.0
+    metadata_table_path: str = ""
+    metadata_sample_id_col: str = "sample_id"
+    metadata_analysis_unit_col: str = "analysis_unit_id"
+    export_unit_derived_tables: bool = False
     peptide_decoy_flag_col: str = "Reverse"
     decoy_flag_value: str = "+"
     exclude_genome_ids: list[str] = field(default_factory=list)
@@ -54,7 +69,7 @@ class ScoringConfig:
     knockoff_mc_iterations: int = 500
     knockoff_stage2_mc_iterations: Optional[int] = 2000
     knockoff_stage2_p_exist_ranges: list[list[float]] = field(
-        default_factory=lambda: [[0.005, 0.02], [0.02, 0.08]]
+        default_factory=lambda: [[0.01, 0.05]]
     )
     knockoff_random_seed: int = 1
     knockoff_top_n_targets: Optional[int] = None
@@ -407,7 +422,7 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
     peptide_table_df = None
     resolved_columns: dict[str, Optional[str]] | None = None
     effective_decoy_flag_value = config.decoy_flag_value
-    if _is_parquet_path(peptide_table_path):
+    if (not config.unit_aware) and _is_parquet_path(peptide_table_path):
         if not os.path.isfile(peptide_table_path):
             raise FileNotFoundError(f"Peptide parquet file does not exist: {peptide_table_path}")
         peptide_table_df, resolved_columns = _load_parquet_peptide_table(
@@ -438,6 +453,7 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
 
     output_tsv_path = _normalize_output_path(config.output_tsv_path)
     cache_path = _normalize_output_path(config.matched_peptides_cache_path)
+    theoretical_cache_path = _normalize_output_path(config.theoretical_opportunity_cache_path)
     genome_lineage_table_path = _normalize_output_path(config.genome_lineage_table_path)
 
     with capture_runtime_output(log_callback, ["GenomePresenceScorer"]):
@@ -448,7 +464,26 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
         calc.knockoff_random_seed = int(config.knockoff_random_seed)
         calc.knockoff_top_n_targets = config.knockoff_top_n_targets
 
-        if peptide_table_df is None:
+        if config.unit_aware:
+            calc.read_unit_aware_peptide_file(
+                peptide_table_path=peptide_table_path,
+                sample_id_col=config.sample_id_col,
+                peptide_seq_col=config.peptide_seq_col,
+                peptide_score_col=_none_if_blank(config.peptide_score_col),
+                peptide_decoy_flag_col=_none_if_blank(config.peptide_decoy_flag_col),
+                decoy_flag_value=config.decoy_flag_value,
+                intensity_col=config.intensity_col,
+                peptide_error_col=_none_if_blank(config.peptide_error_col),
+                peptide_error_cutoff=float(config.peptide_error_cutoff),
+                single_peptide_error_rate_upper_bound=float(config.single_peptide_error_rate_upper_bound),
+                intensity_min_value=float(config.intensity_min_value),
+                intensity_min_quantile=float(config.intensity_min_quantile),
+                metadata_table_path=_normalize_output_path(config.metadata_table_path) or None,
+                metadata_sample_id_col=config.metadata_sample_id_col,
+                metadata_analysis_unit_col=config.metadata_analysis_unit_col,
+                peptide_table_sep="\t",
+            )
+        elif peptide_table_df is None:
             calc.read_peptide_file(
                 peptide_table_path=peptide_table_path,
                 peptide_seq_col=config.peptide_seq_col,
@@ -493,7 +528,15 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
             export_peptide_contrib_topN=int(config.export_peptide_contrib_topN),
             use_cache_if_exists=bool(config.use_cache_if_exists),
             unique_pvalue_mode=str(config.unique_pvalue_mode),
+            unique_peptide_error_source=str(config.unique_peptide_error_source),
+            unique_count_power=float(config.unique_count_power),
+            unique_count_cap=config.unique_count_cap,
+            theoretical_opportunity_cache_path=theoretical_cache_path or None,
+            rebuild_theoretical_opportunity_cache=bool(config.rebuild_theoretical_opportunity_cache),
+            num_workers_for_theoretical_opportunity=config.num_workers_for_theoretical_opportunity,
             return_full_table=bool(config.return_full_table),
+            unit_aware=bool(config.unit_aware),
+            export_unit_derived_tables=bool(config.export_unit_derived_tables),
         )
 
     saved_output = output_tsv_path
@@ -624,3 +667,4 @@ if __name__ == "__main__":
     else:
         from .cli import main as cli_main
     raise SystemExit(cli_main(sys.argv[1:]))
+

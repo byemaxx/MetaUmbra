@@ -4,7 +4,7 @@
 
 ## Genome-level presence inference from metaproteomic peptides
 
-MetaUmbra performs genome-level presence inference from metaproteomic peptide lists. It combines unique peptide support with weighted shared peptide evidence to identify statistically supported microbial genomes and generate interpretable presence rankings.
+MetaUmbra performs genome-level presence inference from metaproteomic peptide lists. It combines depth-adjusted genome-unique peptide support with weighted shared peptide evidence to identify statistically supported microbial genomes and generate interpretable presence rankings.
 
 ## Main features
 
@@ -12,6 +12,7 @@ MetaUmbra performs genome-level presence inference from metaproteomic peptide li
 - Build genome-specific theoretical peptide references from protein FASTA files
 - Support user-defined genome collections, including isolate genomes, strain panels, and MAG catalogs
 - Use both unique and shared peptide evidence for genome presence inference
+- Score multi-sample inputs per sample or user-defined analysis unit without repeated genome digest scans
 - Report genome-level p-values, BH-adjusted q-values, and presence scores
 - Provide GUI, command-line, and Python workflow support
 - Support peptide tables from common metaproteomics workflows such as DIA-NN and MaxQuant
@@ -79,9 +80,22 @@ MetaUmbra requires:
 
 Optional inputs include peptide scores, peptide-level error values, decoy flags, and genome lineage annotations.
 
+For multi-sample long tables such as DIA-NN reports, `metaumbra score --unit-aware` can call peptide presence per raw sample using `Precursor.Quantity`, aggregate samples into `analysis_unit_id` groups from an optional metadata table, and export pooled, per-unit, cohort recurrence, significant-call, genome-union, and genome-by-unit matrix outputs.
+
 ## Output
 
 The main output is a TSV table containing genome-level evidence and significance values.
+When unit-aware scoring is enabled, the requested output path contains the main unit-level genome presence result.
+
+Unit-aware output files:
+
+- `<stem>_unit_genome_presence.tsv`: one row per `analysis_unit_id` x `genome_id`, including unit-specific `qvalue` and `pass_q` flags.
+- `<stem>_cohort_genome_summary.tsv`: one row per genome, summarizing recurrence across units.
+- `<stem>_sample_unit_mapping.tsv`: final sample-to-analysis-unit mapping used for the run.
+
+The pooled peptide-set result is supplementary in unit-aware mode and is written under `<stem>_artifacts/pooled_genome_presence.tsv` when artifact export is enabled. Optional derived unit-aware tables can be enabled with `--export-unit-derived-tables`; they are written under `<stem>_artifacts/unit_aware/` and include call counts, significant per-unit genome lists, deduplicated genome unions, binary genome x unit matrices, and a q-value matrix.
+
+In the current implementation, peptide presence within an analysis unit is defined as the union of sample-level peptide presence across samples assigned to that unit. Unit-level p-values are based on `hypergeometric-opportunity` unique evidence only; `pvalue_shared` is set to `1.0` and is not used in unit-level scoring.
 
 Key output columns include:
 
@@ -90,8 +104,12 @@ Key output columns include:
 | `genome_id` | Candidate genome identifier |
 | `num_peptides_matched` | Number of observed peptides matched to the genome |
 | `num_peptides_unique` | Number of matched peptides unique to the genome |
-| `shared_fraction` | Fraction of matched peptides that are shared with other genomes |
-| `mean_degeneracy` | Mean number of genomes containing the matched peptides |
+| `theoretical_unique_peptides` | Theoretical peptides unique to this genome among the analyzed genome set, included for `hypergeometric-opportunity` output |
+| `expected_unique_null` | Expected observed genome-unique peptides under the selected adaptive null |
+| `unique_depth_fold` | Observed unique peptides divided by expected unique peptides under the null |
+| `has_unique_evidence` | Whether the genome has at least one observed unique peptide |
+| `pvalue_shared` | Shared-peptide knockoff p-value |
+| `pvalue_unique` | Unique-evidence p-value |
 | `pvalue` | Genome-level p-value |
 | `qvalue` | BH-adjusted genome-level q-value |
 | `presence_score` | Ranking score based on q-value |
