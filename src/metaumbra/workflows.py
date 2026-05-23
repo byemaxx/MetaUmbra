@@ -3,11 +3,16 @@ from __future__ import annotations
 import contextlib
 import csv
 import io
+import json
 import logging
 import os
+import platform
+import re
 import sys
 import time
-from dataclasses import dataclass, field
+import traceback
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
@@ -131,6 +136,22 @@ class StreamToCallback(io.TextIOBase):
         self._buffer = ""
 
 
+class ArtifactLogTee:
+    def __init__(self, log_path: Path, callback: Optional[LogCallback]):
+        self.log_path = log_path
+        self.callback = callback
+
+    def __call__(self, message: str) -> None:
+        text = str(message)
+        with self.log_path.open("a", encoding="utf-8", newline="") as handle:
+            handle.write(text + "\n")
+        if self.callback is not None:
+            self.callback(text)
+
+    def close(self) -> None:
+        return
+
+
 @contextlib.contextmanager
 def capture_runtime_output(callback: Optional[LogCallback], logger_names: Iterable[str]):
     if callback is None:
@@ -170,6 +191,176 @@ def _normalize_output_path(path_str: str) -> str:
     if not path_str.strip():
         return ""
     return str(Path(path_str).expanduser())
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _scoring_artifact_dir(output_tsv_path: str) -> Optional[Path]:
+    normalized_output = _normalize_output_path(output_tsv_path)
+    if not normalized_output:
+        return None
+    output_path = Path(normalized_output)
+    return output_path.parent / f"{output_path.stem}_artifacts"
+
+
+def _write_json_file(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, ensure_ascii=False)
+
+
+def _detect_cpu_model() -> Optional[str]:
+    if sys.platform == "win32":
+        try:
+            import winreg
+
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+            ) as key:
+                value, _ = winreg.QueryValueEx(key, "ProcessorNameString")
+            cleaned = str(value).strip()
+            if cleaned:
+                return re.sub(r"\s+", " ", cleaned)
+        except Exception:
+            pass
+
+    if sys.platform.startswith("linux"):
+        try:
+            for line in Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="ignore").splitlines():
+                if line.lower().startswith("model name"):
+                    _, value = line.split(":", 1)
+                    cleaned = value.strip()
+                    if cleaned:
+                        return re.sub(r"\s+", " ", cleaned)
+        except Exception:
+            pass
+
+    for candidate in (platform.processor(), os.environ.get("PROCESSOR_IDENTIFIER")):
+        if candidate:
+            cleaned = str(candidate).strip()
+            if cleaned:
+                return re.sub(r"\s+", " ", cleaned)
+    return None
+
+
+def _detect_total_memory_bytes() -> Optional[int]:
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            status = MEMORYSTATUSEX()
+            status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return int(status.ullTotalPhys)
+        except Exception:
+            pass
+
+    try:
+        pages = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        if pages and page_size:
+            return int(pages) * int(page_size)
+    except (AttributeError, OSError, ValueError):
+        pass
+    return None
+
+
+def _environment_metadata() -> dict:
+    total_memory_bytes = _detect_total_memory_bytes()
+    return {
+        "cpu_model": _detect_cpu_model(),
+        "cpu_count_logical": os.cpu_count(),
+        "total_memory_bytes": total_memory_bytes,
+        "total_memory_gib": round(total_memory_bytes / (1024**3), 2) if total_memory_bytes else None,
+        "platform": platform.platform(),
+        "system": platform.system(),
+        "release": platform.release(),
+        "version": platform.version(),
+        "machine": platform.machine(),
+        "architecture": platform.architecture()[0],
+    }
+
+
+def _workflow_metadata(workflow: str, started_at_utc: str) -> dict:
+    try:
+        from metaumbra import __version__ as app_version
+    except Exception:
+        app_version = "unknown"
+
+    return {
+        "workflow": workflow,
+        "started_at_utc": started_at_utc,
+        "metaumbra_version": str(app_version),
+        "python_version": sys.version,
+        "platform": platform.platform(),
+        "environment": _environment_metadata(),
+    }
+
+
+def _initialize_scoring_artifacts(
+    config: ScoringConfig,
+    output_tsv_path: str,
+    log_callback: Optional[LogCallback],
+) -> tuple[Optional[Path], Optional[ArtifactLogTee], str]:
+    started_at_utc = _utc_timestamp()
+    artifact_dir = _scoring_artifact_dir(output_tsv_path)
+    if artifact_dir is None:
+        return None, None, started_at_utc
+
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    parameters_payload = {
+        **_workflow_metadata("score", started_at_utc),
+        "output_tsv_path": output_tsv_path,
+        "artifact_dir": str(artifact_dir),
+        "config": asdict(config),
+    }
+    _write_json_file(artifact_dir / "run_parameters.json", parameters_payload)
+    log_tee = ArtifactLogTee(artifact_dir / "run.log", log_callback)
+    log_tee(f"=== MetaUmbra score started at {started_at_utc} UTC ===")
+    log_tee(f"Artifacts directory: {artifact_dir}")
+    return artifact_dir, log_tee, started_at_utc
+
+
+def _write_scoring_status(
+    artifact_dir: Optional[Path],
+    status: str,
+    started_at_utc: str,
+    result: Optional[dict] = None,
+    error: Optional[BaseException] = None,
+) -> None:
+    if artifact_dir is None:
+        return
+
+    payload = {
+        **_workflow_metadata("score", started_at_utc),
+        "finished_at_utc": _utc_timestamp(),
+        "status": status,
+    }
+    if result is not None:
+        payload["result"] = result
+    if error is not None:
+        payload["error"] = {
+            "type": type(error).__name__,
+            "message": str(error),
+            "traceback": traceback.format_exc(),
+        }
+    _write_json_file(artifact_dir / "run_status.json", payload)
 
 
 PARQUET_EXTENSIONS = {".parquet", ".pq"}
@@ -408,14 +599,21 @@ def run_digest_workflow(config: DigestConfig, log_callback: Optional[LogCallback
         }
 
 
-def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallback] = None) -> dict:
+def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional[LogCallback] = None) -> dict:
     import importlib
 
     scoring_module = importlib.import_module("metaumbra.scoring")
 
     start = time.time()
-    if log_callback:
-        log_callback(f"Starting genome presence scoring for: {config.peptide_table_path}")
+    output_tsv_path = _normalize_output_path(config.output_tsv_path)
+    artifact_dir, artifact_log_callback, started_at_utc = _initialize_scoring_artifacts(
+        config=config,
+        output_tsv_path=output_tsv_path,
+        log_callback=log_callback,
+    )
+    active_log_callback = artifact_log_callback if artifact_log_callback is not None else log_callback
+    if active_log_callback:
+        active_log_callback(f"Starting genome presence scoring for: {config.peptide_table_path}")
 
     peptide_table_path = str(Path(config.peptide_table_path).expanduser())
     peptide_table_df = None
@@ -430,18 +628,18 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
             peptide_score_col=_none_if_blank(config.peptide_score_col),
             peptide_error_col=_none_if_blank(config.peptide_error_col),
             peptide_decoy_flag_col=_none_if_blank(config.peptide_decoy_flag_col),
-            log_callback=log_callback,
+            log_callback=active_log_callback,
         )
         peptide_table_df = _clean_parquet_peptide_table(
             peptide_table_df=peptide_table_df,
             resolved_columns=resolved_columns,
-            log_callback=log_callback,
+            log_callback=active_log_callback,
         )
         effective_decoy_flag_value = _infer_decoy_flag_value(
             peptide_table_df=peptide_table_df,
             resolved_columns=resolved_columns,
             configured_value=config.decoy_flag_value,
-            log_callback=log_callback,
+            log_callback=active_log_callback,
         )
 
     normalized_ranges = [
@@ -450,12 +648,11 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
         if isinstance(bounds, (list, tuple)) and len(bounds) == 2
     ]
 
-    output_tsv_path = _normalize_output_path(config.output_tsv_path)
     cache_path = _normalize_output_path(config.matched_peptides_cache_path)
     theoretical_cache_path = _normalize_output_path(config.theoretical_opportunity_cache_path)
     genome_lineage_table_path = _normalize_output_path(config.genome_lineage_table_path)
 
-    with capture_runtime_output(log_callback, ["GenomePresenceScorer"]):
+    with capture_runtime_output(active_log_callback, ["GenomePresenceScorer"]):
         calc = scoring_module.GenomePresenceScorer(num_workers=config.num_workers)
         calc.knockoff_mc_iterations = int(config.knockoff_mc_iterations)
         calc.knockoff_stage2_mc_iterations = config.knockoff_stage2_mc_iterations
@@ -542,12 +739,40 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
         output_dir = calc.peptide_table_dir if calc.peptide_table_dir else os.getcwd()
         saved_output = os.path.join(output_dir, "genome_presence.tsv")
 
-    return {
+    result = {
         "input": peptide_table_path,
         "output": saved_output,
+        "artifacts": str(artifact_dir) if artifact_dir is not None else "",
         "rows": int(len(result_df)),
         "elapsed_seconds": round(time.time() - start, 2),
     }
+    _write_scoring_status(artifact_dir, "success", started_at_utc, result=result)
+    if active_log_callback:
+        active_log_callback(f"Finished genome presence scoring in {result['elapsed_seconds']} s.")
+    return result
+
+
+def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallback] = None) -> dict:
+    try:
+        return _run_scoring_workflow_uncaught(config, log_callback)
+    except Exception as exc:
+        artifact_dir = _scoring_artifact_dir(config.output_tsv_path)
+        started_at_utc = _utc_timestamp()
+        if artifact_dir is not None:
+            try:
+                parameters_path = artifact_dir / "run_parameters.json"
+                if parameters_path.exists():
+                    with parameters_path.open("r", encoding="utf-8") as handle:
+                        payload = json.load(handle)
+                    started_at_utc = str(payload.get("started_at_utc") or started_at_utc)
+            except Exception:
+                pass
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            ArtifactLogTee(artifact_dir / "run.log", log_callback)(
+                f"Scoring workflow failed: {type(exc).__name__}: {exc}"
+            )
+            _write_scoring_status(artifact_dir, "failed", started_at_utc, error=exc)
+        raise
 
 
 def run_parquet_extraction_workflow(

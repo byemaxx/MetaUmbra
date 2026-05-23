@@ -344,7 +344,7 @@ Important scoring options:
 | `--use-cache-if-exists` | off | Reuse an existing matched-peptide cache if available. |
 | `--no-save-cache` | off | Do not save matched-peptide cache output. |
 | `--no-compute-coverage` | off | Skip cumulative coverage calculations. |
-| `--no-export-temp` | off | Skip diagnostic artifact exports. |
+| `--no-export-temp` | off | Skip diagnostic artifact table exports. Run parameters and run log are still written under `<stem>_artifacts/`. |
 | `--return-full-table` | off | Write the full internal result table instead of only the concise main result. |
 
 Unique p-value strength is controlled by `--unique-pvalue-mode`, `--unique-peptide-error-source`, `--single-peptide-error-rate-upper-bound`, and `--unique-count-power`.
@@ -534,12 +534,15 @@ The cohort summary answers how often each genome is supported across units. It i
 
 ### Diagnostic artifacts
 
-By default, scoring also writes a diagnostic artifact directory next to the main output:
+At the start of each scoring run, MetaUmbra creates an artifact directory next to the main output and writes run provenance there. This happens before peptide or genome inputs are read, so failed runs can still leave the parameters and log needed for debugging.
 
 ```text
 results/
   genome_presence.tsv
   genome_presence_artifacts/
+    run_parameters.json
+    run.log
+    run_status.json
     run_summary.json
     full_internal_metrics.tsv
     knockoff_pools.tsv
@@ -550,12 +553,15 @@ results/
     theoretical_opportunity_cache.pkl  # hypergeometric-opportunity only
 ```
 
-The exact set of files depends on available runtime data. Use `--no-export-temp` to disable these artifacts.
+The exact set of diagnostic tables depends on available runtime data. Use `--no-export-temp` to disable the heavier diagnostic table exports; `run_parameters.json`, `run.log`, and `run_status.json` are still written.
 
 Common artifacts:
 
 | File | Description |
 | --- | --- |
+| `run_parameters.json` | Scoring configuration captured at run start, including CLI/GUI parameters, output path, CPU model, logical CPU count, total memory, platform/architecture, Python version, and MetaUmbra version. |
+| `run.log` | Runtime log stream written alongside the GUI/CLI log output. |
+| `run_status.json` | Completion status and final result summary for successful scoring runs. |
 | `run_summary.json` | Runtime settings, input summary, platform details, timing, and call counts. |
 | `full_internal_metrics.tsv` | Complete internal metrics table used to produce the concise output. |
 | `knockoff_pools.tsv` | Knockoff pool diagnostics for shared peptide evidence. |

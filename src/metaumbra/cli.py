@@ -422,7 +422,7 @@ def build_parser() -> argparse.ArgumentParser:
         score_optional,
         "--no-export-temp",
         action="store_true",
-        help="Skip temporary artifact exports.",
+        help="Skip diagnostic artifact tables. Run parameters and run log are still written under <stem>_artifacts/.",
     )
     _add_argument(
         score_optional,
