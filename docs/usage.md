@@ -605,7 +605,7 @@ MetaUmbra combines unique peptide support with weighted shared peptide evidence:
 - Unique-evidence p-values use a peptide-depth adjusted null model by default.
 - `qvalue` is the Benjamini-Hochberg adjusted genome-level presence q-value across analyzed genomes.
 
-For default `empirical-background` unique evidence, MetaUmbra estimates a sample-specific weak-genome background for genome-unique peptide counts. It removes the top evidence genomes from the background pool, bins the remaining weak-background genomes by `total_peptide_count`, estimates the 95th percentile weak-background unique count in each bin, and accumulates only excess unique evidence:
+For default `empirical-background` unique evidence, MetaUmbra estimates a sample-specific weak-genome background for genome-unique peptide counts. It bins weak-background genomes by `total_peptide_count`, estimates the 95th percentile weak-background unique count in each bin, and accumulates only excess unique evidence:
 
 ```text
 U_background = percentile_95(U_bg in same total_peptide_count bin)
@@ -613,7 +613,9 @@ U_excess = max(0, U_g - U_background)
 p_unique = alpha ^ U_excess, when U_excess > 0; otherwise p_unique = 1
 ```
 
-This is analogous in spirit to the shared peptide knockoff, but for genome-unique evidence: the shared knockoff calibrates shared weighted evidence, while `empirical-background` calibrates unique peptide counts against weak-background genomes at the same sample depth and opportunity scale. The direct empirical ECDF tail is retained as `p_unique_empirical_tail` for diagnostics, but it is not used as `pvalue_unique` because its resolution is too coarse for genome-level BH correction across thousands of genomes. MetaUmbra records `unique_empirical_background_opportunity_source = total_peptide_count` in `run_summary.json`.
+By default, background exclusion is adaptive. MetaUmbra starts by excluding the top 10% evidence-ranked genomes from the weak-background pool, computes preliminary genome-level q-values, estimates the fraction of candidate genomes with `q <= 0.20`, clamps that fraction to 10-30%, and rebuilds the final weak-background threshold. This matters for pooled or high-depth cohorts where many true present genomes can otherwise contaminate the weak-background pool and inflate `U_background`.
+
+This is analogous in spirit to the shared peptide knockoff, but for genome-unique evidence: the shared knockoff calibrates shared weighted evidence, while `empirical-background` calibrates unique peptide counts against weak-background genomes at the same sample depth and opportunity scale. The direct empirical ECDF tail is retained as `p_unique_empirical_tail` for diagnostics, but it is not used as `pvalue_unique` because its resolution is too coarse for genome-level BH correction across thousands of genomes. `empirical-background` does not build the theoretical opportunity cache by default; it records `unique_empirical_background_opportunity_source = total_peptide_count` in `run_summary.json`, along with the initial and final background exclusion fractions, candidate q threshold, iteration count, threshold quantile, and alpha.
 
 For `hypergeometric-opportunity` unique evidence, MetaUmbra compares observed genome-unique peptides against genome-specific theoretical unique peptide opportunity:
 

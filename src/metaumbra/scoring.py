@@ -1031,6 +1031,14 @@ class GenomePresenceScorer:
         self.unique_empirical_threshold_by_genome: Dict[str, float] = {}
         self.unique_empirical_excess_by_genome: Dict[str, float] = {}
         self.unique_empirical_tail_by_genome: Dict[str, float] = {}
+        self.unique_empirical_background_exclude_mode: str = "auto"
+        self.unique_empirical_background_initial_exclude_fraction: float = 0.10
+        self.unique_empirical_background_min_exclude_fraction: float = 0.10
+        self.unique_empirical_background_max_exclude_fraction: float = 0.30
+        self.unique_empirical_background_candidate_q: float = 0.20
+        self.unique_empirical_background_max_iterations: int = 3
+        self.unique_empirical_background_convergence_tol: float = 0.01
+        self.unique_empirical_background_threshold_quantile: float = 0.95
         self.genome_scores_df: Optional[pd.DataFrame] = None
 
         # Unified ranking score scales (lexicographic; unique dominates)
@@ -1696,7 +1704,10 @@ class GenomePresenceScorer:
             U = int(row["_unique_empirical_U"])
             ge = int((same_bin_u >= U).sum()) if bg_size > 0 else 0
             p_tail = (1.0 + float(ge)) / (1.0 + float(bg_size))
-            threshold = float(np.quantile(same_bin_u.to_numpy(dtype=float), 0.95)) if bg_size > 0 else 0.0
+            threshold_quantile = float(
+                np.clip(float(self.unique_empirical_background_threshold_quantile), 0.0, 1.0)
+            )
+            threshold = float(np.quantile(same_bin_u.to_numpy(dtype=float), threshold_quantile)) if bg_size > 0 else 0.0
             excess = float(max(0.0, float(U) - threshold))
             p_value = float(alpha ** excess) if excess > 0 else 1.0
             expected = float(same_bin_u.mean()) if bg_size > 0 else 0.0
@@ -1728,8 +1739,118 @@ class GenomePresenceScorer:
         self.run_stats["unique_empirical_background_bin_count"] = int(out["_unique_empirical_bin"].nunique())
         self.run_stats["unique_empirical_background_min_bin_size"] = int(min_bin_size)
         self.run_stats["unique_empirical_background_opportunity_source"] = opportunity_source
-        self.run_stats["unique_empirical_background_threshold_quantile"] = 0.95
+        self.run_stats["unique_empirical_background_threshold_quantile"] = float(
+            np.clip(float(self.unique_empirical_background_threshold_quantile), 0.0, 1.0)
+        )
         self.run_stats["unique_empirical_background_alpha"] = float(alpha)
+
+    def _apply_unique_empirical_background_to_output(
+        self,
+        out: pd.DataFrame,
+        target_df: pd.DataFrame,
+        target_mask: pd.Series,
+        candidate_q: float,
+    ) -> float:
+        """Apply current empirical-background dictionaries and return candidate q fraction."""
+        for idx, row in target_df.iterrows():
+            genome_id = str(row["genome_id"])
+            unique_stats = self._unique_pvalue_stats_for_genome(
+                gid=genome_id,
+                u_observed=int(row.get("num_peptides_unique", 0)),
+            )
+            p_unique = float(unique_stats["p_unique"])
+            p_shared = float(out.at[idx, "p_shared_knock"]) if idx in out.index else 1.0
+            p_existence = self._fisher_p_2(p1=p_shared, p2=p_unique)
+            for key, value in unique_stats.items():
+                out.at[idx, key] = value
+            out.at[idx, "p_presence"] = p_existence
+
+        all_p = out.loc[target_mask, "p_presence"].to_numpy(dtype=float)
+        out.loc[target_mask, "q_presence"] = self._bh_qvalues(all_p)
+        qvals = pd.to_numeric(out.loc[target_mask, "q_presence"], errors="coerce").fillna(1.0)
+        if len(qvals) == 0:
+            return 0.0
+        return float((qvals <= float(candidate_q)).sum()) / float(len(qvals))
+
+    def _fit_unique_empirical_background_auto(
+        self,
+        out: pd.DataFrame,
+        target_df: pd.DataFrame,
+        target_mask: pd.Series,
+    ) -> None:
+        """Adapt weak-background exclusion using preliminary genome-level q-values."""
+        mode = str(self.unique_empirical_background_exclude_mode or "auto").strip().lower()
+        initial_fraction = float(np.clip(self.unique_empirical_background_initial_exclude_fraction, 0.0, 1.0))
+        min_fraction = float(np.clip(self.unique_empirical_background_min_exclude_fraction, 0.0, 1.0))
+        max_fraction = float(np.clip(self.unique_empirical_background_max_exclude_fraction, min_fraction, 1.0))
+        candidate_q = float(np.clip(self.unique_empirical_background_candidate_q, 0.0, 1.0))
+        max_iterations = int(max(1, self.unique_empirical_background_max_iterations))
+        convergence_tol = float(max(0.0, self.unique_empirical_background_convergence_tol))
+        exclude_fraction = float(np.clip(initial_fraction, min_fraction, max_fraction))
+        trace: List[dict] = []
+
+        self.run_stats["unique_empirical_background_exclude_mode"] = mode
+        self.run_stats["unique_empirical_background_initial_exclude_fraction"] = float(initial_fraction)
+        self.run_stats["unique_empirical_background_min_exclude_fraction"] = float(min_fraction)
+        self.run_stats["unique_empirical_background_max_exclude_fraction"] = float(max_fraction)
+        self.run_stats["unique_empirical_background_candidate_q"] = float(candidate_q)
+        self.run_stats["unique_empirical_background_convergence_tol"] = float(convergence_tol)
+
+        if len(target_df) == 0:
+            self.run_stats["unique_empirical_background_final_exclude_fraction"] = float(exclude_fraction)
+            self.run_stats["unique_empirical_background_iterations"] = 0
+            self.run_stats["unique_empirical_background_iteration_trace"] = []
+            return
+
+        if mode == "auto":
+            for iteration in range(1, max_iterations + 1):
+                self._prepare_unique_empirical_background(
+                    out.loc[target_mask].copy(),
+                    top_exclude_fraction=exclude_fraction,
+                )
+                candidate_fraction = self._apply_unique_empirical_background_to_output(
+                    out=out,
+                    target_df=target_df,
+                    target_mask=target_mask,
+                    candidate_q=candidate_q,
+                )
+                new_exclude_fraction = float(np.clip(candidate_fraction, min_fraction, max_fraction))
+                trace.append(
+                    {
+                        "iteration": int(iteration),
+                        "exclude_fraction": float(exclude_fraction),
+                        "candidate_fraction": float(candidate_fraction),
+                        "new_exclude_fraction": float(new_exclude_fraction),
+                    }
+                )
+                if abs(new_exclude_fraction - exclude_fraction) < convergence_tol:
+                    exclude_fraction = new_exclude_fraction
+                    break
+                exclude_fraction = new_exclude_fraction
+        else:
+            trace.append(
+                {
+                    "iteration": 1,
+                    "exclude_fraction": float(exclude_fraction),
+                    "candidate_fraction": None,
+                    "new_exclude_fraction": float(exclude_fraction),
+                }
+            )
+
+        # Final pass: rebuild and apply the converged background to all output statistics.
+        self._prepare_unique_empirical_background(
+            out.loc[target_mask].copy(),
+            top_exclude_fraction=exclude_fraction,
+        )
+        self._apply_unique_empirical_background_to_output(
+            out=out,
+            target_df=target_df,
+            target_mask=target_mask,
+            candidate_q=candidate_q,
+        )
+        self.run_stats["unique_empirical_background_final_exclude_fraction"] = float(exclude_fraction)
+        self.run_stats["unique_empirical_background_iterations"] = int(len(trace))
+        self.run_stats["unique_empirical_background_iteration_trace"] = trace
 
 
     # =========================
@@ -3120,9 +3241,6 @@ class GenomePresenceScorer:
             topN = int(self.knockoff_top_n_targets)
             target_df = target_df.sort_values("evidence_rank", ascending=True, kind="mergesort").head(topN)
 
-        if mode == "empirical-background":
-            self._prepare_unique_empirical_background(out.loc[target_mask].copy())
-
         # -----------------
         # Stage 1 (fast screen)
         # -----------------
@@ -3140,23 +3258,31 @@ class GenomePresenceScorer:
             )
             p_shared, mu, sd, p95, p99 = result if isinstance(result, tuple) else (result, 0.0, 0.0, 0.0, 0.0)
 
-            unique_stats = self._unique_pvalue_stats_for_genome(
-                gid=genome_id,
-                u_observed=int(row.get("num_peptides_unique", 0)),
-            )
-            p_unique = float(unique_stats["p_unique"])
-            p_existence = self._fisher_p_2(p1=p_shared, p2=p_unique)
-
             out.at[idx, "p_shared_knock"] = p_shared
-            for key, value in unique_stats.items():
-                out.at[idx, key] = value
-            out.at[idx, "p_presence"] = p_existence
+            if mode != "empirical-background":
+                unique_stats = self._unique_pvalue_stats_for_genome(
+                    gid=genome_id,
+                    u_observed=int(row.get("num_peptides_unique", 0)),
+                )
+                p_unique = float(unique_stats["p_unique"])
+                p_existence = self._fisher_p_2(p1=p_shared, p2=p_unique)
+
+                for key, value in unique_stats.items():
+                    out.at[idx, key] = value
+                out.at[idx, "p_presence"] = p_existence
 
             out.at[idx, "null_mean_shared"] = mu
             out.at[idx, "null_sd_shared"] = sd
             out.at[idx, "null_p95_shared"] = p95
             out.at[idx, "null_p99_shared"] = p99
             out.at[idx, "z_shared"] = (observed_shared_evidence - mu) / (sd + 1e-12)
+
+        if mode == "empirical-background":
+            self._fit_unique_empirical_background_auto(
+                out=out,
+                target_df=target_df,
+                target_mask=target_mask,
+            )
 
         # -----------------
         # Stage 2 (refine near-threshold genomes)

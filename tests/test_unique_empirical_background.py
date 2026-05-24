@@ -14,6 +14,24 @@ from metaumbra.scoring import GenomePresenceScorer, _effective_unique_count
 
 
 class UniqueEmpiricalBackgroundTests(unittest.TestCase):
+    def _run_empirical_auto_fit(self, rows):
+        out = pd.DataFrame(rows).copy()
+        out["p_shared_knock"] = pd.to_numeric(out.get("p_shared_knock", 1.0), errors="coerce").fillna(1.0)
+        out["p_presence"] = 1.0
+        out["q_presence"] = 1.0
+        target_mask = out["_genomes_with_any_match"].astype(bool)
+        target_df = out.loc[target_mask].copy()
+
+        scorer = GenomePresenceScorer(num_workers=1)
+        scorer.unique_pvalue_mode = "empirical-background"
+        scorer.single_peptide_error_rate_upper_bound = 0.05
+        scorer._fit_unique_empirical_background_auto(
+            out=out,
+            target_df=target_df,
+            target_mask=target_mask,
+        )
+        return scorer, out
+
     def test_empirical_background_downweights_deep_weak_unique_counts(self) -> None:
         rows = []
         for i in range(120):
@@ -61,6 +79,128 @@ class UniqueEmpiricalBackgroundTests(unittest.TestCase):
             scorer.run_stats["unique_empirical_background_opportunity_source"],
             "total_peptide_count",
         )
+
+    def test_empirical_background_auto_keeps_small_dataset_near_initial_exclusion(self) -> None:
+        rows = []
+        for i in range(80):
+            u = 3 + (i % 4)
+            rows.append(
+                {
+                    "genome_id": f"bg_{i:03d}",
+                    "_genomes_with_any_match": True,
+                    "num_peptides_unique": u,
+                    "total_peptide_count": 1000,
+                    "unique_weighted_evidence": float(u),
+                    "weighted_evidence": float(u),
+                    "p_shared_knock": 1.0,
+                }
+            )
+        for i in range(4):
+            u = 20 + i
+            rows.append(
+                {
+                    "genome_id": f"hit_{i:03d}",
+                    "_genomes_with_any_match": True,
+                    "num_peptides_unique": u,
+                    "total_peptide_count": 1000,
+                    "unique_weighted_evidence": float(u),
+                    "weighted_evidence": float(u),
+                    "p_shared_knock": 1.0,
+                }
+            )
+
+        scorer, out = self._run_empirical_auto_fit(rows)
+
+        self.assertAlmostEqual(
+            scorer.run_stats["unique_empirical_background_final_exclude_fraction"],
+            0.10,
+        )
+        self.assertEqual(scorer.run_stats["unique_empirical_background_exclude_mode"], "auto")
+        self.assertLessEqual(scorer.run_stats["unique_empirical_background_iterations"], 3)
+        self.assertTrue((out.loc[out["genome_id"].str.startswith("bg_"), "p_unique"] == 1.0).all())
+
+    def test_empirical_background_auto_increases_exclusion_for_cohort_like_candidates(self) -> None:
+        rows = []
+        for i in range(140):
+            u = 3 + (i % 4)
+            rows.append(
+                {
+                    "genome_id": f"bg_{i:03d}",
+                    "_genomes_with_any_match": True,
+                    "num_peptides_unique": u,
+                    "total_peptide_count": 1000,
+                    "unique_weighted_evidence": float(u),
+                    "weighted_evidence": float(u),
+                    "p_shared_knock": 1.0,
+                }
+            )
+        for i in range(60):
+            u = 50 + (i % 3)
+            rows.append(
+                {
+                    "genome_id": f"hit_{i:03d}",
+                    "_genomes_with_any_match": True,
+                    "num_peptides_unique": u,
+                    "total_peptide_count": 1000,
+                    "unique_weighted_evidence": float(u),
+                    "weighted_evidence": float(u),
+                    "p_shared_knock": 1e-8,
+                }
+            )
+
+        scorer, out = self._run_empirical_auto_fit(rows)
+        final_fraction = scorer.run_stats["unique_empirical_background_final_exclude_fraction"]
+
+        self.assertGreater(final_fraction, 0.10)
+        self.assertLessEqual(final_fraction, scorer.unique_empirical_background_max_exclude_fraction)
+        self.assertAlmostEqual(final_fraction, 0.30)
+        self.assertLess(out.loc[out["genome_id"] == "hit_000", "p_unique"].iloc[0], 1e-6)
+        self.assertTrue((out.loc[out["genome_id"].str.startswith("bg_"), "q_presence"] > 0.20).all())
+
+    def test_empirical_background_auto_respects_max_exclude_fraction(self) -> None:
+        rows = []
+        for i in range(100):
+            u = 3 + (i % 4)
+            rows.append(
+                {
+                    "genome_id": f"bg_{i:03d}",
+                    "_genomes_with_any_match": True,
+                    "num_peptides_unique": u,
+                    "total_peptide_count": 1000,
+                    "unique_weighted_evidence": float(u),
+                    "weighted_evidence": float(u),
+                    "p_shared_knock": 1.0,
+                }
+            )
+        for i in range(100):
+            u = 50 + (i % 3)
+            rows.append(
+                {
+                    "genome_id": f"hit_{i:03d}",
+                    "_genomes_with_any_match": True,
+                    "num_peptides_unique": u,
+                    "total_peptide_count": 1000,
+                    "unique_weighted_evidence": float(u),
+                    "weighted_evidence": float(u),
+                    "p_shared_knock": 1e-8,
+                }
+            )
+
+        out = pd.DataFrame(rows).copy()
+        out["p_presence"] = 1.0
+        out["q_presence"] = 1.0
+        target_mask = out["_genomes_with_any_match"].astype(bool)
+        scorer = GenomePresenceScorer(num_workers=1)
+        scorer.unique_pvalue_mode = "empirical-background"
+        scorer.single_peptide_error_rate_upper_bound = 0.05
+        scorer.unique_empirical_background_max_exclude_fraction = 0.20
+        scorer._fit_unique_empirical_background_auto(
+            out=out,
+            target_df=out.loc[target_mask].copy(),
+            target_mask=target_mask,
+        )
+
+        self.assertEqual(scorer.run_stats["unique_empirical_background_final_exclude_fraction"], 0.20)
 
     def test_empirical_unique_stats_report_background_diagnostics(self) -> None:
         df = pd.DataFrame(
