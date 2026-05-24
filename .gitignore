@@ -2,6 +2,7 @@ __pycache__/
 .vscode/
 local/
 test/
+tests/
 test_data/
 .venv/
 build/
