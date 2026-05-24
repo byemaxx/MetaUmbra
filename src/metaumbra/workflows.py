@@ -50,10 +50,10 @@ class ScoringConfig:
     peptide_score_col: str = "Evidence"
     peptide_error_col: str = "Q.Value"
     peptide_error_cutoff: float = 0.05
-    single_peptide_error_rate_upper_bound: float = 0.3
-    unique_pvalue_mode: str = "alpha-upper-bound"
+    single_peptide_error_rate_upper_bound: float = 0.05
+    unique_pvalue_mode: str = "empirical-background"
     unique_peptide_error_source: str = "global-alpha"
-    unique_count_power: float = 0.7
+    unique_count_power: float = 1.0
     theoretical_opportunity_cache_path: str = ""
     rebuild_theoretical_opportunity_cache: bool = False
     num_workers_for_theoretical_opportunity: Optional[int] = None

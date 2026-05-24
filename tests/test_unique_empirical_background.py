@@ -1,0 +1,140 @@
+from __future__ import annotations
+
+import math
+import sys
+import unittest
+from pathlib import Path
+
+import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from metaumbra.scoring import GenomePresenceScorer, _effective_unique_count
+
+
+class UniqueEmpiricalBackgroundTests(unittest.TestCase):
+    def test_empirical_background_downweights_deep_weak_unique_counts(self) -> None:
+        rows = []
+        for i in range(120):
+            u = 3 + (i % 4)
+            rows.append(
+                {
+                    "genome_id": f"bg_{i:03d}",
+                    "_genomes_with_any_match": True,
+                    "num_peptides_unique": u,
+                    "total_peptide_count": 1000,
+                    "unique_weighted_evidence": float(u),
+                    "weighted_evidence": float(u),
+                }
+            )
+        for gid, u in (("strong_a", 22), ("strong_b", 25)):
+            rows.append(
+                {
+                    "genome_id": gid,
+                    "_genomes_with_any_match": True,
+                    "num_peptides_unique": u,
+                    "total_peptide_count": 1000,
+                    "unique_weighted_evidence": float(u),
+                    "weighted_evidence": float(u),
+                }
+            )
+
+        scorer = GenomePresenceScorer(num_workers=1)
+        scorer._prepare_unique_empirical_background(pd.DataFrame(rows), n_bins=4, min_bin_size=50)
+
+        weak_pvalues = [
+            scorer.unique_empirical_pvalue_by_genome[f"bg_{i:03d}"]
+            for i in range(120)
+        ]
+        self.assertGreater(min(weak_pvalues), 0.05)
+        self.assertLess(scorer.unique_empirical_pvalue_by_genome["strong_a"], 0.05)
+        self.assertLess(scorer.unique_empirical_pvalue_by_genome["strong_b"], 0.05)
+        self.assertEqual(
+            scorer.run_stats["unique_empirical_background_opportunity_source"],
+            "total_peptide_count",
+        )
+
+    def test_empirical_unique_stats_report_background_diagnostics(self) -> None:
+        df = pd.DataFrame(
+            [
+                {
+                    "genome_id": "bg",
+                    "_genomes_with_any_match": True,
+                    "num_peptides_unique": 4,
+                    "total_peptide_count": 1000,
+                    "unique_weighted_evidence": 4.0,
+                    "weighted_evidence": 4.0,
+                },
+                {
+                    "genome_id": "hit",
+                    "_genomes_with_any_match": True,
+                    "num_peptides_unique": 20,
+                    "total_peptide_count": 1000,
+                    "unique_weighted_evidence": 20.0,
+                    "weighted_evidence": 20.0,
+                },
+            ]
+        )
+        scorer = GenomePresenceScorer(num_workers=1)
+        scorer.unique_pvalue_mode = "empirical-background"
+        scorer._prepare_unique_empirical_background(df, top_exclude_fraction=0.0, n_bins=1)
+
+        stats = scorer._unique_pvalue_stats_for_genome("hit", 20)
+
+        self.assertEqual(stats["unique_depth_null_model"], "empirical-background")
+        self.assertEqual(stats["unique_pvalue_count_model"], "raw")
+        self.assertEqual(stats["unique_empirical_background_bin"], "bin_0")
+        self.assertEqual(stats["unique_empirical_background_size"], 2)
+        self.assertEqual(stats["p_unique"], scorer.unique_empirical_pvalue_by_genome["hit"])
+
+    def test_alpha_upper_bound_stats_are_unchanged_when_configured(self) -> None:
+        scorer = GenomePresenceScorer(num_workers=1)
+        scorer.unique_pvalue_mode = "alpha-upper-bound"
+        scorer.unique_peptide_error_source = "global-alpha"
+        scorer.unique_count_power = 0.7
+        scorer.single_peptide_error_rate_upper_bound = 0.05
+        scorer.genome_matched_peptides = {"g": {"p1", "p2", "p3", "p4"}}
+        scorer.peptide_degeneracy = {"p1": 1, "p2": 1, "p3": 1, "p4": 1}
+
+        stats = scorer._unique_pvalue_stats_for_genome("g", 4)
+        expected_eff = _effective_unique_count(4, 0.7)
+
+        self.assertTrue(math.isclose(stats["unique_effective_count"], expected_eff))
+        self.assertTrue(math.isclose(stats["p_unique"], 0.05 ** expected_eff))
+        self.assertEqual(stats["unique_pvalue_count_model"], "power:0.7")
+
+    def test_hypergeometric_opportunity_stats_are_unchanged_when_configured(self) -> None:
+        scorer = GenomePresenceScorer(num_workers=1)
+        scorer.unique_pvalue_mode = "hypergeometric-opportunity"
+        scorer.observed_unique_peptide_pool_size = 10
+        scorer.genome_theoretical_unique_peptides = {"g": 20}
+        scorer.total_theoretical_unique_peptides_all_genomes = 100
+
+        def fake_tail(observed: int, universe_size: int, success_states: int, draws: int) -> float:
+            self.assertEqual((observed, universe_size, success_states, draws), (3, 100, 20, 10))
+            return 0.123
+
+        scorer._hypergeom_tail_pvalue = fake_tail  # type: ignore[method-assign]
+        stats = scorer._unique_pvalue_stats_for_genome("g", 3)
+
+        self.assertEqual(stats["p_unique"], 0.123)
+        self.assertEqual(stats["unique_depth_null_model"], "hypergeometric")
+        self.assertTrue(math.isclose(stats["unique_expected_null"], 2.0))
+        self.assertTrue(math.isclose(stats["unique_depth_fold"], 1.5))
+
+    def test_empirical_background_rejects_unit_aware_for_now(self) -> None:
+        scorer = GenomePresenceScorer(num_workers=1)
+        scorer.unit_aware_enabled = True
+
+        with self.assertRaisesRegex(ValueError, "not currently supported with unit_aware=True"):
+            scorer.analyze_genomes(
+                genome_digest_dirs=[],
+                output_tsv_path="unused.tsv",
+                all_matched_peptides=[],
+                unique_pvalue_mode="empirical-background",
+                unit_aware=True,
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

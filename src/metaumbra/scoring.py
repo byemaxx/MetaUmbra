@@ -48,10 +48,11 @@ MIN_PVALUE = 1e-300
 THEORETICAL_OPPORTUNITY_CACHE_VERSION = 2
 THEORETICAL_OPPORTUNITY_MAX_SHARDS = 256
 COUNT_DTYPE = np.int32
-DEFAULT_UNIQUE_PVALUE_MODE = "alpha-upper-bound"
-DEFAULT_UNIQUE_COUNT_POWER = 0.7
+DEFAULT_UNIQUE_PVALUE_MODE = "empirical-background"
+DEFAULT_UNIQUE_COUNT_POWER = 1.0
 DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE = "global-alpha"
 UNIQUE_PVALUE_CANONICAL_MODES = (
+    "empirical-background",
     "hypergeometric-opportunity",
     "alpha-upper-bound",
 )
@@ -1008,7 +1009,7 @@ class GenomePresenceScorer:
         self.peptide_score: Dict[str, float] = {}  # peptide -> normalized score in [0,1] (or 1.0)
         self.peptide_error_cutoff: float = 0.05    # input peptide error/FDR filtering threshold
         # Upper bound on per-peptide false match probability used for unique-evidence p-value bound.
-        self.single_peptide_error_rate_upper_bound: float = 1.0
+        self.single_peptide_error_rate_upper_bound: float = 0.05
         self.peptide_table_dir: Optional[str] = None
 
         self.genome_matched_peptides: Dict[str, Set[str]] = {}  # genome -> matched peptides (observed ∩ theoretical)
@@ -1022,6 +1023,11 @@ class GenomePresenceScorer:
         self.unique_pvalue_mode: str = DEFAULT_UNIQUE_PVALUE_MODE
         self.unique_peptide_error_source: str = DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE
         self.unique_count_power: float = DEFAULT_UNIQUE_COUNT_POWER
+        self.unique_empirical_background_df: Optional[pd.DataFrame] = None
+        self.unique_empirical_pvalue_by_genome: Dict[str, float] = {}
+        self.unique_empirical_expected_by_genome: Dict[str, float] = {}
+        self.unique_empirical_bin_by_genome: Dict[str, str] = {}
+        self.unique_empirical_bg_size_by_genome: Dict[str, int] = {}
         self.genome_scores_df: Optional[pd.DataFrame] = None
 
         # Unified ranking score scales (lexicographic; unique dominates)
@@ -1499,6 +1505,8 @@ class GenomePresenceScorer:
         unique_effective_count = float(U)
         count_model = "raw"
         error_source_used = ""
+        empirical_bin = ""
+        empirical_bg_size = 0
 
         if mode == "hypergeometric-opportunity":
             A = int(self.genome_theoretical_unique_peptides.get(gid, 0))
@@ -1523,6 +1531,17 @@ class GenomePresenceScorer:
             count_model = f"power:{float(self.unique_count_power):g}"
             p_unique_depth = p_unique
             null_model = error_source_used
+        elif mode == "empirical-background":
+            theoretical_value = self.genome_theoretical_unique_peptides.get(gid, None)
+            theoretical_unique = int(theoretical_value) if theoretical_value is not None else pd.NA
+            p_unique = float(self.unique_empirical_pvalue_by_genome.get(gid, 1.0))
+            p_unique_depth = p_unique
+            expected = float(self.unique_empirical_expected_by_genome.get(gid, 0.0))
+            fold = float(U) / max(expected, 1e-12)
+            null_model = "empirical-background"
+            count_model = "raw"
+            empirical_bin = str(self.unique_empirical_bin_by_genome.get(gid, ""))
+            empirical_bg_size = int(self.unique_empirical_bg_size_by_genome.get(gid, 0))
         else:
             raise ValueError(f"Unsupported unique_pvalue_mode: {mode!r}.")
 
@@ -1539,7 +1558,140 @@ class GenomePresenceScorer:
             "theoretical_unique_peptides": theoretical_unique,
             "unique_effective_count": float(unique_effective_count),
             "unique_pvalue_count_model": count_model,
+            "unique_empirical_background_bin": empirical_bin,
+            "unique_empirical_background_size": int(empirical_bg_size),
         }
+
+    def _prepare_unique_empirical_background(
+        self,
+        df_scored: pd.DataFrame,
+        top_exclude_fraction: float = 0.10,
+        n_bins: int = 8,
+        min_bin_size: int = 50,
+    ) -> None:
+        """Prepare sample-specific empirical nulls for genome-unique peptide counts."""
+        self.unique_empirical_background_df = pd.DataFrame()
+        self.unique_empirical_pvalue_by_genome = {}
+        self.unique_empirical_expected_by_genome = {}
+        self.unique_empirical_bin_by_genome = {}
+        self.unique_empirical_bg_size_by_genome = {}
+
+        if df_scored is None or len(df_scored) == 0:
+            self.run_stats["unique_empirical_background_size"] = 0
+            self.run_stats["unique_empirical_background_excluded_fraction"] = float(top_exclude_fraction)
+            self.run_stats["unique_empirical_background_bin_count"] = 0
+            self.run_stats["unique_empirical_background_opportunity_source"] = "total_peptide_count"
+            return
+
+        out = df_scored.copy()
+        if "_genomes_with_any_match" in out.columns:
+            out = out.loc[out["_genomes_with_any_match"].astype(bool)].copy()
+        if len(out) == 0:
+            self.unique_empirical_background_df = out
+            self.run_stats["unique_empirical_background_size"] = 0
+            self.run_stats["unique_empirical_background_excluded_fraction"] = float(top_exclude_fraction)
+            self.run_stats["unique_empirical_background_bin_count"] = 0
+            self.run_stats["unique_empirical_background_opportunity_source"] = "total_peptide_count"
+            return
+
+        out["genome_id"] = out["genome_id"].astype(str)
+        out["_unique_empirical_U"] = pd.to_numeric(out.get("num_peptides_unique", 0), errors="coerce").fillna(0).astype(int)
+
+        theoretical = out["genome_id"].map(self.genome_theoretical_unique_peptides)
+        theoretical_numeric = pd.to_numeric(theoretical, errors="coerce")
+        use_theoretical = bool(theoretical_numeric.notna().any() and float(theoretical_numeric.fillna(0).sum()) > 0)
+        if use_theoretical:
+            opportunity_source = "genome_theoretical_unique_peptides"
+            fallback = pd.to_numeric(out.get("total_peptide_count", 0), errors="coerce").fillna(0.0)
+            out["_unique_empirical_A"] = theoretical_numeric.fillna(fallback).clip(lower=0.0).astype(float)
+        else:
+            opportunity_source = "total_peptide_count"
+            out["_unique_empirical_A"] = pd.to_numeric(out.get("total_peptide_count", 0), errors="coerce").fillna(0.0).clip(lower=0.0).astype(float)
+
+        exclude_fraction = float(np.clip(float(top_exclude_fraction), 0.0, 1.0))
+        n_active = int(len(out))
+        n_exclude = int(np.ceil(float(n_active) * exclude_fraction)) if exclude_fraction > 0 else 0
+        n_exclude = min(max(n_exclude, 0), max(n_active - 1, 0))
+        excluded_idx: Set[object] = set()
+        if n_exclude > 0:
+            for metric in ("_unique_empirical_U", "unique_weighted_evidence", "weighted_evidence"):
+                if metric not in out.columns:
+                    continue
+                values = pd.to_numeric(out[metric], errors="coerce").fillna(0.0)
+                top_idx = values.sort_values(ascending=False, kind="mergesort").head(n_exclude).index
+                excluded_idx.update(top_idx)
+
+        out["_unique_empirical_excluded_from_background"] = out.index.isin(excluded_idx)
+        background = out.loc[~out["_unique_empirical_excluded_from_background"]].copy()
+        if len(background) == 0:
+            background = out.copy()
+            out["_unique_empirical_excluded_from_background"] = False
+
+        requested_bins = int(max(1, n_bins))
+        min_bin_size = int(max(1, min_bin_size))
+        effective_bins = max(1, min(requested_bins, int(len(background) // min_bin_size) or 1))
+        effective_bins = min(effective_bins, int(background["_unique_empirical_A"].nunique()) or 1)
+
+        if effective_bins <= 1 or len(background) <= 1:
+            out["_unique_empirical_bin"] = "bin_0"
+        else:
+            try:
+                _, bin_edges = pd.qcut(
+                    background["_unique_empirical_A"],
+                    q=effective_bins,
+                    retbins=True,
+                    duplicates="drop",
+                )
+                bin_edges = np.asarray(bin_edges, dtype=float)
+                if bin_edges.size <= 2:
+                    out["_unique_empirical_bin"] = "bin_0"
+                else:
+                    bin_edges[0] = -np.inf
+                    bin_edges[-1] = np.inf
+                    labels = [f"bin_{i}" for i in range(bin_edges.size - 1)]
+                    binned = pd.cut(
+                        out["_unique_empirical_A"],
+                        bins=bin_edges,
+                        labels=labels,
+                        include_lowest=True,
+                    )
+                    out["_unique_empirical_bin"] = binned.astype("string").fillna("bin_0").astype(str)
+            except Exception:
+                out["_unique_empirical_bin"] = "bin_0"
+
+        background = out.loc[~out["_unique_empirical_excluded_from_background"]].copy()
+        all_background_u = pd.to_numeric(background["_unique_empirical_U"], errors="coerce").fillna(0).astype(int)
+        for idx, row in out.iterrows():
+            gid = str(row["genome_id"])
+            bin_id = str(row["_unique_empirical_bin"])
+            same_bin = background.loc[background["_unique_empirical_bin"].astype(str) == bin_id]
+            if len(same_bin) == 0:
+                same_bin_u = all_background_u
+            else:
+                same_bin_u = pd.to_numeric(same_bin["_unique_empirical_U"], errors="coerce").fillna(0).astype(int)
+            bg_size = int(len(same_bin_u))
+            U = int(row["_unique_empirical_U"])
+            ge = int((same_bin_u >= U).sum()) if bg_size > 0 else 0
+            p_value = (1.0 + float(ge)) / (1.0 + float(bg_size))
+            expected = float(same_bin_u.mean()) if bg_size > 0 else 0.0
+
+            self.unique_empirical_pvalue_by_genome[gid] = _clip_pvalue(p_value)
+            self.unique_empirical_expected_by_genome[gid] = float(expected)
+            self.unique_empirical_bin_by_genome[gid] = bin_id
+            self.unique_empirical_bg_size_by_genome[gid] = int(bg_size)
+            out.at[idx, "p_unique_empirical"] = _clip_pvalue(p_value)
+            out.at[idx, "expected_unique_null"] = float(expected)
+            out.at[idx, "unique_depth_fold"] = float(U) / max(float(expected), 1e-12)
+            out.at[idx, "unique_empirical_background_size"] = int(bg_size)
+
+        self.unique_empirical_background_df = out
+        self.run_stats["unique_empirical_background_size"] = int(len(background))
+        self.run_stats["unique_empirical_background_active_genomes"] = int(n_active)
+        self.run_stats["unique_empirical_background_excluded_genomes"] = int(out["_unique_empirical_excluded_from_background"].sum())
+        self.run_stats["unique_empirical_background_excluded_fraction"] = float(exclude_fraction)
+        self.run_stats["unique_empirical_background_bin_count"] = int(out["_unique_empirical_bin"].nunique())
+        self.run_stats["unique_empirical_background_min_bin_size"] = int(min_bin_size)
+        self.run_stats["unique_empirical_background_opportunity_source"] = opportunity_source
 
 
     # =========================
@@ -1556,7 +1708,7 @@ class GenomePresenceScorer:
         peptide_table_sep: str = "\t",
         peptide_error_col: Optional[str] = None, # ["PEP", "FDR", "AUTO", None, "Q.Value", ...]
         peptide_error_cutoff: float = 0.05,
-        single_peptide_error_rate_upper_bound: float = 0.3,
+        single_peptide_error_rate_upper_bound: float = 0.05,
     ) -> bool:
         """Read a peptide table and build peptide->score dictionary."""
         if peptide_table_path is None and peptide_table_df is None:
@@ -1747,7 +1899,7 @@ class GenomePresenceScorer:
         intensity_col: str = "Precursor.Quantity",
         peptide_error_col: Optional[str] = "Q.Value",
         peptide_error_cutoff: float = 0.05,
-        single_peptide_error_rate_upper_bound: float = 0.3,
+        single_peptide_error_rate_upper_bound: float = 0.05,
         intensity_min_value: float = 0.0,
         intensity_min_quantile: float = 0.0,
         metadata_table_path: Optional[str] = None,
@@ -2837,6 +2989,8 @@ class GenomePresenceScorer:
         out["unique_peptide_error_source"] = unique_peptide_error_source
         out["unique_effective_count"] = 0.0
         out["unique_pvalue_count_model"] = ""
+        out["unique_empirical_background_bin"] = ""
+        out["unique_empirical_background_size"] = 0
 
         # --- NEW: knockoff null diagnostics ---
         out["null_mean_shared"] = 0.0
@@ -2888,6 +3042,11 @@ class GenomePresenceScorer:
                 f"observed_unique_pool={int(self.observed_unique_peptide_pool_size)}, "
                 f"theoretical_unique_universe={int(self.total_theoretical_unique_peptides_all_genomes)}"
             )
+        elif mode == "empirical-background":
+            self.logger.info(
+                "Unique p-value mode: [empirical-background] "
+                "null_model=sample-specific empirical weak-genome background, count_model=raw"
+            )
         elif use_per_peptide_error:
             self.logger.info(
                 f"Unique p-value mode: [alpha-upper-bound], error_source={'PEP' if uses_pep_column else 'peptide-error-column'}, "
@@ -2917,6 +3076,9 @@ class GenomePresenceScorer:
         if self.knockoff_top_n_targets is not None:
             topN = int(self.knockoff_top_n_targets)
             target_df = target_df.sort_values("evidence_rank", ascending=True, kind="mergesort").head(topN)
+
+        if mode == "empirical-background":
+            self._prepare_unique_empirical_background(out.loc[target_mask].copy())
 
         # -----------------
         # Stage 1 (fast screen)
@@ -3874,6 +4036,11 @@ class GenomePresenceScorer:
         if unit_aware:
             if not self.unit_aware_enabled:
                 raise ValueError("unit_aware=True requires read_unit_aware_peptide_file() before analyze_genomes().")
+            if mode == "empirical-background":
+                raise ValueError(
+                    "unique_pvalue_mode='empirical-background' is not currently supported with unit_aware=True. "
+                    "Use hypergeometric-opportunity or alpha-upper-bound for unit-aware scoring."
+                )
             self.unit_presence_rule = "union"
             self.unit_shared_mode = "per-unit"
         self._export_unit_derived_tables = bool(export_unit_derived_tables)
@@ -4161,7 +4328,7 @@ class GenomePresenceScorer:
         self.run_stats["total_theoretical_peptides_all_genomes"] = int(self.total_theoretical_peptides_all_genomes)
 
         opportunity_rebuilt = False
-        if mode == "hypergeometric-opportunity":
+        if mode in {"hypergeometric-opportunity", "empirical-background"}:
             matched_genome_ids = set(self.genome_matched_peptides.keys())
             folders = [genome_digest_dirs] if isinstance(genome_digest_dirs, str) else list(genome_digest_dirs)
             genome_files_by_id: Dict[str, Path] = {}
@@ -4178,45 +4345,91 @@ class GenomePresenceScorer:
                 for gid, paths in duplicate_genome_files.items():
                     all_paths = [genome_files_by_id[gid]] + paths
                     examples.append(f"{gid}: " + "; ".join(str(p) for p in all_paths))
-                raise ValueError(
+                message = (
                     "Duplicate genome IDs were found across genome digest directories. "
-                    "Each genome_id/path stem must be unique for hypergeometric-opportunity scoring. "
+                    "Each genome_id/path stem must be unique for theoretical opportunity scoring. "
                     "Please remove duplicates or rename genome digest files. Examples: "
                     + " | ".join(examples)
                 )
+                if mode == "hypergeometric-opportunity":
+                    raise ValueError(message)
+                self.logger.warning(
+                    "%s Falling back to total_peptide_count for empirical-background opportunity.",
+                    message,
+                )
             genome_files_for_opportunity = [genome_files_by_id[gid] for gid in sorted(genome_files_by_id)]
+            can_build_opportunity = not duplicate_genome_files
             if len(genome_files_for_opportunity) != len(matched_genome_ids):
                 missing = sorted(matched_genome_ids.difference({p.stem for p in genome_files_for_opportunity}))
                 preview = ", ".join(missing[:10])
                 suffix = " ..." if len(missing) > 10 else ""
-                raise ValueError(
-                    "Hypergeometric-opportunity unique p-values require digest TSV files for all selected genomes. "
+                message = (
+                    "Theoretical unique peptide opportunity requires digest TSV files for all selected genomes. "
                     f"Missing digest files for {len(missing)} genomes: {preview}{suffix}"
                 )
-            opportunity, opportunity_rebuilt = self._load_or_build_theoretical_opportunity(
-                genome_digest_files=genome_files_for_opportunity,
-                cache_path=theoretical_cache_path,
-                rebuild_cache=bool(rebuild_theoretical_opportunity_cache),
-                num_workers_for_theoretical_opportunity=theoretical_opportunity_workers,
-            )
-            self._apply_theoretical_opportunity(opportunity)
-            vals = pd.Series(list(self.genome_theoretical_unique_peptides.values()), dtype=float)
-            self.run_stats["unique_depth_null_model"] = "hypergeometric"
-            self.run_stats["theoretical_peptide_universe_size"] = int(self.theoretical_peptide_universe_size)
-            self.run_stats["total_theoretical_unique_peptides_all_genomes"] = int(self.total_theoretical_unique_peptides_all_genomes)
-            self.run_stats["theoretical_opportunity_cache_path"] = str(theoretical_cache_path) if theoretical_cache_path else None
-            self.run_stats["theoretical_opportunity_cache_rebuilt"] = bool(opportunity_rebuilt)
-            self.run_stats["genome_theoretical_unique_peptides_quantiles"] = (
-                {
-                    "q0": float(vals.quantile(0.0)),
-                    "q25": float(vals.quantile(0.25)),
-                    "q50": float(vals.quantile(0.5)),
-                    "q75": float(vals.quantile(0.75)),
-                    "q100": float(vals.quantile(1.0)),
-                }
-                if len(vals) > 0
-                else {}
-            )
+                if mode == "hypergeometric-opportunity":
+                    raise ValueError(
+                        "Hypergeometric-opportunity unique p-values require digest TSV files for all selected genomes. "
+                        f"Missing digest files for {len(missing)} genomes: {preview}{suffix}"
+                    )
+                self.logger.warning(
+                    "%s Falling back to total_peptide_count for empirical-background opportunity.",
+                    message,
+                )
+                can_build_opportunity = False
+
+            opportunity = None
+            if can_build_opportunity:
+                try:
+                    opportunity, opportunity_rebuilt = self._load_or_build_theoretical_opportunity(
+                        genome_digest_files=genome_files_for_opportunity,
+                        cache_path=theoretical_cache_path,
+                        rebuild_cache=bool(rebuild_theoretical_opportunity_cache),
+                        num_workers_for_theoretical_opportunity=theoretical_opportunity_workers,
+                    )
+                except Exception as exc:
+                    if mode == "hypergeometric-opportunity":
+                        raise
+                    self.logger.warning(
+                        "Could not build theoretical opportunity for empirical-background mode; "
+                        "falling back to total_peptide_count. Error: %s",
+                        exc,
+                    )
+
+            if opportunity is not None:
+                self._apply_theoretical_opportunity(opportunity)
+                vals = pd.Series(list(self.genome_theoretical_unique_peptides.values()), dtype=float)
+                self.run_stats["unique_depth_null_model"] = (
+                    "hypergeometric" if mode == "hypergeometric-opportunity" else "empirical-background"
+                )
+                self.run_stats["theoretical_peptide_universe_size"] = int(self.theoretical_peptide_universe_size)
+                self.run_stats["total_theoretical_unique_peptides_all_genomes"] = int(self.total_theoretical_unique_peptides_all_genomes)
+                self.run_stats["theoretical_opportunity_cache_path"] = str(theoretical_cache_path) if theoretical_cache_path else None
+                self.run_stats["theoretical_opportunity_cache_rebuilt"] = bool(opportunity_rebuilt)
+                self.run_stats["genome_theoretical_unique_peptides_quantiles"] = (
+                    {
+                        "q0": float(vals.quantile(0.0)),
+                        "q25": float(vals.quantile(0.25)),
+                        "q50": float(vals.quantile(0.5)),
+                        "q75": float(vals.quantile(0.75)),
+                        "q100": float(vals.quantile(1.0)),
+                    }
+                    if len(vals) > 0
+                    else {}
+                )
+                if mode == "empirical-background":
+                    self.run_stats["unique_empirical_background_opportunity_source"] = "genome_theoretical_unique_peptides"
+            else:
+                self.genome_theoretical_unique_peptides = {}
+                self.total_theoretical_unique_peptides_all_genomes = 0
+                self.theoretical_peptide_universe_size = 0
+                self.run_stats["unique_depth_null_model"] = "empirical-background"
+                self.run_stats["theoretical_peptide_universe_size"] = 0
+                self.run_stats["total_theoretical_unique_peptides_all_genomes"] = 0
+                self.run_stats["theoretical_opportunity_cache_path"] = None
+                self.run_stats["theoretical_opportunity_cache_rebuilt"] = False
+                self.run_stats["genome_theoretical_unique_peptides_quantiles"] = {}
+                self.run_stats["unique_empirical_background_opportunity_source"] = "total_peptide_count"
         else:
             self.run_stats["unique_depth_null_model"] = ""
             self.run_stats["theoretical_opportunity_cache_path"] = None
@@ -4232,7 +4445,7 @@ class GenomePresenceScorer:
         self.observed_unique_peptide_pool_size = int(sum(int(v) for v in genome_unique_counts.values()))
         self.run_stats["observed_matchable_peptides"] = int(self.observed_matchable_peptides)
         self.run_stats["observed_unique_peptide_pool_size"] = int(self.observed_unique_peptide_pool_size)
-        if mode == "hypergeometric-opportunity":
+        if mode in {"hypergeometric-opportunity", "empirical-background"}:
             self.run_stats.setdefault("theoretical_peptide_universe_size", int(self.theoretical_peptide_universe_size))
 
         genome_data_list = [
@@ -4308,7 +4521,7 @@ class GenomePresenceScorer:
             "num_peptides_unique",
             "unique_effective_count",
         ])
-        if mode == "hypergeometric-opportunity":
+        if mode in {"hypergeometric-opportunity", "empirical-background"}:
             source_cols.append("theoretical_unique_peptides")
         source_cols.extend([
             "unique_expected_null",
@@ -4323,6 +4536,11 @@ class GenomePresenceScorer:
             "pass_q_0_01",
             "pass_q_0_05",
         ])
+        if mode == "empirical-background":
+            source_cols.extend([
+                "unique_empirical_background_bin",
+                "unique_empirical_background_size",
+            ])
         if "cumulative_coverage_percent" in df_scored.columns:
             source_cols.append("cumulative_coverage_percent")
         rename_map = {

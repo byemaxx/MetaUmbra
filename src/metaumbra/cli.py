@@ -227,22 +227,23 @@ def build_parser() -> argparse.ArgumentParser:
         score_optional,
         "--single-peptide-error-rate-upper-bound",
         type=float,
-        default=0.3,
+        default=0.05,
         help="Alpha upper bound for one unique evidence unit in alpha^(U_raw^power).",
     )
     _add_argument(
         score_optional,
         "--unique-pvalue-mode",
         choices=(
+            "empirical-background",
             "hypergeometric-opportunity",
             "alpha-upper-bound",
         ),
-        default="alpha-upper-bound",
+        default="empirical-background",
         help=(
-            "Unique evidence p-value mode. 'hypergeometric-opportunity' uses the observed genome-unique peptide pool and "
-            "genome-specific theoretical unique peptide opportunity. 'alpha-upper-bound' uses alpha^(U_raw^power) "
-            "and is the default; power=1.0 recovers alpha^U_raw. Unique p-value strength is controlled by this mode, "
-            "--unique-peptide-error-source, --single-peptide-error-rate-upper-bound, and --unique-count-power."
+            "Unique evidence p-value mode. 'empirical-background' estimates the sample-specific weak-genome unique peptide "
+            "background and tests whether each genome's unique peptide count exceeds that background. "
+            "'hypergeometric-opportunity' uses the observed genome-unique peptide pool and genome-specific theoretical "
+            "unique peptide opportunity. 'alpha-upper-bound' uses alpha^(U_raw^power)."
         ),
     )
     _add_argument(
@@ -260,9 +261,9 @@ def build_parser() -> argparse.ArgumentParser:
         score_optional,
         "--unique-count-power",
         type=float,
-        default=0.7,
+        default=1.0,
         help=(
-            "Power exponent for effective unique evidence count: U_eff = U_raw^power. "
+            "Power exponent for alpha-upper-bound effective unique evidence count: U_eff = U_raw^power. "
             "Lower values are more conservative; 1.0 recovers the raw unique count."
         ),
     )
@@ -326,7 +327,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--theoretical-opportunity-cache",
         default="",
         display_default="auto",
-        help="Optional path to the theoretical opportunity cache used by hypergeometric-opportunity mode.",
+        help="Optional path to the theoretical opportunity cache used by hypergeometric-opportunity and empirical-background modes.",
     )
     _add_argument(
         score_optional,
@@ -339,7 +340,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--num-workers-for-theoretical-opportunity",
         type=int,
         display_default="same as --num-workers",
-        help="Worker process count for hypergeometric-opportunity theoretical opportunity sharding and reduction.",
+        help="Worker process count for theoretical opportunity sharding and reduction.",
     )
     _add_argument(
         score_optional,
