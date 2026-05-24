@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -40,15 +41,22 @@ class UniqueEmpiricalBackgroundTests(unittest.TestCase):
             )
 
         scorer = GenomePresenceScorer(num_workers=1)
+        scorer.single_peptide_error_rate_upper_bound = 0.05
         scorer._prepare_unique_empirical_background(pd.DataFrame(rows), n_bins=4, min_bin_size=50)
 
         weak_pvalues = [
             scorer.unique_empirical_pvalue_by_genome[f"bg_{i:03d}"]
             for i in range(120)
         ]
-        self.assertGreater(min(weak_pvalues), 0.05)
-        self.assertLess(scorer.unique_empirical_pvalue_by_genome["strong_a"], 0.05)
-        self.assertLess(scorer.unique_empirical_pvalue_by_genome["strong_b"], 0.05)
+        self.assertGreaterEqual(min(weak_pvalues), 1.0)
+        self.assertLess(scorer.unique_empirical_pvalue_by_genome["strong_a"], 1e-6)
+        self.assertLess(scorer.unique_empirical_pvalue_by_genome["strong_b"], 1e-6)
+        self.assertGreater(scorer.unique_empirical_tail_by_genome["strong_a"], 0.001)
+        self.assertEqual(scorer.run_stats["unique_empirical_background_excluded_genomes"], 13)
+        self.assertAlmostEqual(
+            scorer.run_stats["unique_empirical_background_excluded_fraction"],
+            13 / 122,
+        )
         self.assertEqual(
             scorer.run_stats["unique_empirical_background_opportunity_source"],
             "total_peptide_count",
@@ -77,15 +85,20 @@ class UniqueEmpiricalBackgroundTests(unittest.TestCase):
         )
         scorer = GenomePresenceScorer(num_workers=1)
         scorer.unique_pvalue_mode = "empirical-background"
+        scorer.single_peptide_error_rate_upper_bound = 0.05
         scorer._prepare_unique_empirical_background(df, top_exclude_fraction=0.0, n_bins=1)
 
         stats = scorer._unique_pvalue_stats_for_genome("hit", 20)
 
         self.assertEqual(stats["unique_depth_null_model"], "empirical-background")
-        self.assertEqual(stats["unique_pvalue_count_model"], "raw")
+        self.assertEqual(stats["unique_pvalue_count_model"], "background-excess")
         self.assertEqual(stats["unique_empirical_background_bin"], "bin_0")
         self.assertEqual(stats["unique_empirical_background_size"], 2)
+        self.assertGreater(stats["unique_empirical_background_threshold"], 0)
+        self.assertGreater(stats["unique_empirical_excess_count"], 0)
+        self.assertEqual(stats["unique_effective_count"], stats["unique_empirical_excess_count"])
         self.assertEqual(stats["p_unique"], scorer.unique_empirical_pvalue_by_genome["hit"])
+        self.assertEqual(stats["p_unique_empirical_tail"], scorer.unique_empirical_tail_by_genome["hit"])
 
     def test_alpha_upper_bound_stats_are_unchanged_when_configured(self) -> None:
         scorer = GenomePresenceScorer(num_workers=1)
@@ -134,6 +147,44 @@ class UniqueEmpiricalBackgroundTests(unittest.TestCase):
                 unique_pvalue_mode="empirical-background",
                 unit_aware=True,
             )
+
+    def test_empirical_background_does_not_build_theoretical_opportunity_by_default(self) -> None:
+        scorer = GenomePresenceScorer(num_workers=1)
+        scorer.peptide_score = {"bg1": 1.0, "bg2": 1.0, "hit1": 1.0, "hit2": 1.0, "hit3": 1.0}
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("empirical-background should not build theoretical opportunity by default")
+
+        scorer._load_or_build_theoretical_opportunity = fail_if_called  # type: ignore[method-assign]
+        all_matched = [
+            ("bg_a", {"bg1"}, 100),
+            ("bg_b", {"bg2"}, 100),
+            ("hit", {"hit1", "hit2", "hit3"}, 100),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = scorer.analyze_genomes(
+                genome_digest_dirs=[],
+                output_tsv_path=str(Path(tmp) / "presence.tsv"),
+                all_matched_peptides=all_matched,
+                save_matched_peptides_cache=False,
+                use_cache_if_exists=False,
+                compute_coverage=False,
+                export_temp=False,
+                unique_pvalue_mode="empirical-background",
+                return_full_table=True,
+            )
+
+        self.assertFalse(result.empty)
+        self.assertEqual(scorer.genome_theoretical_unique_peptides, {})
+        self.assertEqual(scorer.total_theoretical_unique_peptides_all_genomes, 0)
+        self.assertEqual(scorer.theoretical_peptide_universe_size, 0)
+        self.assertIsNone(scorer.run_stats["theoretical_opportunity_cache_path"])
+        self.assertFalse(scorer.run_stats["theoretical_opportunity_cache_rebuilt"])
+        self.assertEqual(
+            scorer.run_stats["unique_empirical_background_opportunity_source"],
+            "total_peptide_count",
+        )
 
 
 if __name__ == "__main__":

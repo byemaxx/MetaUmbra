@@ -2120,7 +2120,7 @@ class ScoringTab(QWidget):
             "Global alpha used by alpha-upper-bound mode when unique peptide error source is Global alpha."
         )
         self.unique_pvalue_mode_combo.setToolTip(
-            "Empirical background estimates the sample-specific weak-genome unique peptide background and tests whether each genome's unique peptide count exceeds that background."
+            "Empirical background estimates a sample-specific weak-genome unique peptide threshold and accumulates only excess unique evidence."
         )
         self.unique_peptide_error_source_combo.setToolTip(
             "Choose epsilon_i for alpha-upper-bound mode."
@@ -2712,7 +2712,7 @@ class ScoringTab(QWidget):
         show_effective_count = show_alpha_mode
         self.unique_peptide_error_source_label.setVisible(show_alpha_mode)
         self.unique_peptide_error_source_combo.setVisible(show_alpha_mode)
-        show_exact_cache = mode in {"hypergeometric-opportunity", "empirical-background"}
+        show_exact_cache = mode == "hypergeometric-opportunity"
         self.unique_alpha_label.setVisible(show_alpha)
         self.single_peptide_error_rate_upper_bound_edit.setVisible(show_alpha)
         self.unique_count_power_label.setVisible(show_effective_count)

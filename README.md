@@ -105,8 +105,8 @@ Key output columns include:
 | `genome_id` | Candidate genome identifier |
 | `num_peptides_matched` | Number of observed peptides matched to the genome |
 | `num_peptides_unique` | Number of matched peptides unique to the genome |
-| `theoretical_unique_peptides` | Theoretical peptides unique to this genome among the analyzed genome set, included for `hypergeometric-opportunity` and `empirical-background` output when available |
-| `expected_unique_null` | Expected observed genome-unique peptides under the selected adaptive null |
+| `theoretical_unique_peptides` | Theoretical peptides unique to this genome among the analyzed genome set, included for `hypergeometric-opportunity` output |
+| `expected_unique_null` | Expected observed genome-unique peptides under the selected unique-evidence null |
 | `unique_depth_fold` | Observed unique peptides divided by expected unique peptides under the null |
 | `has_unique_evidence` | Whether the genome has at least one observed unique peptide |
 | `pvalue_shared` | Shared-peptide knockoff p-value |

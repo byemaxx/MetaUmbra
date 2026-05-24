@@ -240,8 +240,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         default="empirical-background",
         help=(
-            "Unique evidence p-value mode. 'empirical-background' estimates the sample-specific weak-genome unique peptide "
-            "background and tests whether each genome's unique peptide count exceeds that background. "
+            "Unique evidence p-value mode. 'empirical-background' estimates a sample-specific weak-genome unique peptide "
+            "background threshold and accumulates only excess unique evidence. "
             "'hypergeometric-opportunity' uses the observed genome-unique peptide pool and genome-specific theoretical "
             "unique peptide opportunity. 'alpha-upper-bound' uses alpha^(U_raw^power)."
         ),
@@ -327,7 +327,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--theoretical-opportunity-cache",
         default="",
         display_default="auto",
-        help="Optional path to the theoretical opportunity cache used by hypergeometric-opportunity and empirical-background modes.",
+        help="Optional path to the theoretical opportunity cache used by hypergeometric-opportunity mode.",
     )
     _add_argument(
         score_optional,
