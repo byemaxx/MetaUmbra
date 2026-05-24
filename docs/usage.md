@@ -377,7 +377,9 @@ run_02	donor_A
 run_03	donor_B
 ```
 
-For each analysis unit `u`, unit-level unique evidence uses the `hypergeometric-opportunity` hypergeometric model:
+For each analysis unit `u`, unit-level unique evidence uses the selected unique p-value mode. The default `empirical-background` mode estimates a weak-genome background separately within each analysis unit. It uses the same background-excess formula as pooled scoring, but with conservative per-unit auto-exclusion defaults: initial 3%, minimum 0%, maximum 15%, and candidate `q <= 0.20`. This avoids reusing a cohort-level background for per-sample or per-person calls.
+
+With `hypergeometric-opportunity`, unit-level unique evidence uses the hypergeometric model:
 
 ```text
 X_g,u ~ Hypergeometric(A_total, A_g, S_u)
@@ -388,9 +390,9 @@ where `U_g,u` is the observed genome-unique peptide count for genome `g` in unit
 
 Pooled multi-sample scoring answers a cohort-level pooled support question and should not be interpreted as per-sample genome presence. Unit-aware scoring is recommended when the input contains multiple samples or repeated runs.
 
-In the current implementation, peptide presence within an analysis unit is defined as the union of sample-level peptide presence across samples assigned to that unit. Unit-level p-values are based on `hypergeometric-opportunity` unique evidence only; `pvalue_shared` is set to `1.0` and is not used in unit-level scoring.
+In the current implementation, peptide presence within an analysis unit is defined as the union of sample-level peptide presence across samples assigned to that unit. Unit-level p-values combine per-unit shared knockoff evidence and the selected per-unit unique evidence with Fisher's method, then apply BH correction separately within each analysis unit.
 
-`empirical-background` is currently available only for pooled peptide-set scoring. MetaUmbra raises a clear error if it is selected together with `--unit-aware`.
+When unit-aware `empirical-background` is selected, MetaUmbra also writes `unit_empirical_background_calibration.tsv` under `<stem>_artifacts/unit_aware/`. This table records each analysis unit's empirical-background iteration trace, final exclusion fraction, iteration count, active matched genome count, and small-unit warnings. Units with fewer than 100 active matched genomes use no top-genome exclusion and one opportunity bin.
 
 For DIA-NN long/parquet input, `Precursor.Quantity` is recommended for peptide presence filtering. `Precursor.Normalised` can be selected for normalized intensity workflows, but it is not the recommended default for presence/absence detection.
 
@@ -587,7 +589,7 @@ When cache saving is enabled, MetaUmbra writes a pickle file containing matched 
 
 Use `--use-cache-if-exists` for repeated analyses with the same observed peptide table and genome digest directories. The cache can still be combined with `--selected-genome-ids` and `--exclude-genome-ids`; filters are applied after loading the cache.
 
-`hypergeometric-opportunity` scoring can write a theoretical opportunity cache. `empirical-background` does not build this cache by default and uses `total_peptide_count` for opportunity binning. If `--theoretical-opportunity-cache` is not provided, the default cache is:
+`hypergeometric-opportunity` scoring can write a theoretical opportunity cache. `empirical-background` does not build this cache by default, removes stale default theoretical opportunity caches from the current artifact directory, and uses `total_peptide_count` for opportunity binning. If `--theoretical-opportunity-cache` is not provided, the default cache for `hypergeometric-opportunity` is:
 
 ```text
 <output_directory>/<output_stem>_artifacts/theoretical_opportunity_cache.pkl
@@ -613,7 +615,7 @@ U_excess = max(0, U_g - U_background)
 p_unique = alpha ^ U_excess, when U_excess > 0; otherwise p_unique = 1
 ```
 
-By default, background exclusion is adaptive. MetaUmbra starts by excluding the top 10% evidence-ranked genomes from the weak-background pool, computes preliminary genome-level q-values, estimates the fraction of candidate genomes with `q <= 0.20`, clamps that fraction to 10-30%, and rebuilds the final weak-background threshold. This matters for pooled or high-depth cohorts where many true present genomes can otherwise contaminate the weak-background pool and inflate `U_background`.
+By default, pooled background exclusion is adaptive. MetaUmbra starts by excluding the top 10% evidence-ranked genomes from the weak-background pool, computes preliminary genome-level q-values, estimates the fraction of candidate genomes with `q <= 0.20`, clamps that fraction to 10-30%, and rebuilds the final weak-background threshold. This matters for pooled or high-depth cohorts where many true present genomes can otherwise contaminate the weak-background pool and inflate `U_background`. In unit-aware mode, MetaUmbra fits this empirical background independently inside each analysis unit and uses more conservative per-unit exclusion defaults: 3% initial, 0% minimum, and 15% maximum.
 
 This is analogous in spirit to the shared peptide knockoff, but for genome-unique evidence: the shared knockoff calibrates shared weighted evidence, while `empirical-background` calibrates unique peptide counts against weak-background genomes at the same sample depth and opportunity scale. The direct empirical ECDF tail is retained as `p_unique_empirical_tail` for diagnostics, but it is not used as `pvalue_unique` because its resolution is too coarse for genome-level BH correction across thousands of genomes. `empirical-background` does not build the theoretical opportunity cache by default; it records `unique_empirical_background_opportunity_source = total_peptide_count` in `run_summary.json`, along with the initial and final background exclusion fractions, candidate q threshold, iteration count, threshold quantile, and alpha.
 

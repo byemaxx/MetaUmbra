@@ -137,14 +137,16 @@ class StreamToCallback(io.TextIOBase):
 
 
 class ArtifactLogTee:
-    def __init__(self, log_path: Path, callback: Optional[LogCallback]):
+    def __init__(self, log_path: Path, callback: Optional[LogCallback], mode: str = "a"):
         self.log_path = log_path
         self.callback = callback
+        self._next_mode = "w" if str(mode).lower().startswith("w") else "a"
 
     def __call__(self, message: str) -> None:
         text = str(message)
-        with self.log_path.open("a", encoding="utf-8", newline="") as handle:
+        with self.log_path.open(self._next_mode, encoding="utf-8", newline="") as handle:
             handle.write(text + "\n")
+        self._next_mode = "a"
         if self.callback is not None:
             self.callback(text)
 
@@ -209,6 +211,51 @@ def _write_json_file(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, ensure_ascii=False)
+
+
+def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConfig) -> None:
+    """Remove generated diagnostics that should not carry across independent runs."""
+    known_files = {
+        "run_summary.json",
+        "full_internal_metrics.tsv",
+        "knockoff_pools.tsv",
+        "degeneracy_hist.tsv",
+        "p_shared_hist.tsv",
+        "q_calling_curve.tsv",
+        "shared_stratum_counts.tsv",
+        "pooled_genome_presence.tsv",
+    }
+    if (
+        str(config.unique_pvalue_mode).strip().lower() != "hypergeometric-opportunity"
+        and not str(config.theoretical_opportunity_cache_path or "").strip()
+    ):
+        known_files.add("theoretical_opportunity_cache.pkl")
+
+    cleanup_paths = [artifact_dir / name for name in known_files]
+    cleanup_paths.extend(artifact_dir.glob("top*_peptide_contrib.tsv"))
+    unit_aware_dir = artifact_dir / "unit_aware"
+    if unit_aware_dir.exists():
+        for pattern in (
+            "unit_empirical_background_calibration.tsv",
+            "unit_call_counts.tsv",
+            "unit_q001_genomes.tsv",
+            "unit_q005_genomes.tsv",
+            "genome_union_q001.tsv",
+            "genome_union_q005.tsv",
+            "genome_by_unit_q001_matrix.tsv",
+            "genome_by_unit_q005_matrix.tsv",
+            "genome_by_unit_qvalue_matrix.tsv",
+        ):
+            cleanup_paths.extend(unit_aware_dir.glob(pattern))
+
+    artifact_root = artifact_dir.resolve()
+    for path in cleanup_paths:
+        try:
+            resolved = path.resolve()
+            if resolved.is_file() and (resolved.parent == artifact_root or resolved.parent.parent == artifact_root):
+                resolved.unlink()
+        except Exception:
+            pass
 
 
 def _detect_cpu_model() -> Optional[str]:
@@ -324,6 +371,7 @@ def _initialize_scoring_artifacts(
         return None, None, started_at_utc
 
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    _clean_scoring_artifacts_for_new_run(artifact_dir, config)
     parameters_payload = {
         **_workflow_metadata("score", started_at_utc),
         "output_tsv_path": output_tsv_path,
@@ -331,7 +379,7 @@ def _initialize_scoring_artifacts(
         "config": asdict(config),
     }
     _write_json_file(artifact_dir / "run_parameters.json", parameters_payload)
-    log_tee = ArtifactLogTee(artifact_dir / "run.log", log_callback)
+    log_tee = ArtifactLogTee(artifact_dir / "run.log", log_callback, mode="w")
     log_tee(f"=== MetaUmbra score started at {started_at_utc} UTC ===")
     log_tee(f"Artifacts directory: {artifact_dir}")
     return artifact_dir, log_tee, started_at_utc
@@ -768,7 +816,8 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
             except Exception:
                 pass
             artifact_dir.mkdir(parents=True, exist_ok=True)
-            ArtifactLogTee(artifact_dir / "run.log", log_callback)(
+            log_mode = "a" if (artifact_dir / "run_parameters.json").exists() else "w"
+            ArtifactLogTee(artifact_dir / "run.log", log_callback, mode=log_mode)(
                 f"Scoring workflow failed: {type(exc).__name__}: {exc}"
             )
             _write_scoring_status(artifact_dir, "failed", started_at_utc, error=exc)
