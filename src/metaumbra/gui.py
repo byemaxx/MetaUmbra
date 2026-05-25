@@ -2110,6 +2110,11 @@ class ScoringTab(QWidget):
         self.unique_count_power_spin.setSingleStep(0.05)
         self.unique_count_power_spin.setDecimals(2)
         self.unique_count_power_spin.setValue(1.0)
+        self.unique_empirical_background_threshold_quantile_spin = QDoubleSpinBox()
+        self.unique_empirical_background_threshold_quantile_spin.setRange(0.90, 0.99)
+        self.unique_empirical_background_threshold_quantile_spin.setSingleStep(0.01)
+        self.unique_empirical_background_threshold_quantile_spin.setDecimals(2)
+        self.unique_empirical_background_threshold_quantile_spin.setValue(0.95)
         self.theoretical_opportunity_processes_spin = _create_optional_process_spinbox()
         self.theoretical_opportunity_processes_spin.setToolTip(
             "Optional worker count for theoretical opportunity sharding.\n"
@@ -2127,6 +2132,9 @@ class ScoringTab(QWidget):
         )
         self.unique_count_power_spin.setToolTip(
             "Power exponent for alpha-upper-bound mode: U_eff = U_raw^power. Set to 1.0 for raw unique count."
+        )
+        self.unique_empirical_background_threshold_quantile_spin.setToolTip(
+            "Lower values increase sensitivity; higher values increase conservativeness. Recommended default: 0.95."
         )
         theoretical_cache_row, self.theoretical_opportunity_cache_edit = _make_path_row(
             "Browse", self._browse_theoretical_opportunity_cache, accept_mode="file"
@@ -2151,6 +2159,15 @@ class ScoringTab(QWidget):
         _set_compact_control_width(self.unique_count_power_spin, 110)
         unique_grid.addWidget(self.unique_count_power_label, 1, 0)
         unique_grid.addWidget(self.unique_count_power_spin, 1, 1)
+        self.unique_empirical_background_threshold_quantile_label = QLabel(
+            "Empirical background threshold quantile"
+        )
+        self.unique_empirical_background_threshold_quantile_label.setAlignment(
+            QT_ALIGN_LEFT | QT_ALIGN_VCENTER
+        )
+        _set_compact_control_width(self.unique_empirical_background_threshold_quantile_spin, 110)
+        unique_grid.addWidget(self.unique_empirical_background_threshold_quantile_label, 1, 0)
+        unique_grid.addWidget(self.unique_empirical_background_threshold_quantile_spin, 1, 1)
         self.theoretical_opportunity_processes_label = QLabel("Opportunity processes")
         self.theoretical_opportunity_processes_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
         _set_compact_control_width(self.theoretical_opportunity_processes_spin, 160)
@@ -2707,6 +2724,7 @@ class ScoringTab(QWidget):
     def _sync_unique_mode_visibility(self) -> None:
         mode = str(self.unique_pvalue_mode_combo.currentData() or "empirical-background")
         error_source = str(self.unique_peptide_error_source_combo.currentData() or "global-alpha")
+        show_empirical_background = mode == "empirical-background"
         show_alpha_mode = mode == "alpha-upper-bound"
         show_alpha = show_alpha_mode and error_source == "global-alpha"
         show_effective_count = show_alpha_mode
@@ -2717,6 +2735,8 @@ class ScoringTab(QWidget):
         self.single_peptide_error_rate_upper_bound_edit.setVisible(show_alpha)
         self.unique_count_power_label.setVisible(show_effective_count)
         self.unique_count_power_spin.setVisible(show_effective_count)
+        self.unique_empirical_background_threshold_quantile_label.setVisible(show_empirical_background)
+        self.unique_empirical_background_threshold_quantile_spin.setVisible(show_empirical_background)
         self.theoretical_opportunity_cache_label.setVisible(show_exact_cache)
         self.theoretical_opportunity_cache_edit.parentWidget().setVisible(show_exact_cache)
         self.rebuild_theoretical_opportunity_cache_checkbox.setVisible(show_exact_cache)
@@ -2810,6 +2830,9 @@ class ScoringTab(QWidget):
             unique_pvalue_mode=str(self.unique_pvalue_mode_combo.currentData() or "empirical-background"),
             unique_peptide_error_source=str(self.unique_peptide_error_source_combo.currentData() or "global-alpha"),
             unique_count_power=float(self.unique_count_power_spin.value()),
+            unique_empirical_background_threshold_quantile=float(
+                self.unique_empirical_background_threshold_quantile_spin.value()
+            ),
             unit_aware=self.unit_aware_checkbox.isChecked(),
             sample_id_col=self.sample_id_col_edit.currentText().strip(),
             intensity_col=self.intensity_col_edit.currentText().strip(),
@@ -2915,6 +2938,9 @@ class ScoringTab(QWidget):
         _set_combo_to_data(self.unique_pvalue_mode_combo, str(config.unique_pvalue_mode))
         _set_combo_to_data(self.unique_peptide_error_source_combo, str(config.unique_peptide_error_source))
         self.unique_count_power_spin.setValue(float(config.unique_count_power))
+        self.unique_empirical_background_threshold_quantile_spin.setValue(
+            float(config.unique_empirical_background_threshold_quantile)
+        )
         self.unit_aware_checkbox.setChecked(bool(config.unit_aware))
         self.export_unit_derived_tables_checkbox.setChecked(bool(config.export_unit_derived_tables))
         # Clamp to QSpinBox maximum to avoid overflow

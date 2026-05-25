@@ -54,6 +54,7 @@ class ScoringConfig:
     unique_pvalue_mode: str = "empirical-background"
     unique_peptide_error_source: str = "global-alpha"
     unique_count_power: float = 1.0
+    unique_empirical_background_threshold_quantile: float = 0.95
     theoretical_opportunity_cache_path: str = ""
     rebuild_theoretical_opportunity_cache: bool = False
     num_workers_for_theoretical_opportunity: Optional[int] = None
@@ -755,6 +756,18 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
                 single_peptide_error_rate_upper_bound=float(config.single_peptide_error_rate_upper_bound),
             )
             calc.peptide_table_dir = os.path.dirname(peptide_table_path)
+
+        unique_empirical_background_threshold_quantile = float(
+            config.unique_empirical_background_threshold_quantile
+        )
+        if (
+            str(config.unique_pvalue_mode).strip().lower() == "empirical-background"
+            and not (0.90 <= unique_empirical_background_threshold_quantile <= 0.99)
+        ):
+            raise ValueError(
+                "Empirical background threshold quantile must be between 0.90 and 0.99."
+            )
+        calc.unique_empirical_background_threshold_quantile = unique_empirical_background_threshold_quantile
 
         result_df = calc.analyze_genomes(
             genome_digest_dirs=[str(Path(p).expanduser()) for p in config.genome_digest_dirs],

@@ -51,6 +51,7 @@ COUNT_DTYPE = np.int32
 DEFAULT_UNIQUE_PVALUE_MODE = "empirical-background"
 DEFAULT_UNIQUE_COUNT_POWER = 1.0
 DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE = "global-alpha"
+DEFAULT_UNIQUE_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE = 0.95
 UNIQUE_PVALUE_CANONICAL_MODES = (
     "empirical-background",
     "hypergeometric-opportunity",
@@ -76,7 +77,7 @@ UNIT_EMPIRICAL_BACKGROUND_MAX_EXCLUDE_FRACTION = 0.15
 UNIT_EMPIRICAL_BACKGROUND_CANDIDATE_Q = 0.20
 UNIT_EMPIRICAL_BACKGROUND_MAX_ITERATIONS = 3
 UNIT_EMPIRICAL_BACKGROUND_SMALL_UNIT_MIN_ACTIVE_GENOMES = 100
-UNIT_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE = 0.95
+UNIT_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE = DEFAULT_UNIQUE_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE
 
 
 def _normalize_unique_pvalue_mode(mode: Optional[str]) -> str:
@@ -219,7 +220,7 @@ def _compute_empirical_background_stats_for_table(
     *,
     alpha: float,
     top_exclude_fraction: float,
-    threshold_quantile: float = 0.95,
+    threshold_quantile: float = DEFAULT_UNIQUE_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE,
     n_bins: int = 8,
     min_bin_size: int = 50,
 ) -> Tuple[pd.DataFrame, dict]:
@@ -1427,7 +1428,9 @@ class GenomePresenceScorer:
         self.unique_empirical_background_candidate_q: float = 0.20
         self.unique_empirical_background_max_iterations: int = 5
         self.unique_empirical_background_convergence_tol: float = 0.01
-        self.unique_empirical_background_threshold_quantile: float = 0.95
+        self.unique_empirical_background_threshold_quantile: float = (
+            DEFAULT_UNIQUE_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE
+        )
         self.genome_scores_df: Optional[pd.DataFrame] = None
 
         # Unified ranking score scales (lexicographic; unique dominates)
@@ -4978,6 +4981,9 @@ class GenomePresenceScorer:
             self.run_stats["theoretical_opportunity_cache_rebuilt"] = False
             self.run_stats["genome_theoretical_unique_peptides_quantiles"] = {}
             self.run_stats["unique_empirical_background_opportunity_source"] = "total_peptide_count"
+            self.run_stats["unique_empirical_background_threshold_quantile"] = float(
+                self.unique_empirical_background_threshold_quantile
+            )
         else:
             self.run_stats["unique_depth_null_model"] = ""
             self.run_stats["theoretical_opportunity_cache_path"] = None
