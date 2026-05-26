@@ -4,7 +4,7 @@
 
 ## Genome-level presence inference from metaproteomic peptides
 
-MetaUmbra performs genome-level presence inference from metaproteomic peptide lists. It combines depth-adjusted genome-unique peptide support with weighted shared peptide evidence to identify statistically supported microbial genomes and generate interpretable presence rankings.
+MetaUmbra performs genome-level presence inference from metaproteomic peptide lists. It combines sample-depth-aware genome-unique peptide support with weighted shared peptide evidence to identify statistically supported microbial genomes and generate interpretable presence rankings.
 
 ## Main features
 
@@ -12,6 +12,7 @@ MetaUmbra performs genome-level presence inference from metaproteomic peptide li
 - Build genome-specific theoretical peptide references from protein FASTA files
 - Support user-defined genome collections, including isolate genomes, strain panels, and MAG catalogs
 - Use both unique and shared peptide evidence for genome presence inference
+- Calibrate genome-unique peptide counts against sample-specific weak-background genomes by default
 - Score multi-sample inputs per sample or user-defined analysis unit without repeated genome digest scans
 - Report genome-level p-values, BH-adjusted q-values, and presence scores
 - Provide GUI, command-line, and Python workflow support
@@ -105,7 +106,7 @@ Key output columns include:
 | `num_peptides_matched` | Number of observed peptides matched to the genome |
 | `num_peptides_unique` | Number of matched peptides unique to the genome |
 | `theoretical_unique_peptides` | Theoretical peptides unique to this genome among the analyzed genome set, included for `hypergeometric-opportunity` output |
-| `expected_unique_null` | Expected observed genome-unique peptides under the selected adaptive null |
+| `expected_unique_null` | Expected observed genome-unique peptides under the selected unique-evidence null |
 | `unique_depth_fold` | Observed unique peptides divided by expected unique peptides under the null |
 | `has_unique_evidence` | Whether the genome has at least one observed unique peptide |
 | `pvalue_shared` | Shared-peptide knockoff p-value |

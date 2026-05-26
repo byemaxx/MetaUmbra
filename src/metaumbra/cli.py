@@ -227,22 +227,23 @@ def build_parser() -> argparse.ArgumentParser:
         score_optional,
         "--single-peptide-error-rate-upper-bound",
         type=float,
-        default=0.3,
+        default=0.05,
         help="Alpha upper bound for one unique evidence unit in alpha^(U_raw^power).",
     )
     _add_argument(
         score_optional,
         "--unique-pvalue-mode",
         choices=(
+            "empirical-background",
             "hypergeometric-opportunity",
             "alpha-upper-bound",
         ),
-        default="alpha-upper-bound",
+        default="empirical-background",
         help=(
-            "Unique evidence p-value mode. 'hypergeometric-opportunity' uses the observed genome-unique peptide pool and "
-            "genome-specific theoretical unique peptide opportunity. 'alpha-upper-bound' uses alpha^(U_raw^power) "
-            "and is the default; power=1.0 recovers alpha^U_raw. Unique p-value strength is controlled by this mode, "
-            "--unique-peptide-error-source, --single-peptide-error-rate-upper-bound, and --unique-count-power."
+            "Unique evidence p-value mode. 'empirical-background' estimates a sample-specific weak-genome unique peptide "
+            "background threshold and accumulates only excess unique evidence. "
+            "'hypergeometric-opportunity' uses the observed genome-unique peptide pool and genome-specific theoretical "
+            "unique peptide opportunity. 'alpha-upper-bound' uses alpha^(U_raw^power)."
         ),
     )
     _add_argument(
@@ -260,10 +261,20 @@ def build_parser() -> argparse.ArgumentParser:
         score_optional,
         "--unique-count-power",
         type=float,
-        default=0.7,
+        default=1.0,
         help=(
-            "Power exponent for effective unique evidence count: U_eff = U_raw^power. "
+            "Power exponent for alpha-upper-bound effective unique evidence count: U_eff = U_raw^power. "
             "Lower values are more conservative; 1.0 recovers the raw unique count."
+        ),
+    )
+    _add_argument(
+        score_optional,
+        "--unique-empirical-background-threshold-quantile",
+        type=float,
+        default=0.95,
+        help=(
+            "Weak-background unique-count quantile used by empirical-background mode. "
+            "Applies to pooled scoring and unit-aware empirical-background scoring."
         ),
     )
     _add_argument(
@@ -315,10 +326,22 @@ def build_parser() -> argparse.ArgumentParser:
     _add_argument(
         score_optional,
         "--export-unit-derived-tables",
-        action="store_true",
+        dest="export_unit_derived_tables",
+        action="store_const",
+        const=True,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    _add_argument(
+        score_optional,
+        "--no-export-unit-derived-tables",
+        dest="export_unit_derived_tables",
+        action="store_const",
+        const=False,
+        display_default="enabled with --unit-aware",
         help=(
-            "When --unit-aware is enabled, export derived unit-aware tables under "
-            "<stem>_artifacts/unit_aware/."
+            "Disable derived unit-aware tables under <stem>_artifacts/unit_aware/. "
+            "By default they are exported when --unit-aware is enabled."
         ),
     )
     _add_argument(
@@ -339,7 +362,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--num-workers-for-theoretical-opportunity",
         type=int,
         display_default="same as --num-workers",
-        help="Worker process count for hypergeometric-opportunity theoretical opportunity sharding and reduction.",
+        help="Worker process count for theoretical opportunity sharding and reduction.",
     )
     _add_argument(
         score_optional,
@@ -521,6 +544,7 @@ def _run_score(args: argparse.Namespace) -> int:
         unique_pvalue_mode=args.unique_pvalue_mode,
         unique_peptide_error_source=args.unique_peptide_error_source,
         unique_count_power=args.unique_count_power,
+        unique_empirical_background_threshold_quantile=args.unique_empirical_background_threshold_quantile,
         unit_aware=args.unit_aware,
         sample_id_col=args.sample_id_col,
         intensity_col=args.intensity_col,

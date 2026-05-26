@@ -318,9 +318,10 @@ Important scoring options:
 | `--peptide-score-col` | `Evidence` | Peptide score column. If missing, all peptides receive score `1`. |
 | `--peptide-error-col` | `Q.Value` | Peptide error, FDR, PEP, or q-value column used for filtering. |
 | `--peptide-error-cutoff` | `0.05` | Keep peptides with error values less than or equal to this cutoff. |
-| `--unique-pvalue-mode` | `alpha-upper-bound` | Unique evidence p-value mode. `alpha-upper-bound` uses `alpha^(U_raw^power)` by default. `hypergeometric-opportunity` uses the observed genome-unique peptide pool and theoretical unique peptide opportunity. |
+| `--unique-pvalue-mode` | `empirical-background` | Unique evidence p-value mode. `empirical-background` estimates a sample-specific weak-genome unique peptide background threshold and accumulates only unique peptides above that threshold. `hypergeometric-opportunity` uses the observed genome-unique peptide pool and theoretical unique peptide opportunity. `alpha-upper-bound` uses `alpha^(U_raw^power)`. |
 | `--unique-peptide-error-source` | `global-alpha` | Error source for `alpha-upper-bound`: use the global alpha or per-peptide values from `--peptide-error-col`. |
-| `--unique-count-power` | `0.7` | Power exponent for effective unique evidence count, `U_eff = U_raw^power`. |
+| `--unique-count-power` | `1.0` | Power exponent for `alpha-upper-bound` effective unique evidence count, `U_eff = U_raw^power`. |
+| `--unique-empirical-background-threshold-quantile` | `0.95` | Weak-background unique-count quantile used by `empirical-background`; applies to pooled scoring and unit-aware empirical-background scoring. |
 | `--unit-aware` | off | Enable per-analysis-unit genome presence scoring for long-format multi-sample peptide tables. |
 | `--sample-id-col` | `Run` | Sample or run ID column used by `--unit-aware`. |
 | `--intensity-col` | `Precursor.Quantity` | Intensity column used to call sample-level peptide presence for `--unit-aware`. |
@@ -329,11 +330,11 @@ Important scoring options:
 | `--metadata-table` | none | Optional TSV/CSV table mapping samples to analysis units. |
 | `--metadata-sample-id-col` | `sample_id` | Sample ID column in `--metadata-table`. |
 | `--metadata-analysis-unit-col` | `analysis_unit_id` | Analysis unit column in `--metadata-table`. |
-| `--export-unit-derived-tables` | off | When `--unit-aware` is enabled, write optional derived unit-aware tables under `<stem>_artifacts/unit_aware/`. |
+| `--no-export-unit-derived-tables` | off | Disable derived unit-aware tables. By default, unit-aware runs write these tables under `<stem>_artifacts/unit_aware/`. |
 | `--theoretical-opportunity-cache` | auto | Optional path for the theoretical opportunity cache used by `hypergeometric-opportunity`. |
 | `--rebuild-theoretical-opportunity-cache` | off | Rebuild the theoretical opportunity cache even if it already exists. |
-| `--num-workers-for-theoretical-opportunity` | same as `--num-workers` | Optional worker process count for `hypergeometric-opportunity` theoretical opportunity sharding and reduction. |
-| `--single-peptide-error-rate-upper-bound` | `0.3` | Global alpha used by `--unique-pvalue-mode alpha-upper-bound` when `--unique-peptide-error-source global-alpha` is selected. This is separate from peptide filtering. |
+| `--num-workers-for-theoretical-opportunity` | same as `--num-workers` | Optional worker process count for theoretical opportunity sharding and reduction. |
+| `--single-peptide-error-rate-upper-bound` | `0.05` | Global alpha used by `--unique-pvalue-mode alpha-upper-bound` when `--unique-peptide-error-source global-alpha` is selected. This is separate from peptide filtering. |
 | `--peptide-decoy-flag-col` | `Reverse` | Decoy flag column. Pass an empty string to disable. |
 | `--decoy-flag-value` | `+` | Value treated as a decoy marker. |
 | `--num-workers` | `max(1, cpu_count - 1)` | Worker process count for genome scanning. On Windows, use 60 or fewer workers because `ProcessPoolExecutor` has a platform worker limit. |
@@ -347,7 +348,7 @@ Important scoring options:
 | `--no-export-temp` | off | Skip diagnostic artifact table exports. Run parameters and run log are still written under `<stem>_artifacts/`. |
 | `--return-full-table` | off | Write the full internal result table instead of only the concise main result. |
 
-Unique p-value strength is controlled by `--unique-pvalue-mode`, `--unique-peptide-error-source`, `--single-peptide-error-rate-upper-bound`, and `--unique-count-power`.
+Unique p-value strength is controlled by `--unique-pvalue-mode`. `--unique-peptide-error-source`, `--single-peptide-error-rate-upper-bound`, and `--unique-count-power` apply to `alpha-upper-bound`.
 
 ### Unit-aware scoring for multi-sample data
 
@@ -377,7 +378,9 @@ run_02	donor_A
 run_03	donor_B
 ```
 
-For each analysis unit `u`, unit-level unique evidence uses the `hypergeometric-opportunity` hypergeometric model:
+For each analysis unit `u`, unit-level unique evidence uses the selected unique p-value mode. The default `empirical-background` mode estimates a weak-genome background separately within each analysis unit. It uses the same background-excess formula as pooled scoring, but with conservative per-unit auto-exclusion defaults: initial 3%, minimum 0%, maximum 15%, and candidate `q <= 0.20`. This avoids reusing a cohort-level background for per-sample or per-person calls.
+
+With `hypergeometric-opportunity`, unit-level unique evidence uses the hypergeometric model:
 
 ```text
 X_g,u ~ Hypergeometric(A_total, A_g, S_u)
@@ -388,7 +391,9 @@ where `U_g,u` is the observed genome-unique peptide count for genome `g` in unit
 
 Pooled multi-sample scoring answers a cohort-level pooled support question and should not be interpreted as per-sample genome presence. Unit-aware scoring is recommended when the input contains multiple samples or repeated runs.
 
-In the current implementation, peptide presence within an analysis unit is defined as the union of sample-level peptide presence across samples assigned to that unit. Unit-level p-values are based on `hypergeometric-opportunity` unique evidence only; `pvalue_shared` is set to `1.0` and is not used in unit-level scoring.
+In the current implementation, peptide presence within an analysis unit is defined as the union of sample-level peptide presence across samples assigned to that unit. Unit-level p-values combine per-unit shared knockoff evidence and the selected per-unit unique evidence with Fisher's method, then apply BH correction separately within each analysis unit.
+
+When unit-aware `empirical-background` is selected, MetaUmbra also writes `unit_empirical_background_calibration.tsv` under `<stem>_artifacts/unit_aware/`. This table records each analysis unit's empirical-background iteration trace, configured threshold quantile, final exclusion fraction, iteration count, active matched genome count, and small-unit warnings. Units with fewer than 100 active matched genomes use no top-genome exclusion and one opportunity bin.
 
 For DIA-NN long/parquet input, `Precursor.Quantity` is recommended for peptide presence filtering. `Precursor.Normalised` can be selected for normalized intensity workflows, but it is not the recommended default for presence/absence detection.
 
@@ -477,13 +482,18 @@ The default scoring output is a concise TSV table with one row per genome.
 | `presence_rank` | Rank after sorting by `presence_score`. |
 | `num_peptides_matched` | Number of observed peptides matched to the genome digest. |
 | `num_peptides_unique` | Number of matched peptides unique to that genome among the analyzed genome set. |
-| `theoretical_unique_peptides` | Theoretical peptides unique to this genome among the analyzed genome set. Included in concise output only for `hypergeometric-opportunity`. |
-| `expected_unique_null` | Expected observed genome-unique peptides under the selected adaptive null. |
+| `theoretical_unique_peptides` | Theoretical peptides unique to this genome among the analyzed genome set. Included in concise output for `hypergeometric-opportunity`. |
+| `expected_unique_null` | Expected observed genome-unique peptides under the selected unique-evidence null. |
 | `unique_depth_fold` | Observed unique peptides divided by `expected_unique_null`. |
 | `has_unique_evidence` | `true` when the genome has at least one observed unique peptide. |
 | `pvalue_shared` | Shared-peptide knockoff p-value. |
 | `pvalue_unique` | Unique-evidence p-value after applying the configured mode. |
 | `pvalue_unique_depth` | Depth-adjusted unique-evidence p-value before combination. |
+| `unique_empirical_background_bin` | Opportunity bin used by `empirical-background`. |
+| `unique_empirical_background_size` | Number of background genomes in the empirical bin used for the unique p-value. |
+| `unique_empirical_background_threshold` | 95th percentile weak-background unique count in the empirical bin. |
+| `unique_empirical_excess_count` | Observed unique count above `unique_empirical_background_threshold`; this is the effective count for `empirical-background`. |
+| `p_unique_empirical_tail` | Direct empirical ECDF tail p-value retained as a diagnostic only. |
 | `pvalue` | Genome-level presence p-value in the concise output table. |
 | `qvalue` | BH-adjusted genome-level q-value in the concise output table. |
 | `presence_score` | Ranking score used to order genome presence calls. |
@@ -498,18 +508,18 @@ The concise output uses `pvalue` and `qvalue`. When `--return-full-table` is ena
 When `--unit-aware` is enabled, the requested `--output` path contains the main unit-level genome presence table. MetaUmbra also writes the primary unit-aware outputs next to it:
 
 ```text
-<stem>_unit_genome_presence.tsv
+<requested output TSV>
 <stem>_cohort_genome_summary.tsv
 <stem>_sample_unit_mapping.tsv
 ```
 
-- `<stem>_unit_genome_presence.tsv`: one row per `analysis_unit_id` x `genome_id`, including unit-specific `qvalue` and `pass_q_0_01` / `pass_q_0_05` flags.
+- `<requested output TSV>`: one row per `analysis_unit_id` x `genome_id`, including unit-specific `qvalue` and `pass_q_0_01` / `pass_q_0_05` flags.
 - `<stem>_cohort_genome_summary.tsv`: one row per genome, summarizing recurrence across units.
 - `<stem>_sample_unit_mapping.tsv`: final sample-to-analysis-unit mapping used for the run.
 
 The pooled peptide-set genome presence result is not the union of unit-level calls. In unit-aware mode, it is supplementary and is written to `<stem>_artifacts/pooled_genome_presence.tsv` when artifact export is enabled.
 
-Enable optional derived unit-aware tables with `--export-unit-derived-tables`. These files are written under `<stem>_artifacts/unit_aware/`:
+By default, unit-aware runs also write derived unit-aware tables under `<stem>_artifacts/unit_aware/`. Use `--no-export-unit-derived-tables` to disable them:
 
 ```text
 unit_call_counts.tsv
@@ -580,13 +590,13 @@ When cache saving is enabled, MetaUmbra writes a pickle file containing matched 
 
 Use `--use-cache-if-exists` for repeated analyses with the same observed peptide table and genome digest directories. The cache can still be combined with `--selected-genome-ids` and `--exclude-genome-ids`; filters are applied after loading the cache.
 
-`hypergeometric-opportunity` scoring also writes a theoretical opportunity cache. If `--theoretical-opportunity-cache` is not provided, the default cache is:
+`hypergeometric-opportunity` scoring can write a theoretical opportunity cache. `empirical-background` does not build this cache by default, removes stale default theoretical opportunity caches from the current artifact directory, and uses `total_peptide_count` for opportunity binning. If `--theoretical-opportunity-cache` is not provided, the default cache for `hypergeometric-opportunity` is:
 
 ```text
 <output_directory>/<output_stem>_artifacts/theoretical_opportunity_cache.pkl
 ```
 
-Use `--rebuild-theoretical-opportunity-cache` after changing genome digest files or when you want to force a fresh theoretical opportunity scan. New caches include digest file fingerprints so MetaUmbra can detect digest file changes before reusing the cache. Legacy caches without fingerprints are still accepted when genome IDs match, but rebuilding once enables stricter validation. `hypergeometric-opportunity` can also shard theoretical peptides across worker processes with `--num-workers-for-theoretical-opportunity`; if you do not set it, MetaUmbra reuses `--num-workers`.
+Use `--rebuild-theoretical-opportunity-cache` after changing genome digest files or when you want to force a fresh theoretical opportunity scan. New caches include digest file fingerprints so MetaUmbra can detect digest file changes before reusing the cache. Legacy caches without fingerprints are still accepted when genome IDs match, but rebuilding once enables stricter validation. Theoretical opportunity building can shard theoretical peptides across worker processes with `--num-workers-for-theoretical-opportunity`; if you do not set it, MetaUmbra reuses `--num-workers`.
 
 ## Interpreting results
 
@@ -598,7 +608,21 @@ MetaUmbra combines unique peptide support with weighted shared peptide evidence:
 - Unique-evidence p-values use a peptide-depth adjusted null model by default.
 - `qvalue` is the Benjamini-Hochberg adjusted genome-level presence q-value across analyzed genomes.
 
-For default `hypergeometric-opportunity` unique evidence, MetaUmbra compares observed genome-unique peptides against genome-specific theoretical unique peptide opportunity:
+For default `empirical-background` unique evidence, MetaUmbra estimates a sample-specific weak-genome background for genome-unique peptide counts. It bins weak-background genomes by `total_peptide_count`, estimates the 95th percentile weak-background unique count in each bin, and accumulates only excess unique evidence:
+
+```text
+U_background = percentile_95(U_bg in same total_peptide_count bin)
+U_excess = max(0, U_g - U_background)
+p_unique = alpha ^ U_excess, when U_excess > 0; otherwise p_unique = 1
+```
+
+By default, pooled background exclusion is adaptive. MetaUmbra starts by excluding the top 10% evidence-ranked genomes from the weak-background pool, computes preliminary genome-level q-values, estimates the fraction of candidate genomes with `q <= 0.20`, clamps that fraction to 10-30%, and rebuilds the final weak-background threshold. This matters for pooled or high-depth cohorts where many true present genomes can otherwise contaminate the weak-background pool and inflate `U_background`. In unit-aware mode, MetaUmbra fits this empirical background independently inside each analysis unit and uses more conservative per-unit exclusion defaults: 3% initial, 0% minimum, and 15% maximum.
+
+This is analogous in spirit to the shared peptide knockoff, but for genome-unique evidence: the shared knockoff calibrates shared weighted evidence, while `empirical-background` calibrates unique peptide counts against weak-background genomes at the same sample depth and opportunity scale. The direct empirical ECDF tail is retained as `p_unique_empirical_tail` for diagnostics, but it is not used as `pvalue_unique` because its resolution is too coarse for genome-level BH correction across thousands of genomes. `empirical-background` does not build the theoretical opportunity cache by default; it records `unique_empirical_background_opportunity_source = total_peptide_count` in `run_summary.json`, along with the initial and final background exclusion fractions, candidate q threshold, iteration count, threshold quantile, and alpha.
+
+The threshold quantile is controlled by `--unique-empirical-background-threshold-quantile`. The same configured value is used for pooled `empirical-background` scoring and per-unit `empirical-background` scoring. In unit-aware empirical-background runs, the per-unit calibration table records the value in `unit_empirical_background_threshold_quantile`.
+
+For `hypergeometric-opportunity` unique evidence, MetaUmbra compares observed genome-unique peptides against genome-specific theoretical unique peptide opportunity:
 
 ```text
 X_g ~ Hypergeometric(A_total, A_g, S)
