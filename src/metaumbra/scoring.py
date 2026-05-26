@@ -1044,6 +1044,7 @@ def _compute_unit_aware_single_unit_worker(args: Dict[str, object]) -> Dict[str,
         unit_empirical_calibration = {
             "analysis_unit_id": unit_id,
             "unit_empirical_background_iteration_trace": json.dumps(iteration_trace, separators=(",", ":")),
+            "unit_empirical_background_threshold_quantile": float(threshold_quantile),
             "unit_empirical_background_final_exclude_fraction": float(exclude_fraction),
             "unit_empirical_background_iterations": int(len(iteration_trace)),
             "unit_empirical_background_active_genomes": int(active_genomes),
@@ -4028,7 +4029,9 @@ class GenomePresenceScorer:
             "unit_empirical_background_max_exclude_fraction": UNIT_EMPIRICAL_BACKGROUND_MAX_EXCLUDE_FRACTION,
             "unit_empirical_background_candidate_q": UNIT_EMPIRICAL_BACKGROUND_CANDIDATE_Q,
             "unit_empirical_background_max_iterations": UNIT_EMPIRICAL_BACKGROUND_MAX_ITERATIONS,
-            "unit_empirical_background_threshold_quantile": UNIT_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE,
+            "unit_empirical_background_threshold_quantile": float(
+                self.unique_empirical_background_threshold_quantile
+            ),
             "knockoff_sample_block_size": int(self.knockoff_sample_block_size),
             "knockoff_random_seed": int(self.knockoff_random_seed),
             "use_length_strata": bool(self.use_length_strata),
@@ -4097,6 +4100,7 @@ class GenomePresenceScorer:
                 columns=[
                     "analysis_unit_id",
                     "unit_empirical_background_iteration_trace",
+                    "unit_empirical_background_threshold_quantile",
                     "unit_empirical_background_final_exclude_fraction",
                     "unit_empirical_background_iterations",
                     "unit_empirical_background_active_genomes",
@@ -4188,7 +4192,7 @@ class GenomePresenceScorer:
             self.run_stats["unit_empirical_background_candidate_q"] = UNIT_EMPIRICAL_BACKGROUND_CANDIDATE_Q
             self.run_stats["unit_empirical_background_max_iterations"] = UNIT_EMPIRICAL_BACKGROUND_MAX_ITERATIONS
             self.run_stats["unit_empirical_background_threshold_quantile"] = (
-                UNIT_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE
+                float(self.unique_empirical_background_threshold_quantile)
             )
         return unit_level_df, cohort_summary_df
 
@@ -4606,7 +4610,7 @@ class GenomePresenceScorer:
         num_workers_for_theoretical_opportunity: Optional[int] = None,
         return_full_table: bool = False,
         unit_aware: bool = False,
-        export_unit_derived_tables: bool = False,
+        export_unit_derived_tables: Optional[bool] = None,
     ) -> pd.DataFrame:
         """End-to-end analysis producing a genome-level q-value (q_presence)."""
         mode = _normalize_unique_pvalue_mode(unique_pvalue_mode)
@@ -4619,7 +4623,12 @@ class GenomePresenceScorer:
                 raise ValueError("unit_aware=True requires read_unit_aware_peptide_file() before analyze_genomes().")
             self.unit_presence_rule = "union"
             self.unit_shared_mode = "per-unit"
-        self._export_unit_derived_tables = bool(export_unit_derived_tables)
+        effective_export_unit_derived_tables = (
+            bool(unit_aware)
+            if export_unit_derived_tables is None
+            else bool(export_unit_derived_tables)
+        )
+        self._export_unit_derived_tables = bool(effective_export_unit_derived_tables)
         self._last_unit_genome_presence_df = None
         self.unique_pvalue_mode = mode
         self.unique_peptide_error_source = unique_peptide_error_source
@@ -5133,7 +5142,7 @@ class GenomePresenceScorer:
                 mapping_df=mapping_df,
                 export_pooled_result=bool(export_temp),
             )
-            if export_unit_derived_tables:
+            if self._export_unit_derived_tables:
                 self._export_unit_aware_derived_outputs(out_dir=out_dir, stem=stem, tables=unit_tables)
         else:
             self.logger.info(f"Saving results to: {output_tsv_path}")
@@ -5288,6 +5297,7 @@ class GenomePresenceScorer:
             print("\nSupplementary outputs:")
             supplementary_labels = [
                 ("Pooled genome presence", "pooled_genome_presence"),
+                ("Unit empirical-background calibration", "unit_empirical_background_calibration"),
                 ("Derived unit-aware tables", "derived_unit_aware_tables_dir"),
             ]
             for label, key in supplementary_labels:

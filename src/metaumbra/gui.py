@@ -2017,7 +2017,7 @@ class ScoringTab(QWidget):
         unit_layout = QVBoxLayout(self.unit_box)
         self.export_unit_derived_tables_checkbox = QCheckBox("Export derived unit-aware tables")
         self.export_unit_derived_tables_checkbox.setToolTip(
-            "Write optional unit-aware call-count, significant-call, genome-union, and matrix tables under the artifacts folder."
+            "Write unit-aware call-count, significant-call, genome-union, and matrix tables under the artifacts folder."
         )
         self.export_unit_derived_tables_checkbox.setChecked(True)
         self.intensity_min_value_spin = QSpinBox()
@@ -2841,7 +2841,11 @@ class ScoringTab(QWidget):
             metadata_table_path=self.metadata_table_edit.text().strip(),
             metadata_sample_id_col=self.metadata_sample_id_col_edit.currentText().strip(),
             metadata_analysis_unit_col=self.metadata_analysis_unit_col_edit.currentText().strip(),
-            export_unit_derived_tables=self.export_unit_derived_tables_checkbox.isChecked(),
+            export_unit_derived_tables=(
+                self.export_unit_derived_tables_checkbox.isChecked()
+                if self.unit_aware_checkbox.isChecked()
+                else None
+            ),
             theoretical_opportunity_cache_path=self.theoretical_opportunity_cache_edit.text().strip(),
             rebuild_theoretical_opportunity_cache=self.rebuild_theoretical_opportunity_cache_checkbox.isChecked(),
             num_workers_for_theoretical_opportunity=(
@@ -2874,9 +2878,6 @@ class ScoringTab(QWidget):
             export_peptide_contrib_topN=int(self.export_peptide_contrib_topn_spin.value()),
             return_full_table=self.return_full_table_checkbox.isChecked(),
         )
-        if not config.unit_aware:
-            config.export_unit_derived_tables = False
-
         if require_required_fields:
             if not config.peptide_table_path:
                 raise ValueError("Please choose an observed peptide table.")
@@ -2942,7 +2943,9 @@ class ScoringTab(QWidget):
             float(config.unique_empirical_background_threshold_quantile)
         )
         self.unit_aware_checkbox.setChecked(bool(config.unit_aware))
-        self.export_unit_derived_tables_checkbox.setChecked(bool(config.export_unit_derived_tables))
+        self.export_unit_derived_tables_checkbox.setChecked(
+            True if config.export_unit_derived_tables is None else bool(config.export_unit_derived_tables)
+        )
         # Clamp to QSpinBox maximum to avoid overflow
         try:
             iv = int(config.intensity_min_value)

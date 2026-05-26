@@ -269,6 +269,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_argument(
         score_optional,
+        "--unique-empirical-background-threshold-quantile",
+        type=float,
+        default=0.95,
+        help=(
+            "Weak-background unique-count quantile used by empirical-background mode. "
+            "Applies to pooled scoring and unit-aware empirical-background scoring."
+        ),
+    )
+    _add_argument(
+        score_optional,
         "--unit-aware",
         action="store_true",
         help="Enable analysis-unit aware scoring for long-format multi-sample peptide tables.",
@@ -316,10 +326,22 @@ def build_parser() -> argparse.ArgumentParser:
     _add_argument(
         score_optional,
         "--export-unit-derived-tables",
-        action="store_true",
+        dest="export_unit_derived_tables",
+        action="store_const",
+        const=True,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    _add_argument(
+        score_optional,
+        "--no-export-unit-derived-tables",
+        dest="export_unit_derived_tables",
+        action="store_const",
+        const=False,
+        display_default="enabled with --unit-aware",
         help=(
-            "When --unit-aware is enabled, export derived unit-aware tables under "
-            "<stem>_artifacts/unit_aware/."
+            "Disable derived unit-aware tables under <stem>_artifacts/unit_aware/. "
+            "By default they are exported when --unit-aware is enabled."
         ),
     )
     _add_argument(
@@ -522,6 +544,7 @@ def _run_score(args: argparse.Namespace) -> int:
         unique_pvalue_mode=args.unique_pvalue_mode,
         unique_peptide_error_source=args.unique_peptide_error_source,
         unique_count_power=args.unique_count_power,
+        unique_empirical_background_threshold_quantile=args.unique_empirical_background_threshold_quantile,
         unit_aware=args.unit_aware,
         sample_id_col=args.sample_id_col,
         intensity_col=args.intensity_col,
