@@ -20,6 +20,17 @@ from typing import Callable, Iterable, Optional
 LogCallback = Callable[[str], None]
 
 
+def format_elapsed_seconds(elapsed_seconds: object) -> str:
+    try:
+        elapsed = float(elapsed_seconds)
+    except (TypeError, ValueError):
+        elapsed = 0.0
+    elapsed = max(0.0, elapsed)
+    minutes = int(elapsed // 60)
+    seconds = elapsed - (minutes * 60)
+    return f"{minutes} min {seconds:05.2f} s"
+
+
 @dataclass
 class DigestConfig:
     input_mode: str = "directory"
@@ -238,6 +249,7 @@ def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConf
     if unit_aware_dir.exists():
         for pattern in (
             "unit_empirical_background_calibration.tsv",
+            "unit_threshold_summary.tsv",
             "unit_call_counts.tsv",
             "unit_q001_genomes.tsv",
             "unit_q005_genomes.tsv",
@@ -809,7 +821,9 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
     }
     _write_scoring_status(artifact_dir, "success", started_at_utc, result=result)
     if active_log_callback:
-        active_log_callback(f"Finished genome presence scoring in {result['elapsed_seconds']} s.")
+        active_log_callback(
+            f"Finished genome presence scoring in {format_elapsed_seconds(result['elapsed_seconds'])}."
+        )
     return result
 
 
@@ -934,7 +948,7 @@ def run_parquet_extraction_workflow(
                     next_progress_row += batch_size * 10
 
     elapsed_seconds = round(time.time() - start, 2)
-    log(f"Finished parquet extraction: {rows_written} rows written in {elapsed_seconds} s")
+    log(f"Finished parquet extraction: {rows_written} rows written in {format_elapsed_seconds(elapsed_seconds)}")
     log(f"Saved TSV: {output_path}")
 
     return {

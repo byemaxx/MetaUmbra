@@ -80,6 +80,17 @@ UNIT_EMPIRICAL_BACKGROUND_SMALL_UNIT_MIN_ACTIVE_GENOMES = 100
 UNIT_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE = DEFAULT_UNIQUE_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE
 
 
+def _format_elapsed_seconds(elapsed_seconds: object) -> str:
+    try:
+        elapsed = float(elapsed_seconds)
+    except (TypeError, ValueError):
+        elapsed = 0.0
+    elapsed = max(0.0, elapsed)
+    minutes = int(elapsed // 60)
+    seconds = elapsed - (minutes * 60)
+    return f"{minutes} min {seconds:05.2f} s"
+
+
 def _normalize_unique_pvalue_mode(mode: Optional[str]) -> str:
     normalized = str(mode or DEFAULT_UNIQUE_PVALUE_MODE).strip().lower()
     if normalized not in UNIQUE_PVALUE_CANONICAL_MODES:
@@ -1489,6 +1500,7 @@ class GenomePresenceScorer:
         self.sample_unit_mapping_df: Optional[pd.DataFrame] = None
         self.unit_aware_output_paths: Dict[str, str] = {}
         self.unit_aware_cohort_summary_df: Optional[pd.DataFrame] = None
+        self.unit_aware_unit_threshold_summary_df: Optional[pd.DataFrame] = None
         self.unit_empirical_background_calibration_df: Optional[pd.DataFrame] = None
         self._export_unit_derived_tables: bool = False
         self._last_unit_genome_presence_df: Optional[pd.DataFrame] = None
@@ -2712,12 +2724,13 @@ class GenomePresenceScorer:
         if (pair_cols < 0).any():
             raise RuntimeError("Failed to encode unit-aware sample IDs for sparse matrix construction.")
         analysis_unit_ids = sorted({str(sample_to_unit.get(sample_id, sample_id)) for sample_id in valid_sample_ids})
+        elapsed_pairs = float(time.time() - t_pairs0)
         self.logger.info(
             f"Unit-aware unique peptide-sample pairs: {len(valid_pairs_for_matrix)} pair(s), "
             f"{len(peptide_list)} peptide(s), {len(valid_sample_ids)} included sample(s), "
-            f"{len(analysis_unit_ids)} analysis unit(s); built in {time.time() - t_pairs0:.2f}s."
+            f"{len(analysis_unit_ids)} analysis unit(s); built in {_format_elapsed_seconds(elapsed_pairs)}."
         )
-        self.timing_stats["unit_aware_unique_pairs"] = float(time.time() - t_pairs0)
+        self.timing_stats["unit_aware_unique_pairs"] = elapsed_pairs
 
         peptide_index = {peptide: i for i, peptide in enumerate(peptide_list)}
         sample_index = {sample_id: i for i, sample_id in enumerate(valid_sample_ids)}
@@ -4279,6 +4292,30 @@ class GenomePresenceScorer:
                 .reset_index(drop=True)
             )
 
+        def _build_unit_threshold_summary(df: pd.DataFrame) -> pd.DataFrame:
+            if df.empty:
+                return pd.DataFrame(
+                    columns=[
+                        "analysis_unit_id",
+                        "q001_genomes",
+                        "q005_genomes",
+                    ]
+                )
+            rows = []
+            for unit_id, group in df.groupby("analysis_unit_id", sort=False):
+                rows.append(
+                    {
+                        "analysis_unit_id": str(unit_id),
+                        "q001_genomes": int(group["pass_q_0_01"].sum()),
+                        "q005_genomes": int(group["pass_q_0_05"].sum()),
+                    }
+                )
+            return (
+                pd.DataFrame(rows)
+                .sort_values("analysis_unit_id", key=lambda s: s.astype(str), kind="mergesort")
+                .reset_index(drop=True)
+            )
+
         def _build_presence_matrix(
             df: pd.DataFrame,
             genome_order_df: pd.DataFrame,
@@ -4432,10 +4469,12 @@ class GenomePresenceScorer:
 
         unit_level_out = _ordered_columns(unit_level_df, unit_level_columns)
         cohort_summary_out = _ordered_columns(cohort_summary_df, cohort_columns)
+        unit_threshold_summary = _build_unit_threshold_summary(unit_level_df)
         if not self._export_unit_derived_tables:
             return {
                 "unit_genome_presence": unit_level_out,
                 "cohort_genome_summary": cohort_summary_out,
+                "unit_threshold_summary": unit_threshold_summary,
             }
         unit_call_counts = _build_unit_call_counts(unit_level_df)
         unit_q001 = _sort_existing(
@@ -4476,6 +4515,7 @@ class GenomePresenceScorer:
         return {
             "unit_genome_presence": unit_level_out,
             "cohort_genome_summary": cohort_summary_out,
+            "unit_threshold_summary": unit_threshold_summary,
             "unit_call_counts": unit_call_counts,
             "unit_q001_genomes": unit_q001,
             "unit_q005_genomes": unit_q005,
@@ -4503,6 +4543,7 @@ class GenomePresenceScorer:
         cohort_path = os.path.join(out_dir, f"{stem}_cohort_genome_summary.tsv")
         mapping_path = os.path.join(out_dir, f"{stem}_sample_unit_mapping.tsv")
         pooled_path = os.path.join(artifact_dir, "pooled_genome_presence.tsv")
+        unit_threshold_summary_path = os.path.join(artifact_dir, "unit_aware", "unit_threshold_summary.tsv")
         calibration_path = os.path.join(artifact_dir, "unit_aware", "unit_empirical_background_calibration.tsv")
 
         self.unit_aware_output_paths = {
@@ -4512,12 +4553,18 @@ class GenomePresenceScorer:
         }
         unit_level_out = tables["unit_genome_presence"]
         cohort_summary_out = tables["cohort_genome_summary"]
+        unit_threshold_summary = tables["unit_threshold_summary"]
         self.unit_aware_cohort_summary_df = cohort_summary_out.copy()
+        self.unit_aware_unit_threshold_summary_df = unit_threshold_summary.copy()
         self._last_unit_genome_presence_df = unit_level_out.copy()
 
         unit_level_out.to_csv(unit_level_path, sep="\t", index=False)
         cohort_summary_out.to_csv(cohort_path, sep="\t", index=False)
         mapping_df.to_csv(mapping_path, sep="\t", index=False)
+        os.makedirs(os.path.dirname(unit_threshold_summary_path), exist_ok=True)
+        unit_threshold_summary.to_csv(unit_threshold_summary_path, sep="\t", index=False)
+        self.unit_aware_output_paths["unit_threshold_summary"] = unit_threshold_summary_path
+        self.run_stats["unit_aware_unit_threshold_summary_rows"] = int(len(unit_threshold_summary))
 
         calibration_df = self.unit_empirical_background_calibration_df
         if calibration_df is not None and not calibration_df.empty:
@@ -4630,6 +4677,7 @@ class GenomePresenceScorer:
         )
         self._export_unit_derived_tables = bool(effective_export_unit_derived_tables)
         self._last_unit_genome_presence_df = None
+        self.unit_aware_unit_threshold_summary_df = None
         self.unique_pvalue_mode = mode
         self.unique_peptide_error_source = unique_peptide_error_source
         self.unique_count_power = float(unique_count_power)
@@ -4693,6 +4741,7 @@ class GenomePresenceScorer:
         self.timing_stats = {}
         self.unit_aware_output_paths = {}
         self.unit_aware_cohort_summary_df = None
+        self.unit_aware_unit_threshold_summary_df = None
         self.unit_empirical_background_calibration_df = None
 
         # Normalize cache path (if provided); otherwise use the default.
@@ -5242,6 +5291,30 @@ class GenomePresenceScorer:
             if not printed_any:
                 print("(no genomes around this threshold)")
 
+        if self.unit_aware_output_paths:
+            print("\nPrimary unit-aware outputs:")
+            primary_labels = [
+                ("Unit genome presence", "unit_genome_presence"),
+                ("Cohort genome summary", "cohort_genome_summary"),
+                ("Sample-unit mapping", "sample_unit_mapping"),
+            ]
+            for label, key in primary_labels:
+                path = self.unit_aware_output_paths.get(key)
+                if path:
+                    print(f"  {label}: {path}")
+
+            print("\nSupplementary outputs:")
+            supplementary_labels = [
+                ("Pooled genome presence", "pooled_genome_presence"),
+                ("Unit threshold summary", "unit_threshold_summary"),
+                ("Unit empirical-background calibration", "unit_empirical_background_calibration"),
+                ("Derived unit-aware tables", "derived_unit_aware_tables_dir"),
+            ]
+            for label, key in supplementary_labels:
+                path = self.unit_aware_output_paths.get(key)
+                if path:
+                    print(f"  {label}: {path}")
+
         print("\n======= MetaUmbra scoring summary =======")
         print(f"Mode: {'unit-aware' if self.unit_aware_output_paths else 'pooled peptide-set scoring'}")
         print(f"Genomes analyzed: {len(df)}")
@@ -5283,27 +5356,18 @@ class GenomePresenceScorer:
             print(f"Genomes q<=0.01 in >=1 unit: {q01_any}")
             print(f"Genomes q<=0.01 in all units: {q01_all}")
 
-            print("\nPrimary unit-aware outputs:")
-            primary_labels = [
-                ("Unit genome presence", "unit_genome_presence"),
-                ("Cohort genome summary", "cohort_genome_summary"),
-                ("Sample-unit mapping", "sample_unit_mapping"),
-            ]
-            for label, key in primary_labels:
-                path = self.unit_aware_output_paths.get(key)
-                if path:
-                    print(f"  {label}: {path}")
-
-            print("\nSupplementary outputs:")
-            supplementary_labels = [
-                ("Pooled genome presence", "pooled_genome_presence"),
-                ("Unit empirical-background calibration", "unit_empirical_background_calibration"),
-                ("Derived unit-aware tables", "derived_unit_aware_tables_dir"),
-            ]
-            for label, key in supplementary_labels:
-                path = self.unit_aware_output_paths.get(key)
-                if path:
-                    print(f"  {label}: {path}")
+            unit_threshold_summary = self.unit_aware_unit_threshold_summary_df
+            print("\nPer-unit q-value genome counts:")
+            print("analysis_unit_id\tq001_genomes\tq005_genomes")
+            if unit_threshold_summary is not None and not unit_threshold_summary.empty:
+                display_summary = unit_threshold_summary.head(30)
+                for row in display_summary.itertuples(index=False):
+                    print(f"{row.analysis_unit_id}\t{int(row.q001_genomes)}\t{int(row.q005_genomes)}")
+                omitted = int(len(unit_threshold_summary) - len(display_summary))
+                if omitted > 0:
+                    print(f"... {omitted} additional units omitted; full table saved to artifacts.")
+            else:
+                print("(no unit threshold counts available)")
 
         top = target.head(10)
         print("\nTop 10 pooled target genomes by rank:")

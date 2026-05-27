@@ -517,7 +517,7 @@ When `--unit-aware` is enabled, the requested `--output` path contains the main 
 - `<stem>_cohort_genome_summary.tsv`: one row per genome, summarizing recurrence across units.
 - `<stem>_sample_unit_mapping.tsv`: final sample-to-analysis-unit mapping used for the run.
 
-The pooled peptide-set genome presence result is not the union of unit-level calls. In unit-aware mode, it is supplementary and is written to `<stem>_artifacts/pooled_genome_presence.tsv` when artifact export is enabled.
+The pooled peptide-set genome presence result is not the union of unit-level calls. In unit-aware mode, it is supplementary and is written to `<stem>_artifacts/pooled_genome_presence.tsv` when artifact export is enabled. MetaUmbra also writes `<stem>_artifacts/unit_aware/unit_threshold_summary.tsv`, a compact per-unit table with q<=0.01 and q<=0.05 genome counts.
 
 By default, unit-aware runs also write derived unit-aware tables under `<stem>_artifacts/unit_aware/`. Use `--no-export-unit-derived-tables` to disable them:
 

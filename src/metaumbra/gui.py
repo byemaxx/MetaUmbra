@@ -18,6 +18,7 @@ if __package__ in {None, ""}:
         DigestConfig,
         ParquetExtractionConfig,
         ScoringConfig,
+        format_elapsed_seconds,
         run_digest_workflow,
         run_parquet_extraction_workflow,
         run_scoring_workflow,
@@ -28,6 +29,7 @@ else:
         DigestConfig,
         ParquetExtractionConfig,
         ScoringConfig,
+        format_elapsed_seconds,
         run_digest_workflow,
         run_parquet_extraction_workflow,
         run_scoring_workflow,
@@ -3686,26 +3688,27 @@ class MainWindow(QMainWindow):
         self._run_current_tab()
 
     def _format_summary(self, task_name: str, payload: dict) -> str:
+        elapsed = format_elapsed_seconds(payload.get("elapsed_seconds", 0))
         if task_name == "parquet_extraction":
             return (
                 f"Parquet extraction completed: {payload.get('rows', 0)} rows written to "
-                f"{payload.get('output', '')} in {payload.get('elapsed_seconds', 0)} s."
+                f"{payload.get('output', '')} in {elapsed}."
             )
 
         if task_name == "digest":
             if payload.get("mode") == "file":
                 return (
                     f"Digest completed: {payload.get('peptides', 0)} peptides written in "
-                    f"{payload.get('elapsed_seconds', 0)} s."
+                    f"{elapsed}."
                 )
             return (
                 f"Digest completed: {payload.get('files_processed', 0)} files processed, "
-                f"{payload.get('peptides', 0)} peptides total in {payload.get('elapsed_seconds', 0)} s."
+                f"{payload.get('peptides', 0)} peptides total in {elapsed}."
             )
 
         return (
             f"Scoring completed: {payload.get('rows', 0)} genomes written to "
-            f"{payload.get('output', '')} in {payload.get('elapsed_seconds', 0)} s."
+            f"{payload.get('output', '')} in {elapsed}."
         )
 
     def _save_config(self) -> None:

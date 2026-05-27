@@ -63,13 +63,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _format_elapsed_seconds(elapsed_seconds):
+    try:
+        elapsed = float(elapsed_seconds)
+    except (TypeError, ValueError):
+        elapsed = 0.0
+    elapsed = max(0.0, elapsed)
+    minutes = int(elapsed // 60)
+    seconds = elapsed - (minutes * 60)
+    return f"{minutes} min {seconds:05.2f} s"
+
+
 @contextmanager
 def timer(description="Execution time"):
     """Context manager for timing operations."""
     start = time.time()
     yield
     elapsed = time.time() - start
-    logger.info(f"{description}: {elapsed:.2f} seconds")
+    logger.info(f"{description}: {_format_elapsed_seconds(elapsed)}")
 
 
 @contextmanager
