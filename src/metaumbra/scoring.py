@@ -1114,6 +1114,7 @@ def _compute_unit_aware_single_unit_worker(args: Dict[str, object]) -> Dict[str,
     if bool(np.any(target_mask)):
         qvals[target_mask] = _unit_bh_qvalues(p_combined_values[target_mask])
     presence_scores = -np.log10(np.clip(qvals, 1e-300, 1.0))
+    presence_scores[np.isclose(presence_scores, 0.0, atol=1e-12)] = 0.0
     rank_order = np.lexsort((np.asarray(genome_ids, dtype=object), -matched_counts, -unique_counts, qvals))
     ranks = np.empty(n_genomes, dtype=int)
     ranks[rank_order] = np.arange(1, n_genomes + 1, dtype=int)
@@ -3637,7 +3638,9 @@ class GenomePresenceScorer:
         out.loc[target_mask, "q_presence"] = self._bh_qvalues(all_p)
         qvals = pd.to_numeric(out["q_presence"], errors="coerce")
         valid = qvals.notna()
-        out.loc[valid, "presence_score"] = -np.log10(np.clip(qvals.loc[valid].to_numpy(dtype=float), 1e-300, 1.0))
+        presence_scores = -np.log10(np.clip(qvals.loc[valid].to_numpy(dtype=float), 1e-300, 1.0))
+        presence_scores[np.isclose(presence_scores, 0.0, atol=1e-12)] = 0.0
+        out.loc[valid, "presence_score"] = presence_scores
 
         out["pass_q_0_01"] = (out["q_presence"] <= 0.01) & (out["_genomes_with_any_match"])
         out["pass_q_0_05"] = (out["q_presence"] <= 0.05) & (out["_genomes_with_any_match"])
@@ -5131,40 +5134,25 @@ class GenomePresenceScorer:
             "presence_rank",
             "num_peptides_matched",
             "num_peptides_unique",
-            "unique_effective_count",
         ])
+        if mode == "empirical-background":
+            source_cols.append("unique_empirical_excess_count")
         if mode == "hypergeometric-opportunity":
             source_cols.append("theoretical_unique_peptides")
         source_cols.extend([
-            "unique_expected_null",
-            "unique_depth_fold",
-            "has_unique_evidence",
             "p_shared_knock",
             "p_unique",
-            "p_unique_depth",
             "p_presence",
             "q_presence",
             "presence_score",
             "pass_q_0_01",
             "pass_q_0_05",
         ])
-        if mode == "empirical-background":
-            source_cols.extend([
-                "unique_empirical_background_bin",
-                "unique_empirical_background_size",
-                "unique_empirical_background_threshold",
-                "unique_empirical_excess_count",
-                "p_unique_empirical_tail",
-            ])
-        if "cumulative_coverage_percent" in df_scored.columns:
-            source_cols.append("cumulative_coverage_percent")
         rename_map = {
             "p_shared_knock": "pvalue_shared",
             "p_unique": "pvalue_unique",
-            "p_unique_depth": "pvalue_unique_depth",
             "p_presence": "pvalue",
             "q_presence": "qvalue",
-            "unique_expected_null": "expected_unique_null",
         }
         missing = [c for c in source_cols if c not in df_scored.columns]
         if missing:

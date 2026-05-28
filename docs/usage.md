@@ -482,24 +482,15 @@ The default scoring output is a concise TSV table with one row per genome.
 | `presence_rank` | Rank after sorting by `presence_score`. |
 | `num_peptides_matched` | Number of observed peptides matched to the genome digest. |
 | `num_peptides_unique` | Number of matched peptides unique to that genome among the analyzed genome set. |
+| `unique_empirical_excess_count` | Observed unique count above the empirical-background threshold. Included in concise output for `empirical-background`. |
 | `theoretical_unique_peptides` | Theoretical peptides unique to this genome among the analyzed genome set. Included in concise output for `hypergeometric-opportunity`. |
-| `expected_unique_null` | Expected observed genome-unique peptides under the selected unique-evidence null. |
-| `unique_depth_fold` | Observed unique peptides divided by `expected_unique_null`. |
-| `has_unique_evidence` | `true` when the genome has at least one observed unique peptide. |
 | `pvalue_shared` | Shared-peptide knockoff p-value. |
 | `pvalue_unique` | Unique-evidence p-value after applying the configured mode. |
-| `pvalue_unique_depth` | Depth-adjusted unique-evidence p-value before combination. |
-| `unique_empirical_background_bin` | Opportunity bin used by `empirical-background`. |
-| `unique_empirical_background_size` | Number of background genomes in the empirical bin used for the unique p-value. |
-| `unique_empirical_background_threshold` | 95th percentile weak-background unique count in the empirical bin. |
-| `unique_empirical_excess_count` | Observed unique count above `unique_empirical_background_threshold`; this is the effective count for `empirical-background`. |
-| `p_unique_empirical_tail` | Direct empirical ECDF tail p-value retained as a diagnostic only. |
 | `pvalue` | Genome-level presence p-value in the concise output table. |
 | `qvalue` | BH-adjusted genome-level q-value in the concise output table. |
 | `presence_score` | Ranking score used to order genome presence calls. |
 | `pass_q_0_01` | `true` when `qvalue <= 0.01`. |
 | `pass_q_0_05` | `true` when `qvalue <= 0.05`. |
-| `cumulative_coverage_percent` | Cumulative observed peptide coverage after sorting by `presence_rank`, when coverage calculation is enabled. |
 
 The concise output uses `pvalue` and `qvalue`. When `--return-full-table` is enabled, the output retains the full internal table, including internal columns such as `p_presence`, `q_presence`, `weighted_evidence`, and `weighted_evidence_shared`.
 
