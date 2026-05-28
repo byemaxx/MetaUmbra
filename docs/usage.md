@@ -369,6 +369,18 @@ metaumbra score \
   --metadata-table results/sample_metadata.tsv
 ```
 
+The peptide table for `--unit-aware` must be long-format: each row should describe one peptide observation in one raw sample or run. For example:
+
+```text
+Run	Sequence	Evidence	Q.Value	Reverse	Precursor.Quantity
+run_01	PEPTIDEA	0.98	0.001		125000
+run_02	PEPTIDEA	0.95	0.002		98000
+run_01	PEPTIDEB	0.91	0.010		43000
+run_03	PEPTIDEC	0.88	0.015		61000
+```
+
+Wide peptide-by-sample matrices are not accepted directly by `--unit-aware`; convert them to long format first, with one sample/run ID column and one intensity column.
+
 The metadata table is optional. If omitted, each sample is its own `analysis_unit_id`. If provided, it should contain columns like:
 
 ```text
