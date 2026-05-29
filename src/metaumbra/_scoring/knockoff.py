@@ -13,7 +13,11 @@ def _mc_sum_from_pool(
     rng: np.random.Generator,
     sample_block_size: int,
 ) -> np.ndarray:
-    """Sample K null sums of c shared peptide contributions from one pool."""
+    """Sample K null sums with replacement from one empirical contribution pool.
+
+    Replacement is intentional: each shared peptide contribution is sampled
+    independently from the stratum-specific empirical null distribution.
+    """
     if c <= 0:
         return np.zeros(int(K), dtype=np.float64)
     if pool is None or pool.size == 0:
@@ -21,20 +25,12 @@ def _mc_sum_from_pool(
 
     K = int(K)
     c = int(c)
-    n = int(pool.size)
-    replace = bool(c > n)
     block = int(max(1, sample_block_size))
     out = np.zeros(K, dtype=np.float64)
     i = 0
     while i < K:
         j = min(K, i + block)
-        block_size = int(j - i)
-        if replace:
-            idx = rng.integers(0, n, size=(block_size, c), endpoint=False)
-        else:
-            idx = np.empty((block_size, c), dtype=np.int64)
-            for r in range(block_size):
-                idx[r, :] = rng.choice(n, size=c, replace=False)
+        idx = rng.integers(0, int(pool.size), size=(j - i, c), endpoint=False)
         out[i:j] = pool[idx].sum(axis=1)
         i = j
     return out
