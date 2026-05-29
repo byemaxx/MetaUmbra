@@ -43,8 +43,10 @@ from tqdm import tqdm
 
 from ._scoring.empirical import (
     DEFAULT_UNIQUE_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE,
+    EMPIRICAL_BACKGROUND_OUTPUT_COLUMNS,
     _compute_empirical_background_stats_for_table,
 )
+from ._scoring.knockoff import _mc_sum_from_pool, shared_knockoff_mc
 from ._scoring.stats import (
     DEFAULT_UNIQUE_COUNT_POWER,
     DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE,
@@ -71,13 +73,6 @@ WINDOWS_MAX_PROCESS_POOL_WORKERS = 60
 THEORETICAL_OPPORTUNITY_CACHE_VERSION = 2
 THEORETICAL_OPPORTUNITY_MAX_SHARDS = 256
 COUNT_DTYPE = np.int32
-UNIT_EMPIRICAL_BACKGROUND_INITIAL_EXCLUDE_FRACTION = 0.03
-UNIT_EMPIRICAL_BACKGROUND_MIN_EXCLUDE_FRACTION = 0.00
-UNIT_EMPIRICAL_BACKGROUND_MAX_EXCLUDE_FRACTION = 0.15
-UNIT_EMPIRICAL_BACKGROUND_CANDIDATE_Q = 0.20
-UNIT_EMPIRICAL_BACKGROUND_MAX_ITERATIONS = 3
-UNIT_EMPIRICAL_BACKGROUND_SMALL_UNIT_MIN_ACTIVE_GENOMES = 100
-UNIT_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE = DEFAULT_UNIQUE_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE
 
 
 def _format_elapsed_seconds(elapsed_seconds: object) -> str:
@@ -153,9 +148,12 @@ def _resolve_worker_count(num_workers: Optional[int], logger: Optional[logging.L
 from ._scoring.unit_aware import (
     UNIT_EMPIRICAL_BACKGROUND_CANDIDATE_Q,
     UNIT_EMPIRICAL_BACKGROUND_INITIAL_EXCLUDE_FRACTION,
+    UNIT_EMPIRICAL_BACKGROUND_INTERNAL_COLUMNS,
     UNIT_EMPIRICAL_BACKGROUND_MAX_EXCLUDE_FRACTION,
     UNIT_EMPIRICAL_BACKGROUND_MAX_ITERATIONS,
     UNIT_EMPIRICAL_BACKGROUND_MIN_EXCLUDE_FRACTION,
+    UNIT_EMPIRICAL_BACKGROUND_OUTPUT_COLUMNS,
+    UNIT_EMPIRICAL_BACKGROUND_SMALL_UNIT_MIN_ACTIVE_GENOMES,
     UNIT_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE,
     _compute_unit_aware_single_unit_worker,
     _init_unit_aware_worker,
@@ -2017,25 +2015,13 @@ class GenomePresenceScorer:
 
     def _mc_sum_from_pool(self, pool: Optional[np.ndarray], K: int, c: int, rng: np.random.Generator) -> np.ndarray:
         """Sample K times the sum of c draws (with replacement) from pool."""
-        if c <= 0:
-            return np.zeros(int(K), dtype=np.float64)
-        if pool is None or pool.size == 0:
-            return np.zeros(int(K), dtype=np.float64)
-
-        K = int(K)
-        c = int(c)
-
-        # Chunked sampling to reduce peak memory
-        block = int(max(1, self.knockoff_sample_block_size))
-        out = np.zeros(K, dtype=np.float64)
-        i = 0
-        while i < K:
-            j = min(K, i + block)
-            # shape: (j-i, c)
-            idx = rng.integers(0, int(pool.size), size=(j - i, c), endpoint=False)
-            out[i:j] = pool[idx].sum(axis=1)
-            i = j
-        return out
+        return _mc_sum_from_pool(
+            pool=pool,
+            K=K,
+            c=c,
+            rng=rng,
+            sample_block_size=self.knockoff_sample_block_size,
+        )
 
     def _p_shared_knockoff_mc(
         self,
@@ -2050,26 +2036,16 @@ class GenomePresenceScorer:
         """Empirical p-value for shared evidence via knockoff Monte Carlo (optionally return null moments)."""
         counts_source = counts_by_genome if counts_by_genome is not None else self.knockoff_shared_stratum_counts_by_genome
         pools_source = pools if pools is not None else self.knockoff_pools_weighted_contrib
-        counts = counts_source.get(gid, None)
-        if not counts:
-            return (1.0, 0.0, 0.0, 0.0, 0.0) if return_moments else 1.0
-
-        null_sum = np.zeros(int(K), dtype=np.float64)
-        for key, c in counts.items():
-            pool = pools_source.get(key, None) if pools_source else None
-            null_sum += self._mc_sum_from_pool(pool=pool, K=int(K), c=int(c), rng=rng)
-
-        ge = float(np.sum(null_sum >= float(obs_shared_score)))
-        p = (1.0 + ge) / (1.0 + float(K))
-
-        if not return_moments:
-            return float(p)
-
-        mu = float(null_sum.mean())
-        sd = float(null_sum.std(ddof=1)) if int(K) > 1 else 0.0
-        p95 = float(np.quantile(null_sum, 0.95))
-        p99 = float(np.quantile(null_sum, 0.99))
-        return float(p), mu, sd, p95, p99
+        result = shared_knockoff_mc(
+            gid=gid,
+            obs_shared_score=obs_shared_score,
+            K=K,
+            rng=rng,
+            pools=pools_source,
+            counts_by_genome=counts_source,
+            sample_block_size=self.knockoff_sample_block_size,
+        )
+        return result if return_moments else float(result[0])
 
     @staticmethod
     def _fisher_p_2(p1: float, p2: float) -> float:
@@ -2908,9 +2884,7 @@ class GenomePresenceScorer:
                             f"Unit-aware p/q progress: {completed}/{n_units} analysis unit(s) processed."
                         )
         else:
-            serial_context = dict(worker_context)
-            serial_context["shared_knockoff_func"] = self._p_shared_knockoff_mc
-            _init_unit_aware_worker(serial_context)
+            _init_unit_aware_worker(dict(worker_context))
             for args in worker_args:
                 unit_results.append(_compute_unit_aware_single_unit_worker(args))
                 completed = int(args["unit_idx"]) + 1

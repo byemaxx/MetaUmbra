@@ -16,6 +16,7 @@ from .empirical import (
     DEFAULT_UNIQUE_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE,
     _compute_empirical_background_stats_for_table,
 )
+from .knockoff import _mc_sum_from_pool, shared_knockoff_mc
 from .stats import (
     DEFAULT_UNIQUE_COUNT_POWER,
     DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE,
@@ -38,6 +39,21 @@ UNIT_EMPIRICAL_BACKGROUND_CANDIDATE_Q = 0.20
 UNIT_EMPIRICAL_BACKGROUND_MAX_ITERATIONS = 3
 UNIT_EMPIRICAL_BACKGROUND_SMALL_UNIT_MIN_ACTIVE_GENOMES = 100
 UNIT_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE = DEFAULT_UNIQUE_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE
+UNIT_EMPIRICAL_BACKGROUND_OUTPUT_COLUMNS = (
+    "unique_empirical_background_bin",
+    "unique_empirical_background_size",
+    "unique_empirical_background_threshold",
+    "unique_empirical_excess_count",
+    "p_unique_empirical_tail",
+)
+UNIT_EMPIRICAL_BACKGROUND_INTERNAL_COLUMNS = (
+    "unit_empirical_background_iteration_trace",
+    "unit_empirical_background_threshold_quantile",
+    "unit_empirical_background_final_exclude_fraction",
+    "unit_empirical_background_iterations",
+    "unit_empirical_background_active_genomes",
+    "unit_empirical_background_warning",
+)
 
 
 def _unit_knock_deg_bin(d: int, degeneracy_bin_edges: List[int]) -> int:
@@ -113,22 +129,13 @@ def _unit_mc_sum_from_pool(
     rng: np.random.Generator,
     sample_block_size: int,
 ) -> np.ndarray:
-    if c <= 0:
-        return np.zeros(int(K), dtype=np.float64)
-    if pool is None or pool.size == 0:
-        return np.zeros(int(K), dtype=np.float64)
-
-    K = int(K)
-    c = int(c)
-    block = int(max(1, sample_block_size))
-    out = np.zeros(K, dtype=np.float64)
-    i = 0
-    while i < K:
-        j = min(K, i + block)
-        idx = rng.integers(0, int(pool.size), size=(j - i, c), endpoint=False)
-        out[i:j] = pool[idx].sum(axis=1)
-        i = j
-    return out
+    return _mc_sum_from_pool(
+        pool=pool,
+        K=K,
+        c=c,
+        rng=rng,
+        sample_block_size=sample_block_size,
+    )
 
 
 def _unit_p_shared_knockoff_mc(
@@ -140,28 +147,15 @@ def _unit_p_shared_knockoff_mc(
     counts_by_genome: Dict[str, Counter],
     sample_block_size: int,
 ) -> Tuple[float, float, float, float, float]:
-    counts = counts_by_genome.get(gid, None)
-    if not counts:
-        return 1.0, 0.0, 0.0, 0.0, 0.0
-
-    null_sum = np.zeros(int(K), dtype=np.float64)
-    for key, c in counts.items():
-        pool = pools.get(key, None)
-        null_sum += _unit_mc_sum_from_pool(
-            pool=pool,
-            K=int(K),
-            c=int(c),
-            rng=rng,
-            sample_block_size=sample_block_size,
-        )
-
-    ge = float(np.sum(null_sum >= float(obs_shared_score)))
-    p = (1.0 + ge) / (1.0 + float(K))
-    mu = float(null_sum.mean())
-    sd = float(null_sum.std(ddof=1)) if int(K) > 1 else 0.0
-    p95 = float(np.quantile(null_sum, 0.95))
-    p99 = float(np.quantile(null_sum, 0.99))
-    return float(p), mu, sd, p95, p99
+    return shared_knockoff_mc(
+        gid=gid,
+        obs_shared_score=obs_shared_score,
+        K=K,
+        rng=rng,
+        pools=pools,
+        counts_by_genome=counts_by_genome,
+        sample_block_size=sample_block_size,
+    )
 
 
 def _unit_fisher_p_2(p1: float, p2: float) -> float:
@@ -468,7 +462,6 @@ def _compute_unit_aware_single_unit_worker(args: Dict[str, object]) -> Dict[str,
     use_length_strata = bool(context["use_length_strata"])
     degeneracy_bin_edges: List[int] = context["degeneracy_bin_edges"]  # type: ignore[assignment]
     peptide_length_bin_edges: List[int] = context["peptide_length_bin_edges"]  # type: ignore[assignment]
-    shared_knockoff_func = context.get("shared_knockoff_func")
 
     unit_pools = _unit_build_knockoff_pools_for_peptides(
         observed_peptides=unit_observed_peptides,
@@ -549,29 +542,15 @@ def _compute_unit_aware_single_unit_worker(args: Dict[str, object]) -> Dict[str,
         p_shared = 1.0
         mu = sd = p95 = p99 = 0.0
         if int(metrics["num_peptides_matched"]) > 0:
-            if callable(shared_knockoff_func):
-                result = shared_knockoff_func(
-                    gid=genome_id,
-                    obs_shared_score=float(metrics["weighted_evidence_shared"]),
-                    K=K1,
-                    rng=rng_stage1,
-                    return_moments=True,
-                    pools=unit_pools,
-                    counts_by_genome=unit_shared_strata_by_genome,
-                )
-                p_shared, mu, sd, p95, p99 = (
-                    result if isinstance(result, tuple) else (float(result), 0.0, 0.0, 0.0, 0.0)
-                )
-            else:
-                p_shared, mu, sd, p95, p99 = _unit_p_shared_knockoff_mc(
-                    gid=genome_id,
-                    obs_shared_score=float(metrics["weighted_evidence_shared"]),
-                    K=K1,
-                    rng=rng_stage1,
-                    pools=unit_pools,
-                    counts_by_genome=unit_shared_strata_by_genome,
-                    sample_block_size=sample_block_size,
-                )
+            p_shared, mu, sd, p95, p99 = shared_knockoff_mc(
+                gid=genome_id,
+                obs_shared_score=float(metrics["weighted_evidence_shared"]),
+                K=K1,
+                rng=rng_stage1,
+                pools=unit_pools,
+                counts_by_genome=unit_shared_strata_by_genome,
+                sample_block_size=sample_block_size,
+            )
 
         p_shared_values[genome_idx] = _clip_pvalue(float(p_shared))
         p_unique_values[genome_idx] = _clip_pvalue(float(p_unique))
@@ -711,29 +690,15 @@ def _compute_unit_aware_single_unit_worker(args: Dict[str, object]) -> Dict[str,
         for genome_idx in candidate_indices:
             genome_id = genome_ids[int(genome_idx)]
             metrics = unit_metrics_by_genome[genome_id]
-            if callable(shared_knockoff_func):
-                result = shared_knockoff_func(
-                    gid=genome_id,
-                    obs_shared_score=float(metrics["weighted_evidence_shared"]),
-                    K=K2,
-                    rng=rng_stage2,
-                    return_moments=True,
-                    pools=unit_pools,
-                    counts_by_genome=unit_shared_strata_by_genome,
-                )
-                p_shared, mu, sd, p95, p99 = (
-                    result if isinstance(result, tuple) else (float(result), 0.0, 0.0, 0.0, 0.0)
-                )
-            else:
-                p_shared, mu, sd, p95, p99 = _unit_p_shared_knockoff_mc(
-                    gid=genome_id,
-                    obs_shared_score=float(metrics["weighted_evidence_shared"]),
-                    K=K2,
-                    rng=rng_stage2,
-                    pools=unit_pools,
-                    counts_by_genome=unit_shared_strata_by_genome,
-                    sample_block_size=sample_block_size,
-                )
+            p_shared, mu, sd, p95, p99 = shared_knockoff_mc(
+                gid=genome_id,
+                obs_shared_score=float(metrics["weighted_evidence_shared"]),
+                K=K2,
+                rng=rng_stage2,
+                pools=unit_pools,
+                counts_by_genome=unit_shared_strata_by_genome,
+                sample_block_size=sample_block_size,
+            )
             p_shared_values[genome_idx] = _clip_pvalue(float(p_shared))
             p_combined_values[genome_idx] = _clip_pvalue(
                 _unit_fisher_p_2(p1=p_shared_values[genome_idx], p2=p_unique_values[genome_idx])
