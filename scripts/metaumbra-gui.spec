@@ -69,6 +69,10 @@ hiddenimports = [
     "shiboken6",
 ]
 hiddenimports += collect_submodules(
+    "metaumbra._scoring",
+    on_error="ignore",
+)
+hiddenimports += collect_submodules(
     "pandas",
     filter=_package_submodule_filter,
     on_error="ignore",
