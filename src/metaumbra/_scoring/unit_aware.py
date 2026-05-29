@@ -17,6 +17,7 @@ from .empirical import (
     _compute_empirical_background_stats_for_table,
 )
 from .knockoff import shared_knockoff_mc
+from .ranking import bh_qvalues, fisher_p_2, qvalues_to_presence_scores
 from .stats import (
     DEFAULT_UNIQUE_COUNT_POWER,
     DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE,
@@ -143,27 +144,11 @@ def _unit_p_shared_knockoff_mc(
 
 
 def _unit_fisher_p_2(p1: float, p2: float) -> float:
-    p1 = float(min(max(p1, 1e-300), 1.0))
-    p2 = float(min(max(p2, 1e-300), 1.0))
-    stat = -2.0 * (np.log(p1) + np.log(p2))
-    x = float(stat)
-    return float(np.exp(-x / 2.0) * (1.0 + x / 2.0))
+    return fisher_p_2(p1=p1, p2=p2)
 
 
 def _unit_bh_qvalues(pvals: np.ndarray) -> np.ndarray:
-    p = np.asarray(pvals, dtype=float)
-    n = int(p.size)
-    if n == 0:
-        return p
-
-    order = np.argsort(p)
-    ranked = p[order]
-    q = ranked * float(n) / (np.arange(1, n + 1, dtype=float))
-    q = np.minimum.accumulate(q[::-1])[::-1]
-    q = np.clip(q, 0.0, 1.0)
-    out = np.empty_like(q)
-    out[order] = q
-    return out
+    return bh_qvalues(pvals)
 
 
 def _unit_hypergeom_tail_pvalue(
@@ -701,8 +686,7 @@ def _compute_unit_aware_single_unit_worker(args: Dict[str, object]) -> Dict[str,
     target_mask = matched_counts >= 1
     if bool(np.any(target_mask)):
         qvals[target_mask] = _unit_bh_qvalues(p_combined_values[target_mask])
-    presence_scores = -np.log10(np.clip(qvals, 1e-300, 1.0))
-    presence_scores[np.isclose(presence_scores, 0.0, atol=1e-12)] = 0.0
+    presence_scores = qvalues_to_presence_scores(qvals)
     rank_order = np.lexsort((np.asarray(genome_ids, dtype=object), -matched_counts, -unique_counts, qvals))
     ranks = np.empty(n_genomes, dtype=int)
     ranks[rank_order] = np.arange(1, n_genomes + 1, dtype=int)

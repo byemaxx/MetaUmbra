@@ -11,6 +11,7 @@ def _run_smoke_imports() -> None:
     import lzma
     import metaumbra._scoring.empirical
     import metaumbra._scoring.knockoff
+    import metaumbra._scoring.ranking
     import metaumbra._scoring.stats
     import metaumbra._scoring.theoretical
     import metaumbra._scoring.unit_aware

@@ -47,6 +47,7 @@ from ._scoring.empirical import (
     _compute_empirical_background_stats_for_table,
 )
 from ._scoring.knockoff import _mc_sum_from_pool, shared_knockoff_mc
+from ._scoring.ranking import bh_qvalues, fisher_p_2, qvalues_to_presence_scores
 from ._scoring.stats import (
     DEFAULT_UNIQUE_COUNT_POWER,
     DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE,
@@ -2049,30 +2050,12 @@ class GenomePresenceScorer:
     @staticmethod
     def _fisher_p_2(p1: float, p2: float) -> float:
         """Fisher combine two p-values (df=4) using chi-square survival approximation."""
-        p1 = float(min(max(p1, 1e-300), 1.0))
-        p2 = float(min(max(p2, 1e-300), 1.0))
-        stat = -2.0 * (np.log(p1) + np.log(p2))  # chi-square with df=4
-        # sf for df=4 has closed form: exp(-x/2) * (1 + x/2)
-        x = float(stat)
-        return float(np.exp(-x / 2.0) * (1.0 + x / 2.0))
+        return fisher_p_2(p1=p1, p2=p2)
 
     @staticmethod
     def _bh_qvalues(pvals: np.ndarray) -> np.ndarray:
         """Benjamini-Hochberg q-values for a 1D array of p-values."""
-        p = np.asarray(pvals, dtype=float)
-        n = int(p.size)
-        if n == 0:
-            return p
-
-        order = np.argsort(p)
-        ranked = p[order]
-        q = ranked * float(n) / (np.arange(1, n + 1, dtype=float))
-        # enforce monotonicity
-        q = np.minimum.accumulate(q[::-1])[::-1]
-        q = np.clip(q, 0.0, 1.0)
-        out = np.empty_like(q)
-        out[order] = q
-        return out
+        return bh_qvalues(pvals)
 
     def _unit_unique_pvalue_stats_for_genome(
         self,
@@ -2433,9 +2416,7 @@ class GenomePresenceScorer:
         out.loc[target_mask, "q_presence"] = self._bh_qvalues(all_p)
         qvals = pd.to_numeric(out["q_presence"], errors="coerce")
         valid = qvals.notna()
-        presence_scores = -np.log10(np.clip(qvals.loc[valid].to_numpy(dtype=float), 1e-300, 1.0))
-        presence_scores[np.isclose(presence_scores, 0.0, atol=1e-12)] = 0.0
-        out.loc[valid, "presence_score"] = presence_scores
+        out.loc[valid, "presence_score"] = qvalues_to_presence_scores(qvals.loc[valid].to_numpy(dtype=float))
 
         out["pass_q_0_01"] = (out["q_presence"] <= 0.01) & (out["_genomes_with_any_match"])
         out["pass_q_0_05"] = (out["q_presence"] <= 0.05) & (out["_genomes_with_any_match"])

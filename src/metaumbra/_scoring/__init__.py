@@ -3,6 +3,7 @@
 __all__ = [
     "empirical",
     "knockoff",
+    "ranking",
     "stats",
     "theoretical",
     "unit_aware",
