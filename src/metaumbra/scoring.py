@@ -167,7 +167,6 @@ from ._scoring.unit_aware import (
     _unit_knock_deg_bin,
     _unit_knock_len_bin,
     _unit_knock_stratum,
-    _unit_mc_sum_from_pool,
     _unit_p_shared_knockoff_mc,
     _unit_shared_metrics_for_genome,
     _unit_unique_pvalue_stats_for_genome,

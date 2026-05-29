@@ -7,7 +7,7 @@ importing ``metaumbra.scoring`` back into a child process.
 
 import json
 from collections import Counter
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Dict, List, Set, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -16,7 +16,7 @@ from .empirical import (
     DEFAULT_UNIQUE_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE,
     _compute_empirical_background_stats_for_table,
 )
-from .knockoff import _mc_sum_from_pool, shared_knockoff_mc
+from .knockoff import shared_knockoff_mc
 from .stats import (
     DEFAULT_UNIQUE_COUNT_POWER,
     DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE,
@@ -120,22 +120,6 @@ def _unit_build_knockoff_pools_for_peptides(
         )
         pools.setdefault(key, []).append(float(weight * score))
     return {key: np.asarray(values, dtype=np.float32) for key, values in pools.items()}
-
-
-def _unit_mc_sum_from_pool(
-    pool: Optional[np.ndarray],
-    K: int,
-    c: int,
-    rng: np.random.Generator,
-    sample_block_size: int,
-) -> np.ndarray:
-    return _mc_sum_from_pool(
-        pool=pool,
-        K=K,
-        c=c,
-        rng=rng,
-        sample_block_size=sample_block_size,
-    )
 
 
 def _unit_p_shared_knockoff_mc(
