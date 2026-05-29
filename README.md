@@ -96,7 +96,7 @@ Unit-aware output files:
 
 Each scoring run creates `<stem>_artifacts/` at startup and records `run_parameters.json` plus `run.log` for reproducibility and debugging. The parameter snapshot includes CPU model, logical CPU count, total memory, and platform/architecture metadata. The pooled peptide-set result is supplementary in unit-aware mode and is written under `<stem>_artifacts/pooled_genome_presence.tsv` when diagnostic artifact export is enabled. Optional derived unit-aware tables can be enabled with `--export-unit-derived-tables`; they are written under `<stem>_artifacts/unit_aware/` and include call counts, significant per-unit genome lists, deduplicated genome unions, binary genome x unit matrices, and a q-value matrix.
 
-In the current implementation, peptide presence within an analysis unit is defined as the union of sample-level peptide presence across samples assigned to that unit. Unit-level p-values are based on `hypergeometric-opportunity` unique evidence only; `pvalue_shared` is set to `1.0` and is not used in unit-level scoring.
+In the current implementation, peptide presence within an analysis unit is defined as the union of sample-level peptide presence across samples assigned to that unit. Unit-level p-values combine per-unit shared knockoff evidence (`pvalue_shared`) with the selected per-unit unique-evidence model (`pvalue_unique`) using Fisher's method, then apply BH correction separately within each analysis unit.
 
 Key output columns include:
 

@@ -1,6 +1,6 @@
 # Genome existence scoring from a peptide list using peptide-space knockoff null
-# Version: 4.6
-# Date: 2026-02-13
+# Version: 5.0
+# Date: 2026-05-29
 #
 # Workflow:
 # 1) Read observed peptide list (optional peptide-level error-probability filter, e.g. PEP/FDR).
