@@ -21,12 +21,20 @@ def _mc_sum_from_pool(
 
     K = int(K)
     c = int(c)
+    n = int(pool.size)
+    replace = bool(c > n)
     block = int(max(1, sample_block_size))
     out = np.zeros(K, dtype=np.float64)
     i = 0
     while i < K:
         j = min(K, i + block)
-        idx = rng.integers(0, int(pool.size), size=(j - i, c), endpoint=False)
+        block_size = int(j - i)
+        if replace:
+            idx = rng.integers(0, n, size=(block_size, c), endpoint=False)
+        else:
+            idx = np.empty((block_size, c), dtype=np.int64)
+            for r in range(block_size):
+                idx[r, :] = rng.choice(n, size=c, replace=False)
         out[i:j] = pool[idx].sum(axis=1)
         i = j
     return out
