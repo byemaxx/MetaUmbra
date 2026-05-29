@@ -47,7 +47,8 @@ from ._scoring.empirical import (
     _compute_empirical_background_stats_for_table,
 )
 from ._scoring.knockoff import _mc_sum_from_pool, shared_knockoff_mc
-from ._scoring.ranking import bh_qvalues, fisher_p_2, qvalues_to_presence_scores
+from ._scoring.pooled import finalize_pooled_presence_columns
+from ._scoring.ranking import bh_qvalues, fisher_p_2
 from ._scoring.stats import (
     DEFAULT_UNIQUE_COUNT_POWER,
     DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE,
@@ -2412,16 +2413,7 @@ class GenomePresenceScorer:
                         out.at[idx, "null_p99_shared"] = p99
                         out.at[idx, "z_shared"] = (observed_shared_evidence - mu) / (sd + 1e-12)
 
-        all_p = out.loc[target_mask, "p_presence"].to_numpy(dtype=float)
-        out.loc[target_mask, "q_presence"] = self._bh_qvalues(all_p)
-        qvals = pd.to_numeric(out["q_presence"], errors="coerce")
-        valid = qvals.notna()
-        out.loc[valid, "presence_score"] = qvalues_to_presence_scores(qvals.loc[valid].to_numpy(dtype=float))
-
-        out["pass_q_0_01"] = (out["q_presence"] <= 0.01) & (out["_genomes_with_any_match"])
-        out["pass_q_0_05"] = (out["q_presence"] <= 0.05) & (out["_genomes_with_any_match"])
-
-        return out
+        return finalize_pooled_presence_columns(out=out, target_mask=target_mask)
 
     # =========================
     # Coverage (reference only; not used for final calling)
