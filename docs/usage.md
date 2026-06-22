@@ -508,17 +508,17 @@ The concise output uses `pvalue` and `qvalue`. When `--return-full-table` is ena
 
 ### Unit-aware output TSVs
 
-When `--unit-aware` is enabled, the requested `--output` path contains the main unit-level genome presence table. MetaUmbra also writes the primary unit-aware outputs next to it:
+When `--unit-aware` is enabled, the requested `--output` path contains the main unit-level genome presence table. MetaUmbra also writes the primary unit-aware outputs:
 
 ```text
 <requested output TSV>
 <stem>_cohort_genome_summary.tsv
-<stem>_sample_unit_mapping.tsv
+<stem>_artifacts/<stem>_sample_unit_mapping.tsv
 ```
 
 - `<requested output TSV>`: one row per `analysis_unit_id` x `genome_id`, including unit-specific `qvalue` and `pass_q_0_01` / `pass_q_0_05` flags.
 - `<stem>_cohort_genome_summary.tsv`: one row per genome, summarizing recurrence across units.
-- `<stem>_sample_unit_mapping.tsv`: final sample-to-analysis-unit mapping used for the run.
+- `<stem>_artifacts/<stem>_sample_unit_mapping.tsv`: final sample-to-analysis-unit mapping used for the run.
 
 The pooled peptide-set genome presence result is not the union of unit-level calls. In unit-aware mode, it is supplementary and is written to `<stem>_artifacts/pooled_genome_presence.tsv` when artifact export is enabled. MetaUmbra also writes `<stem>_artifacts/unit_aware/unit_threshold_summary.tsv`, a compact per-unit table with q<=0.01 and q<=0.05 genome counts.
 
@@ -528,6 +528,8 @@ By default, unit-aware runs also write derived unit-aware tables under `<stem>_a
 unit_call_counts.tsv
 unit_q001_genomes.tsv
 unit_q005_genomes.tsv
+unit_specific_genome_list_q001.tsv
+unit_specific_genome_list_q005.tsv
 genome_union_q001.tsv
 genome_union_q005.tsv
 genome_by_unit_q001_matrix.tsv
@@ -537,9 +539,13 @@ genome_by_unit_qvalue_matrix.tsv
 
 - `unit_call_counts.tsv`: number of significant genomes per unit.
 - `unit_q001_genomes.tsv` and `unit_q005_genomes.tsv`: significant genome calls for each unit.
+- `unit_specific_genome_list_q005.tsv`: default balanced long-format unit-specific genome-list output for downstream workflows.
+- `unit_specific_genome_list_q001.tsv`: stricter high-specificity long-format alternative.
 - `genome_union_q001.tsv` and `genome_union_q005.tsv`: deduplicated genome lists significant in at least one unit.
-- `genome_by_unit_q001_matrix.tsv` and `genome_by_unit_q005_matrix.tsv`: binary genome x unit pass matrices.
-- `genome_by_unit_qvalue_matrix.tsv`: genome x unit q-value matrix for downstream heatmaps or manual inspection.
+- `genome_by_unit_q001_matrix.tsv` and `genome_by_unit_q005_matrix.tsv`: binary genome x unit pass matrices for QC or visualization.
+- `genome_by_unit_qvalue_matrix.tsv`: genome x unit q-value matrix for heatmaps or manual inspection.
+
+For downstream peptide, protein, taxonomic, or OTF annotation workflows, prefer the tool-agnostic `unit_specific_genome_list_q005.tsv` list unless a stricter high-specificity list is required. Join `<stem>_artifacts/<stem>_sample_unit_mapping.tsv` to `unit_specific_genome_list_q005.tsv` or `unit_specific_genome_list_q001.tsv` when sample columns need to inherit their analysis unit's inferred genome list.
 
 The unit-level table contains one row per `analysis_unit_id` and genome, including `presence_rank`, `qvalue`, `pvalue`, q-value pass flags, matched/unique peptide counts, `has_unique_evidence`, `theoretical_unique_peptides`, `observed_unique_peptide_pool_size`, `expected_unique_null`, `unique_depth_fold`, `pvalue_unique`, `pvalue_shared`, `presence_score`, `n_samples_in_unit`, `unit_presence_rule`, and `unit_shared_mode`.
 

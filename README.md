@@ -92,7 +92,7 @@ Unit-aware output files:
 
 - `<stem>_unit_genome_presence.tsv`: one row per `analysis_unit_id` x `genome_id`, including unit-specific `qvalue` and `pass_q` flags.
 - `<stem>_cohort_genome_summary.tsv`: one row per genome, summarizing recurrence across units.
-- `<stem>_sample_unit_mapping.tsv`: final sample-to-analysis-unit mapping used for the run.
+- `<stem>_artifacts/<stem>_sample_unit_mapping.tsv`: final sample-to-analysis-unit mapping used for the run.
 
 Each scoring run creates `<stem>_artifacts/` at startup and records `run_parameters.json` plus `run.log` for reproducibility and debugging. The parameter snapshot includes CPU model, logical CPU count, total memory, and platform/architecture metadata. The pooled peptide-set result is supplementary in unit-aware mode and is written under `<stem>_artifacts/pooled_genome_presence.tsv` when diagnostic artifact export is enabled. Optional derived unit-aware tables can be enabled with `--export-unit-derived-tables`; they are written under `<stem>_artifacts/unit_aware/` and include call counts, significant per-unit genome lists, deduplicated genome unions, binary genome x unit matrices, and a q-value matrix.
 

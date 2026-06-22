@@ -245,6 +245,7 @@ def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConf
 
     cleanup_paths = [artifact_dir / name for name in known_files]
     cleanup_paths.extend(artifact_dir.glob("top*_peptide_contrib.tsv"))
+    cleanup_paths.extend(artifact_dir.glob("*_sample_unit_mapping.tsv"))
     unit_aware_dir = artifact_dir / "unit_aware"
     if unit_aware_dir.exists():
         for pattern in (
@@ -253,6 +254,8 @@ def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConf
             "unit_call_counts.tsv",
             "unit_q001_genomes.tsv",
             "unit_q005_genomes.tsv",
+            "unit_specific_genome_list_q001.tsv",
+            "unit_specific_genome_list_q005.tsv",
             "genome_union_q001.tsv",
             "genome_union_q005.tsv",
             "genome_by_unit_q001_matrix.tsv",

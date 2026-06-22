@@ -3085,6 +3085,37 @@ class GenomePresenceScorer:
                 .reset_index(drop=True)
             )
 
+        def _build_unit_specific_genome_list(
+            df: pd.DataFrame,
+            threshold_col: str,
+            call_threshold: str,
+        ) -> pd.DataFrame:
+            required_columns = [
+                "analysis_unit_id",
+                "genome_id",
+                "Lineage",
+                "presence_rank",
+                "qvalue",
+                "call_threshold",
+                "genome_selection_source",
+            ]
+            selected = df.loc[df[threshold_col]].copy()
+            if "Lineage" not in selected.columns:
+                selected["Lineage"] = pd.NA
+            selected["call_threshold"] = call_threshold
+            selected["genome_selection_source"] = "metaumbra_unit_aware"
+            _require_columns(
+                selected,
+                required_columns,
+                f"unit_specific_genome_list_{call_threshold}",
+            )
+            sorted_selected = _sort_existing(
+                _ordered_columns(selected, required_columns),
+                ["analysis_unit_id", "presence_rank", "qvalue", "genome_id"],
+                [True, True, True, True],
+            ).reset_index(drop=True)
+            return sorted_selected.loc[:, required_columns].copy()
+
         def _build_presence_matrix(
             df: pd.DataFrame,
             genome_order_df: pd.DataFrame,
@@ -3256,6 +3287,16 @@ class GenomePresenceScorer:
             ["analysis_unit_id", "presence_rank", "qvalue"],
             [True, True, True],
         )
+        unit_specific_q001 = _build_unit_specific_genome_list(
+            unit_level_df,
+            "pass_q_0_01",
+            "q0.01",
+        )
+        unit_specific_q005 = _build_unit_specific_genome_list(
+            unit_level_df,
+            "pass_q_0_05",
+            "q0.05",
+        )
         genome_union_q001 = _sort_existing(
             _ordered_columns(cohort_summary_df.loc[q001_units >= 1], union_columns),
             ["n_units_q_le_0_01", "best_qvalue", "total_unique_peptides_across_units", "genome_id"],
@@ -3288,6 +3329,8 @@ class GenomePresenceScorer:
             "unit_call_counts": unit_call_counts,
             "unit_q001_genomes": unit_q001,
             "unit_q005_genomes": unit_q005,
+            "unit_specific_genome_list_q001": unit_specific_q001,
+            "unit_specific_genome_list_q005": unit_specific_q005,
             "genome_union_q001": genome_union_q001,
             "genome_union_q005": genome_union_q005,
             "genome_by_unit_q001_matrix": matrix_q001,
@@ -3310,7 +3353,8 @@ class GenomePresenceScorer:
         artifact_dir = os.path.join(out_dir, f"{stem}_artifacts")
         unit_level_path = str(requested_output_path)
         cohort_path = os.path.join(out_dir, f"{stem}_cohort_genome_summary.tsv")
-        mapping_path = os.path.join(out_dir, f"{stem}_sample_unit_mapping.tsv")
+        mapping_path = os.path.join(artifact_dir, f"{stem}_sample_unit_mapping.tsv")
+        stale_root_mapping_path = os.path.join(out_dir, f"{stem}_sample_unit_mapping.tsv")
         pooled_path = os.path.join(artifact_dir, "pooled_genome_presence.tsv")
         unit_threshold_summary_path = os.path.join(artifact_dir, "unit_aware", "unit_threshold_summary.tsv")
         calibration_path = os.path.join(artifact_dir, "unit_aware", "unit_empirical_background_calibration.tsv")
@@ -3329,6 +3373,13 @@ class GenomePresenceScorer:
 
         unit_level_out.to_csv(unit_level_path, sep="\t", index=False)
         cohort_summary_out.to_csv(cohort_path, sep="\t", index=False)
+        os.makedirs(os.path.dirname(mapping_path), exist_ok=True)
+        try:
+            stale_root_mapping = Path(stale_root_mapping_path).resolve()
+            if stale_root_mapping.name == f"{stem}_sample_unit_mapping.tsv" and stale_root_mapping.is_file():
+                stale_root_mapping.unlink()
+        except Exception:
+            pass
         mapping_df.to_csv(mapping_path, sep="\t", index=False)
         os.makedirs(os.path.dirname(unit_threshold_summary_path), exist_ok=True)
         unit_threshold_summary.to_csv(unit_threshold_summary_path, sep="\t", index=False)
@@ -3379,6 +3430,14 @@ class GenomePresenceScorer:
             "unit_call_counts": os.path.join(derived_dir, "unit_call_counts.tsv"),
             "unit_q001_genomes": os.path.join(derived_dir, "unit_q001_genomes.tsv"),
             "unit_q005_genomes": os.path.join(derived_dir, "unit_q005_genomes.tsv"),
+            "unit_specific_genome_list_q001": os.path.join(
+                derived_dir,
+                "unit_specific_genome_list_q001.tsv",
+            ),
+            "unit_specific_genome_list_q005": os.path.join(
+                derived_dir,
+                "unit_specific_genome_list_q005.tsv",
+            ),
             "genome_union_q001": os.path.join(derived_dir, "genome_union_q001.tsv"),
             "genome_union_q005": os.path.join(derived_dir, "genome_union_q005.tsv"),
             "genome_by_unit_q001_matrix": os.path.join(derived_dir, "genome_by_unit_q001_matrix.tsv"),
