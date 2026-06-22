@@ -92,7 +92,7 @@ Default unit-aware output files:
 
 - `<requested output>.tsv`: one row per `analysis_unit_id` x `genome_id`, including unit-specific `qvalue` and `pass_q` flags.
 - `<stem>_cohort_genome_summary.tsv`: one row per genome, summarizing recurrence across units.
-- `<stem>_artifacts/<stem>_sample_unit_mapping.tsv`: final sample-to-analysis-unit mapping used for the run.
+- `<stem>_artifacts/unit_aware/<stem>_sample_unit_mapping.tsv`: final sample-to-analysis-unit mapping used for the run.
 - `<stem>_artifacts/unit_aware/unit_call_counts.tsv`: minimal per-unit QC counts.
 - `<stem>_artifacts/unit_aware/unit_specific_genome_list_q005.tsv`: preferred downstream genome-list interface.
 - `<stem>_artifacts/unit_aware/unit_specific_genome_list_q001.tsv`: stricter downstream genome-list interface.

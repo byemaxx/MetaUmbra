@@ -516,8 +516,8 @@ When `--unit-aware` is enabled, the requested `--output` path contains the main 
 <requested output TSV>
 <stem>_cohort_genome_summary.tsv
 <stem>_artifacts/
-  <stem>_sample_unit_mapping.tsv
   unit_aware/
+    <stem>_sample_unit_mapping.tsv
     unit_call_counts.tsv
     unit_specific_genome_list_q005.tsv
     unit_specific_genome_list_q001.tsv
@@ -525,7 +525,7 @@ When `--unit-aware` is enabled, the requested `--output` path contains the main 
 
 - `<requested output TSV>`: one row per `analysis_unit_id` x `genome_id`, including unit-specific `qvalue` and `pass_q_0_01` / `pass_q_0_05` flags.
 - `<stem>_cohort_genome_summary.tsv`: one row per genome, summarizing recurrence across units.
-- `<stem>_artifacts/<stem>_sample_unit_mapping.tsv`: final sample-to-analysis-unit mapping used for the run.
+- `<stem>_artifacts/unit_aware/<stem>_sample_unit_mapping.tsv`: final sample-to-analysis-unit mapping used for the run.
 - `unit_call_counts.tsv`: number of significant genomes per unit.
 - `unit_specific_genome_list_q005.tsv`: default balanced long-format unit-specific genome-list output for downstream workflows.
 - `unit_specific_genome_list_q001.tsv`: stricter high-specificity long-format alternative.
@@ -540,7 +540,7 @@ presence_rank
 qvalue
 ```
 
-For downstream peptide, protein, taxonomic, or OTF annotation workflows, prefer the tool-agnostic `unit_specific_genome_list_q005.tsv` list unless a stricter high-specificity list is required. Join `<stem>_artifacts/<stem>_sample_unit_mapping.tsv` to `unit_specific_genome_list_q005.tsv` or `unit_specific_genome_list_q001.tsv` when sample columns need to inherit their analysis unit's inferred genome list.
+For downstream peptide, protein, taxonomic, or OTF annotation workflows, prefer the tool-agnostic `unit_specific_genome_list_q005.tsv` list unless a stricter high-specificity list is required. Join `<stem>_artifacts/unit_aware/<stem>_sample_unit_mapping.tsv` to `unit_specific_genome_list_q005.tsv` or `unit_specific_genome_list_q001.tsv` when sample columns need to inherit their analysis unit's inferred genome list.
 
 The unit-level table contains one row per `analysis_unit_id` and genome. Its default schema is:
 

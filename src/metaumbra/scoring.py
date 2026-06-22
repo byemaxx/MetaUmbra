@@ -3340,10 +3340,11 @@ class GenomePresenceScorer:
         artifact_dir = os.path.join(out_dir, f"{stem}_artifacts")
         unit_level_path = str(requested_output_path)
         cohort_path = os.path.join(out_dir, f"{stem}_cohort_genome_summary.tsv")
-        mapping_path = os.path.join(artifact_dir, f"{stem}_sample_unit_mapping.tsv")
-        stale_root_mapping_path = os.path.join(out_dir, f"{stem}_sample_unit_mapping.tsv")
-        pooled_path = os.path.join(artifact_dir, "pooled_genome_presence.tsv")
         unit_aware_dir = os.path.join(artifact_dir, "unit_aware")
+        mapping_path = os.path.join(unit_aware_dir, f"{stem}_sample_unit_mapping.tsv")
+        stale_root_mapping_path = os.path.join(out_dir, f"{stem}_sample_unit_mapping.tsv")
+        stale_artifact_mapping_path = os.path.join(artifact_dir, f"{stem}_sample_unit_mapping.tsv")
+        pooled_path = os.path.join(artifact_dir, "pooled_genome_presence.tsv")
         unit_call_counts_path = os.path.join(unit_aware_dir, "unit_call_counts.tsv")
         unit_specific_q001_path = os.path.join(unit_aware_dir, "unit_specific_genome_list_q001.tsv")
         unit_specific_q005_path = os.path.join(unit_aware_dir, "unit_specific_genome_list_q005.tsv")
@@ -3371,9 +3372,10 @@ class GenomePresenceScorer:
         cohort_summary_out.to_csv(cohort_path, sep="\t", index=False)
         os.makedirs(os.path.dirname(mapping_path), exist_ok=True)
         try:
-            stale_root_mapping = Path(stale_root_mapping_path).resolve()
-            if stale_root_mapping.name == f"{stem}_sample_unit_mapping.tsv" and stale_root_mapping.is_file():
-                stale_root_mapping.unlink()
+            for stale_path in (stale_root_mapping_path, stale_artifact_mapping_path):
+                stale_mapping = Path(stale_path).resolve()
+                if stale_mapping.name == f"{stem}_sample_unit_mapping.tsv" and stale_mapping.is_file():
+                    stale_mapping.unlink()
         except Exception:
             pass
         mapping_df.to_csv(mapping_path, sep="\t", index=False)
