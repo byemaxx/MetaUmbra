@@ -321,6 +321,7 @@ class GenomePresenceScorer:
         self.unit_aware_output_paths: Dict[str, str] = {}
         self.unit_aware_cohort_summary_df: Optional[pd.DataFrame] = None
         self.unit_aware_unit_threshold_summary_df: Optional[pd.DataFrame] = None
+        self._last_unit_genome_presence_full_df: Optional[pd.DataFrame] = None
         self.unit_empirical_background_calibration_df: Optional[pd.DataFrame] = None
         self._export_unit_derived_tables: bool = False
         self._last_unit_genome_presence_df: Optional[pd.DataFrame] = None
@@ -3190,6 +3191,25 @@ class GenomePresenceScorer:
             "presence_score",
             "n_samples_in_unit",
         ]
+        unit_level_full_columns = [
+            *unit_level_default_columns,
+            "unique_effective_count",
+            "weighted_evidence_shared",
+            "effective_peptide_count_shared",
+            "expected_unique_null",
+            "unique_depth_fold",
+            "unique_depth_null_model",
+            "unique_pvalue_count_model",
+            "theoretical_unique_peptides",
+            "observed_unique_peptide_pool_size",
+            "pvalue_unique_depth",
+            "unique_empirical_background_bin",
+            "unique_empirical_background_size",
+            "unique_empirical_background_threshold",
+            "p_unique_empirical_tail",
+            "unit_presence_rule",
+            "unit_shared_mode",
+        ]
         cohort_default_columns = [
             "genome_id",
             "Lineage",
@@ -3233,6 +3253,7 @@ class GenomePresenceScorer:
         ]
 
         unit_level_out = _selected_columns(unit_level_df, unit_level_default_columns)
+        unit_level_full = _ordered_columns(unit_level_df, unit_level_full_columns)
         cohort_summary_out = _selected_columns(cohort_summary_df, cohort_default_columns)
         unit_call_counts = _build_unit_call_counts(unit_level_df)
         unit_specific_q001 = _build_unit_specific_genome_list(
@@ -3289,6 +3310,7 @@ class GenomePresenceScorer:
 
         return {
             "unit_genome_presence": unit_level_out,
+            "unit_genome_presence_full": unit_level_full,
             "cohort_genome_summary": cohort_summary_out,
             "unit_threshold_summary": unit_threshold_summary,
             "unit_call_counts": unit_call_counts,
@@ -3339,6 +3361,11 @@ class GenomePresenceScorer:
         self.unit_aware_cohort_summary_df = cohort_summary_out.copy()
         self.unit_aware_unit_threshold_summary_df = unit_call_counts.copy()
         self._last_unit_genome_presence_df = unit_level_out.copy()
+        self._last_unit_genome_presence_full_df = (
+            tables["unit_genome_presence_full"].copy()
+            if "unit_genome_presence_full" in tables
+            else None
+        )
 
         unit_level_out.to_csv(unit_level_path, sep="\t", index=False)
         cohort_summary_out.to_csv(cohort_path, sep="\t", index=False)
@@ -3388,6 +3415,7 @@ class GenomePresenceScorer:
         derived_dir = os.path.join(out_dir, f"{stem}_artifacts", "unit_aware")
         os.makedirs(derived_dir, exist_ok=True)
         derived_paths = {
+            "unit_genome_presence_full": os.path.join(derived_dir, "unit_genome_presence_full.tsv"),
             "unit_threshold_summary": os.path.join(derived_dir, "unit_threshold_summary.tsv"),
             "unit_q001_genomes": os.path.join(derived_dir, "unit_q001_genomes.tsv"),
             "unit_q005_genomes": os.path.join(derived_dir, "unit_q005_genomes.tsv"),
@@ -3460,12 +3488,13 @@ class GenomePresenceScorer:
             self.unit_shared_mode = "per-unit"
         effective_export_diagnostics = bool(export_temp) if export_temp is not None else bool(export_diagnostics)
         effective_export_unit_derived_tables = (
-            effective_export_diagnostics
+            effective_export_diagnostics or (bool(unit_aware) and bool(return_full_table))
             if export_unit_derived_tables is None
             else bool(export_unit_derived_tables)
         )
         self._export_unit_derived_tables = bool(effective_export_unit_derived_tables)
         self._last_unit_genome_presence_df = None
+        self._last_unit_genome_presence_full_df = None
         self.unit_aware_unit_threshold_summary_df = None
         self.unique_pvalue_mode = mode
         self.unique_peptide_error_source = unique_peptide_error_source
@@ -3531,6 +3560,7 @@ class GenomePresenceScorer:
         self.unit_aware_output_paths = {}
         self.unit_aware_cohort_summary_df = None
         self.unit_aware_unit_threshold_summary_df = None
+        self._last_unit_genome_presence_full_df = None
         self.unit_empirical_background_calibration_df = None
 
         # Normalize cache path. The default cache file is used only when cache
@@ -3991,6 +4021,8 @@ class GenomePresenceScorer:
 
         self._print_summary()
         result = df_scored if return_full_table else df_main
+        if unit_aware and return_full_table and isinstance(self._last_unit_genome_presence_full_df, pd.DataFrame):
+            return self._last_unit_genome_presence_full_df.copy()
         if unit_aware and isinstance(self._last_unit_genome_presence_df, pd.DataFrame):
             return self._last_unit_genome_presence_df.copy()
         return result
@@ -4082,6 +4114,7 @@ class GenomePresenceScorer:
             supplementary_labels = [
                 ("Pooled genome presence", "pooled_genome_presence"),
                 ("Unit call counts", "unit_call_counts"),
+                ("Full unit genome presence", "unit_genome_presence_full"),
                 ("Unit-specific genomes q<=0.01", "unit_specific_genome_list_q001"),
                 ("Unit-specific genomes q<=0.05", "unit_specific_genome_list_q005"),
                 ("Unit threshold summary", "unit_threshold_summary"),

@@ -237,8 +237,12 @@ def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConf
         "q_calling_curve.tsv",
         "shared_stratum_counts.tsv",
         "pooled_genome_presence.tsv",
-        "matched_peptides.pkl",
     }
+    if (
+        not bool(config.use_cache_if_exists)
+        and not str(config.matched_peptides_cache_path or "").strip()
+    ):
+        known_files.add("matched_peptides.pkl")
     if (
         str(config.unique_pvalue_mode).strip().lower() != "hypergeometric-opportunity"
         and not str(config.theoretical_opportunity_cache_path or "").strip()
@@ -252,6 +256,7 @@ def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConf
     if unit_aware_dir.exists():
         for pattern in (
             "unit_empirical_background_calibration.tsv",
+            "unit_genome_presence_full.tsv",
             "unit_threshold_summary.tsv",
             "unit_call_counts.tsv",
             "unit_q001_genomes.tsv",

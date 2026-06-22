@@ -348,7 +348,7 @@ Important scoring options:
 | `--no-compute-coverage` | off | Skip cumulative coverage calculations. |
 | `--export-diagnostics` | off | Write diagnostic/audit artifact tables such as `run_summary.json`, `full_internal_metrics.tsv`, knockoff summaries, pooled unit-aware results, and unit-aware QC pivots. |
 | `--no-export-temp` | off | Deprecated compatibility alias for leaving diagnostics disabled. Run parameters, run log, and run status are still written under `<stem>_artifacts/`. |
-| `--return-full-table` | off | Write the full internal result table instead of only the concise main result. |
+| `--return-full-table` | off | For non-unit-aware scoring, write the full internal result table instead of only the concise main result. In unit-aware mode, the requested output stays concise and full unit-level audit columns are written under `<stem>_artifacts/unit_aware/`. |
 
 Unique p-value strength is controlled by `--unique-pvalue-mode`. `--unique-peptide-error-source`, `--single-peptide-error-rate-upper-bound`, and `--unique-count-power` apply to `alpha-upper-bound`.
 
@@ -506,7 +506,7 @@ The default scoring output is a concise TSV table with one row per genome.
 | `pass_q_0_01` | `true` when `qvalue <= 0.01`. |
 | `pass_q_0_05` | `true` when `qvalue <= 0.05`. |
 
-The concise output uses `pvalue` and `qvalue`. When `--return-full-table` is enabled, the output retains the full internal table, including internal columns such as `p_presence`, `q_presence`, `weighted_evidence`, and `weighted_evidence_shared`.
+The concise output uses `pvalue` and `qvalue`. When `--return-full-table` is enabled for non-unit-aware scoring, the output retains the full internal table, including internal columns such as `p_presence`, `q_presence`, `weighted_evidence`, and `weighted_evidence_shared`. In unit-aware mode, the requested output remains concise; use `--export-diagnostics` or unit-aware `--return-full-table` for the full unit-level audit table.
 
 ### Unit-aware output TSVs
 
@@ -613,6 +613,7 @@ results/
     topN_peptide_contrib.tsv  # only when export_peptide_contrib_topN > 0
     unit_aware/
       unit_empirical_background_calibration.tsv
+      unit_genome_presence_full.tsv
       unit_threshold_summary.tsv
       unit_q001_genomes.tsv
       unit_q005_genomes.tsv
@@ -643,6 +644,8 @@ Common artifacts:
 
 Diagnostic unit-aware tables are redundant with the primary outputs and are meant for audit, QC, or figure generation. `unit_q001_genomes.tsv` and `unit_q005_genomes.tsv` are filtered subsets of the main unit-level table. `genome_union_q001.tsv` and `genome_union_q005.tsv` can be recovered from `<stem>_cohort_genome_summary.tsv` using `n_units_q_le_0_01` or `n_units_q_le_0_05`. `genome_by_unit_*_matrix.tsv` files are QC/visualization pivots, not preferred downstream inputs.
 
+`unit_aware/unit_genome_presence_full.tsv` is the full unit-level audit table written with `--export-diagnostics` or unit-aware `--return-full-table`. It preserves internal columns that are intentionally omitted from the concise default requested output, including columns such as `unique_effective_count`, `theoretical_unique_peptides`, `unit_presence_rule`, and `unit_shared_mode`.
+
 ### Matched-peptide cache
 
 Cache files are performance infrastructure. CLI runs write them only when `--save-cache` is enabled; the GUI "Save matched-peptide cache" option is enabled by default. When cache saving is enabled, MetaUmbra writes a pickle file containing matched peptide sets and theoretical peptide counts. If `--cache-path` is not provided, the default cache is:
@@ -651,7 +654,7 @@ Cache files are performance infrastructure. CLI runs write them only when `--sav
 <output_directory>/<output_stem>_artifacts/matched_peptides.pkl
 ```
 
-Use `--use-cache-if-exists` for repeated analyses with the same observed peptide table and genome digest directories. If `--cache-path` is supplied, MetaUmbra saves or reuses that path only according to `--save-cache` and `--use-cache-if-exists`. The cache can still be combined with `--selected-genome-ids` and `--exclude-genome-ids`; filters are applied after loading the cache.
+Use `--use-cache-if-exists` for repeated analyses with the same observed peptide table and genome digest directories. When reuse is requested, startup artifact cleanup preserves the default `<stem>_artifacts/matched_peptides.pkl` so it can be loaded before genome scanning. If `--cache-path` is supplied, MetaUmbra saves or reuses that path only according to `--save-cache` and `--use-cache-if-exists`, and artifact cleanup does not delete that explicit cache path. The cache can still be combined with `--selected-genome-ids` and `--exclude-genome-ids`; filters are applied after loading the cache.
 
 `hypergeometric-opportunity` scoring can reuse or write a theoretical opportunity cache only when `--theoretical-opportunity-cache` is supplied. `empirical-background` does not build this cache by default, removes stale default theoretical opportunity caches from the current artifact directory, and uses `total_peptide_count` for opportunity binning.
 
