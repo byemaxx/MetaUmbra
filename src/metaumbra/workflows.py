@@ -90,10 +90,11 @@ class ScoringConfig:
     knockoff_random_seed: int = 1
     knockoff_top_n_targets: Optional[int] = None
     matched_peptides_cache_path: str = ""
-    save_matched_peptides_cache: bool = True
+    save_matched_peptides_cache: bool = False
     use_cache_if_exists: bool = False
     compute_coverage: bool = True
-    export_temp: bool = True
+    export_diagnostics: bool = False
+    export_temp: Optional[bool] = None
     export_peptide_contrib_topN: int = 0
     return_full_table: bool = False
 
@@ -236,6 +237,7 @@ def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConf
         "q_calling_curve.tsv",
         "shared_stratum_counts.tsv",
         "pooled_genome_presence.tsv",
+        "matched_peptides.pkl",
     }
     if (
         str(config.unique_pvalue_mode).strip().lower() != "hypergeometric-opportunity"
@@ -715,6 +717,11 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
     cache_path = _normalize_output_path(config.matched_peptides_cache_path)
     theoretical_cache_path = _normalize_output_path(config.theoretical_opportunity_cache_path)
     genome_lineage_table_path = _normalize_output_path(config.genome_lineage_table_path)
+    export_diagnostics = (
+        bool(config.export_temp)
+        if config.export_temp is not None
+        else bool(config.export_diagnostics)
+    )
 
     with capture_runtime_output(active_log_callback, ["GenomePresenceScorer"]):
         calc = scoring_module.GenomePresenceScorer(num_workers=config.num_workers)
@@ -796,7 +803,7 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
             save_matched_peptides_cache=bool(config.save_matched_peptides_cache),
             matched_peptides_cache_path=cache_path or None,
             compute_coverage=bool(config.compute_coverage),
-            export_temp=bool(config.export_temp),
+            export_diagnostics=export_diagnostics,
             export_peptide_contrib_topN=int(config.export_peptide_contrib_topN),
             use_cache_if_exists=bool(config.use_cache_if_exists),
             unique_pvalue_mode=str(config.unique_pvalue_mode),

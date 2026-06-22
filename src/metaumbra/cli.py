@@ -338,10 +338,10 @@ def build_parser() -> argparse.ArgumentParser:
         dest="export_unit_derived_tables",
         action="store_const",
         const=False,
-        display_default="enabled with --unit-aware",
+        display_default="diagnostics only",
         help=(
-            "Disable derived unit-aware tables under <stem>_artifacts/unit_aware/. "
-            "By default they are exported when --unit-aware is enabled."
+            "Deprecated compatibility option. Derived unit-aware diagnostic tables are now written only with "
+            "--export-diagnostics."
         ),
     )
     _add_argument(
@@ -419,8 +419,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         display_default="none",
         help=(
-            "Matched peptide cache file path. When unset, writes '<stem>_artifacts/matched_peptides.pkl' "
-            "under the output directory (unless --no-export-temp)."
+            "Matched peptide cache file path. Use with --save-cache to write it or --use-cache-if-exists to reuse it."
         ),
     )
     _add_argument(
@@ -431,9 +430,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_argument(
         score_optional,
-        "--no-save-cache",
+        "--save-cache",
+        dest="save_cache",
         action="store_true",
-        help="Do not persist matched peptide cache output.",
+        default=False,
+        help="Persist matched peptide cache output. When --cache-path is unset, writes '<stem>_artifacts/matched_peptides.pkl'.",
+    )
+    _add_argument(
+        score_optional,
+        "--no-save-cache",
+        dest="save_cache",
+        action="store_false",
+        help=argparse.SUPPRESS,
     )
     _add_argument(
         score_optional,
@@ -444,8 +452,18 @@ def build_parser() -> argparse.ArgumentParser:
     _add_argument(
         score_optional,
         "--no-export-temp",
+        dest="export_diagnostics",
+        action="store_false",
+        default=False,
+        help=argparse.SUPPRESS,
+    )
+    _add_argument(
+        score_optional,
+        "--export-diagnostics",
+        dest="export_diagnostics",
         action="store_true",
-        help="Skip diagnostic artifact tables. Run parameters and run log are still written under <stem>_artifacts/.",
+        default=False,
+        help="Write diagnostic/audit artifact tables such as full_internal_metrics.tsv, run_summary.json, knockoff summaries, and unit-aware QC pivots.",
     )
     _add_argument(
         score_optional,
@@ -562,10 +580,10 @@ def _run_score(args: argparse.Namespace) -> int:
         exclude_genome_ids=exclude_genome_ids,
         num_workers=args.num_workers,
         matched_peptides_cache_path=args.cache_path,
-        save_matched_peptides_cache=not args.no_save_cache,
+        save_matched_peptides_cache=args.save_cache,
         use_cache_if_exists=args.use_cache_if_exists,
         compute_coverage=not args.no_compute_coverage,
-        export_temp=not args.no_export_temp,
+        export_diagnostics=args.export_diagnostics,
         return_full_table=args.return_full_table,
     )
     _print_result(run_scoring_workflow(config))

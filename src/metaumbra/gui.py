@@ -2017,11 +2017,11 @@ class ScoringTab(QWidget):
         self.unit_box = QGroupBox("Unit-aware Sample Definition")
         self.unit_box.setProperty("subtle", True)
         unit_layout = QVBoxLayout(self.unit_box)
-        self.export_unit_derived_tables_checkbox = QCheckBox("Export derived unit-aware tables")
+        self.export_unit_derived_tables_checkbox = QCheckBox("Export unit-aware diagnostic tables")
         self.export_unit_derived_tables_checkbox.setToolTip(
-            "Write unit-aware call-count, significant-call, genome-union, and matrix tables under the artifacts folder."
+            "Write redundant unit-aware significant-call, genome-union, and matrix tables under the artifacts folder."
         )
-        self.export_unit_derived_tables_checkbox.setChecked(True)
+        self.export_unit_derived_tables_checkbox.setChecked(False)
         self.intensity_min_value_spin = QSpinBox()
         # Limit to signed 32-bit int max to avoid libshiboken overflow
         self.intensity_min_value_spin.setRange(0, 2147483647)
@@ -2238,8 +2238,8 @@ class ScoringTab(QWidget):
         self.use_cache_if_exists_checkbox = QCheckBox("Reuse cache if it already exists")
         self.compute_coverage_checkbox = QCheckBox("Compute coverage columns")
         self.compute_coverage_checkbox.setChecked(True)
-        self.export_temp_checkbox = QCheckBox("Export temp artifacts")
-        self.export_temp_checkbox.setChecked(True)
+        self.export_temp_checkbox = QCheckBox("Export diagnostics")
+        self.export_temp_checkbox.setChecked(False)
         self.return_full_table_checkbox = QCheckBox("Return full internal table")
         cache_form = QFormLayout()
         cache_form.addRow("Matched peptide cache", cache_row)
@@ -2845,6 +2845,7 @@ class ScoringTab(QWidget):
             metadata_analysis_unit_col=self.metadata_analysis_unit_col_edit.currentText().strip(),
             export_unit_derived_tables=(
                 self.export_unit_derived_tables_checkbox.isChecked()
+                or self.export_temp_checkbox.isChecked()
                 if self.unit_aware_checkbox.isChecked()
                 else None
             ),
@@ -2876,7 +2877,7 @@ class ScoringTab(QWidget):
             save_matched_peptides_cache=self.save_cache_checkbox.isChecked(),
             use_cache_if_exists=self.use_cache_if_exists_checkbox.isChecked(),
             compute_coverage=self.compute_coverage_checkbox.isChecked(),
-            export_temp=self.export_temp_checkbox.isChecked(),
+            export_diagnostics=self.export_temp_checkbox.isChecked(),
             export_peptide_contrib_topN=int(self.export_peptide_contrib_topn_spin.value()),
             return_full_table=self.return_full_table_checkbox.isChecked(),
         )
@@ -2946,7 +2947,7 @@ class ScoringTab(QWidget):
         )
         self.unit_aware_checkbox.setChecked(bool(config.unit_aware))
         self.export_unit_derived_tables_checkbox.setChecked(
-            True if config.export_unit_derived_tables is None else bool(config.export_unit_derived_tables)
+            False if config.export_unit_derived_tables is None else bool(config.export_unit_derived_tables)
         )
         # Clamp to QSpinBox maximum to avoid overflow
         try:
@@ -2994,10 +2995,16 @@ class ScoringTab(QWidget):
         )
         self.cache_path_edit.setText(config.matched_peptides_cache_path)
         self.export_peptide_contrib_topn_spin.setValue(int(config.export_peptide_contrib_topN))
-        self.save_cache_checkbox.setChecked(config.save_matched_peptides_cache)
+        self.save_cache_checkbox.setChecked(
+            True
+            if config.save_matched_peptides_cache is None
+            else bool(config.save_matched_peptides_cache)
+        )
         self.use_cache_if_exists_checkbox.setChecked(config.use_cache_if_exists)
         self.compute_coverage_checkbox.setChecked(config.compute_coverage)
-        self.export_temp_checkbox.setChecked(config.export_temp)
+        self.export_temp_checkbox.setChecked(
+            bool(config.export_temp) if config.export_temp is not None else bool(config.export_diagnostics)
+        )
         self.return_full_table_checkbox.setChecked(config.return_full_table)
         self._sync_unit_aware_visibility()
         self._last_browse_dir = _remember_dialog_directory(
@@ -3756,7 +3763,9 @@ class MainWindow(QMainWindow):
         if not isinstance(scoring_payload, dict):
             scoring_payload = {}
         scoring_fields = {field.name for field in fields(ScoringConfig)}
-        self.scoring_tab.load_config(ScoringConfig(**{k: v for k, v in scoring_payload.items() if k in scoring_fields}))
+        scoring_values = {k: v for k, v in scoring_payload.items() if k in scoring_fields}
+        scoring_values.setdefault("save_matched_peptides_cache", True)
+        self.scoring_tab.load_config(ScoringConfig(**scoring_values))
         if isinstance(payload.get("scoring_sample_unit_mapping_rows"), list):
             self.scoring_tab._sample_unit_mapping_rows = list(payload["scoring_sample_unit_mapping_rows"])
             self.scoring_tab._sample_unit_mapping_source_path = str(

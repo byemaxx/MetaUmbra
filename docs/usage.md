@@ -306,6 +306,7 @@ metaumbra score \
   --peptide-table results/observed_peptides.tsv \
   --genome-digest-dirs results/genome_digests \
   --output results/genome_presence.tsv \
+  --save-cache \
   --cache-path results/genome_presence_artifacts/matched_peptides.pkl \
   --use-cache-if-exists
 ```
@@ -330,7 +331,7 @@ Important scoring options:
 | `--metadata-table` | none | Optional TSV/CSV table mapping samples to analysis units. |
 | `--metadata-sample-id-col` | `sample_id` | Sample ID column in `--metadata-table`. |
 | `--metadata-analysis-unit-col` | `analysis_unit_id` | Analysis unit column in `--metadata-table`. |
-| `--no-export-unit-derived-tables` | off | Disable derived unit-aware tables. By default, unit-aware runs write these tables under `<stem>_artifacts/unit_aware/`. |
+| `--no-export-unit-derived-tables` | off | Deprecated compatibility option. Unit-aware diagnostic tables are now written only with `--export-diagnostics` unless this legacy switch is used by older scripts. |
 | `--theoretical-opportunity-cache` | auto | Optional path for the theoretical opportunity cache used by `hypergeometric-opportunity`. |
 | `--rebuild-theoretical-opportunity-cache` | off | Rebuild the theoretical opportunity cache even if it already exists. |
 | `--num-workers-for-theoretical-opportunity` | same as `--num-workers` | Optional worker process count for theoretical opportunity sharding and reduction. |
@@ -341,11 +342,12 @@ Important scoring options:
 | `--selected-genome-ids` | none | Restrict analysis to listed genome IDs. Separate multiple IDs with commas/semicolons, or pass `@file` with one ID per line. |
 | `--exclude-genome-ids` | none | Exclude listed genome IDs. Separate multiple IDs with commas/semicolons, or pass `@file` with one ID per line. |
 | `--lineage-table` | none | Optional TSV table for adding a `Lineage` column to results. |
-| `--cache-path` | none | Explicit matched-peptide cache path. |
+| `--cache-path` | none | Explicit matched-peptide cache path. Use with `--save-cache` to write it or `--use-cache-if-exists` to reuse it. |
 | `--use-cache-if-exists` | off | Reuse an existing matched-peptide cache if available. |
-| `--no-save-cache` | off | Do not save matched-peptide cache output. |
+| `--save-cache` | off | Save matched-peptide cache output. If `--cache-path` is omitted, writes `<stem>_artifacts/matched_peptides.pkl`. |
 | `--no-compute-coverage` | off | Skip cumulative coverage calculations. |
-| `--no-export-temp` | off | Skip diagnostic artifact table exports. Run parameters and run log are still written under `<stem>_artifacts/`. |
+| `--export-diagnostics` | off | Write diagnostic/audit artifact tables such as `run_summary.json`, `full_internal_metrics.tsv`, knockoff summaries, pooled unit-aware results, and unit-aware QC pivots. |
+| `--no-export-temp` | off | Deprecated compatibility alias for leaving diagnostics disabled. Run parameters, run log, and run status are still written under `<stem>_artifacts/`. |
 | `--return-full-table` | off | Write the full internal result table instead of only the concise main result. |
 
 Unique p-value strength is controlled by `--unique-pvalue-mode`. `--unique-peptide-error-source`, `--single-peptide-error-rate-upper-bound`, and `--unique-count-power` apply to `alpha-upper-bound`.
@@ -513,43 +515,74 @@ When `--unit-aware` is enabled, the requested `--output` path contains the main 
 ```text
 <requested output TSV>
 <stem>_cohort_genome_summary.tsv
-<stem>_artifacts/<stem>_sample_unit_mapping.tsv
+<stem>_artifacts/
+  <stem>_sample_unit_mapping.tsv
+  unit_aware/
+    unit_call_counts.tsv
+    unit_specific_genome_list_q005.tsv
+    unit_specific_genome_list_q001.tsv
 ```
 
 - `<requested output TSV>`: one row per `analysis_unit_id` x `genome_id`, including unit-specific `qvalue` and `pass_q_0_01` / `pass_q_0_05` flags.
 - `<stem>_cohort_genome_summary.tsv`: one row per genome, summarizing recurrence across units.
 - `<stem>_artifacts/<stem>_sample_unit_mapping.tsv`: final sample-to-analysis-unit mapping used for the run.
-
-The pooled peptide-set genome presence result is not the union of unit-level calls. In unit-aware mode, it is supplementary and is written to `<stem>_artifacts/pooled_genome_presence.tsv` when artifact export is enabled. MetaUmbra also writes `<stem>_artifacts/unit_aware/unit_threshold_summary.tsv`, a compact per-unit table with q<=0.01 and q<=0.05 genome counts.
-
-By default, unit-aware runs also write derived unit-aware tables under `<stem>_artifacts/unit_aware/`. Use `--no-export-unit-derived-tables` to disable them:
-
-```text
-unit_call_counts.tsv
-unit_q001_genomes.tsv
-unit_q005_genomes.tsv
-unit_specific_genome_list_q001.tsv
-unit_specific_genome_list_q005.tsv
-genome_union_q001.tsv
-genome_union_q005.tsv
-genome_by_unit_q001_matrix.tsv
-genome_by_unit_q005_matrix.tsv
-genome_by_unit_qvalue_matrix.tsv
-```
-
 - `unit_call_counts.tsv`: number of significant genomes per unit.
-- `unit_q001_genomes.tsv` and `unit_q005_genomes.tsv`: significant genome calls for each unit.
 - `unit_specific_genome_list_q005.tsv`: default balanced long-format unit-specific genome-list output for downstream workflows.
 - `unit_specific_genome_list_q001.tsv`: stricter high-specificity long-format alternative.
-- `genome_union_q001.tsv` and `genome_union_q005.tsv`: deduplicated genome lists significant in at least one unit.
-- `genome_by_unit_q001_matrix.tsv` and `genome_by_unit_q005_matrix.tsv`: binary genome x unit pass matrices for QC or visualization.
-- `genome_by_unit_qvalue_matrix.tsv`: genome x unit q-value matrix for heatmaps or manual inspection.
+
+Both unit-specific genome-list files use this schema:
+
+```text
+analysis_unit_id
+genome_id
+Lineage
+presence_rank
+qvalue
+```
 
 For downstream peptide, protein, taxonomic, or OTF annotation workflows, prefer the tool-agnostic `unit_specific_genome_list_q005.tsv` list unless a stricter high-specificity list is required. Join `<stem>_artifacts/<stem>_sample_unit_mapping.tsv` to `unit_specific_genome_list_q005.tsv` or `unit_specific_genome_list_q001.tsv` when sample columns need to inherit their analysis unit's inferred genome list.
 
-The unit-level table contains one row per `analysis_unit_id` and genome, including `presence_rank`, `qvalue`, `pvalue`, q-value pass flags, matched/unique peptide counts, `has_unique_evidence`, `theoretical_unique_peptides`, `observed_unique_peptide_pool_size`, `expected_unique_null`, `unique_depth_fold`, `pvalue_unique`, `pvalue_shared`, `presence_score`, `n_samples_in_unit`, `unit_presence_rule`, and `unit_shared_mode`.
+The unit-level table contains one row per `analysis_unit_id` and genome. Its default schema is:
 
-The cohort summary answers how often each genome is supported across units. It includes counts such as `n_units_tested`, `n_units_q_le_0_05`, `n_units_q_le_0_01`, `n_units_matched_ge_1`, `n_units_with_unique_evidence`, plus best/median q-values and matched/unique peptide totals across units.
+```text
+analysis_unit_id
+genome_id
+Lineage
+presence_rank
+qvalue
+pvalue
+pass_q_0_01
+pass_q_0_05
+num_peptides_unique
+unique_empirical_excess_count
+num_peptides_matched
+matched_peptide_count_shared
+pvalue_unique
+pvalue_shared
+presence_score
+n_samples_in_unit
+```
+
+`Lineage` is included only when lineage annotations are available.
+
+The cohort summary answers how often each genome is supported across units. Its default schema is:
+
+```text
+genome_id
+Lineage
+n_units_tested
+n_units_q_le_0_05
+fraction_units_q_le_0_05
+n_units_q_le_0_01
+fraction_units_q_le_0_01
+best_qvalue
+median_qvalue
+best_presence_rank
+total_unique_peptides_across_units
+total_matched_peptides_across_units
+```
+
+`Lineage` is included only when lineage annotations are available.
 
 ### Diagnostic artifacts
 
@@ -562,17 +595,35 @@ results/
     run_parameters.json
     run.log
     run_status.json
+```
+
+Use `--export-diagnostics` to add heavier audit, debug, and figure-generation outputs:
+
+```text
+results/
+  genome_presence_artifacts/
     run_summary.json
     full_internal_metrics.tsv
+    pooled_genome_presence.tsv  # unit-aware only
     knockoff_pools.tsv
     degeneracy_hist.tsv
     p_shared_hist.tsv
     q_calling_curve.tsv
     shared_stratum_counts.tsv
-    theoretical_opportunity_cache.pkl  # hypergeometric-opportunity only
+    topN_peptide_contrib.tsv  # only when export_peptide_contrib_topN > 0
+    unit_aware/
+      unit_empirical_background_calibration.tsv
+      unit_threshold_summary.tsv
+      unit_q001_genomes.tsv
+      unit_q005_genomes.tsv
+      genome_union_q001.tsv
+      genome_union_q005.tsv
+      genome_by_unit_q001_matrix.tsv
+      genome_by_unit_q005_matrix.tsv
+      genome_by_unit_qvalue_matrix.tsv
 ```
 
-The exact set of diagnostic tables depends on available runtime data. Use `--no-export-temp` to disable the heavier diagnostic table exports; `run_parameters.json`, `run.log`, and `run_status.json` are still written.
+The exact set of diagnostic tables depends on available runtime data. Diagnostics are off by default; `run_parameters.json`, `run.log`, and `run_status.json` are always written.
 
 Common artifacts:
 
@@ -583,27 +634,26 @@ Common artifacts:
 | `run_status.json` | Completion status and final result summary for successful scoring runs. |
 | `run_summary.json` | Runtime settings, input summary, platform details, timing, and call counts. |
 | `full_internal_metrics.tsv` | Complete internal metrics table used to produce the concise output. |
+| `pooled_genome_presence.tsv` | Supplementary pooled peptide-set result for unit-aware runs. It is not the union of unit-level calls. |
 | `knockoff_pools.tsv` | Knockoff pool diagnostics for shared peptide evidence. |
 | `degeneracy_hist.tsv` | Distribution of peptide degeneracy across the analyzed genome set. |
 | `p_shared_hist.tsv` | Histogram of shared-evidence knockoff p-values. |
 | `q_calling_curve.tsv` | Number of called genomes over several q-value thresholds. |
 | `shared_stratum_counts.tsv` | Per-genome shared peptide stratum counts. |
 
+Diagnostic unit-aware tables are redundant with the primary outputs and are meant for audit, QC, or figure generation. `unit_q001_genomes.tsv` and `unit_q005_genomes.tsv` are filtered subsets of the main unit-level table. `genome_union_q001.tsv` and `genome_union_q005.tsv` can be recovered from `<stem>_cohort_genome_summary.tsv` using `n_units_q_le_0_01` or `n_units_q_le_0_05`. `genome_by_unit_*_matrix.tsv` files are QC/visualization pivots, not preferred downstream inputs.
+
 ### Matched-peptide cache
 
-When cache saving is enabled, MetaUmbra writes a pickle file containing matched peptide sets and theoretical peptide counts. If `--cache-path` is not provided, the default cache is:
+Cache files are performance infrastructure. CLI runs write them only when `--save-cache` is enabled; the GUI "Save matched-peptide cache" option is enabled by default. When cache saving is enabled, MetaUmbra writes a pickle file containing matched peptide sets and theoretical peptide counts. If `--cache-path` is not provided, the default cache is:
 
 ```text
 <output_directory>/<output_stem>_artifacts/matched_peptides.pkl
 ```
 
-Use `--use-cache-if-exists` for repeated analyses with the same observed peptide table and genome digest directories. The cache can still be combined with `--selected-genome-ids` and `--exclude-genome-ids`; filters are applied after loading the cache.
+Use `--use-cache-if-exists` for repeated analyses with the same observed peptide table and genome digest directories. If `--cache-path` is supplied, MetaUmbra saves or reuses that path only according to `--save-cache` and `--use-cache-if-exists`. The cache can still be combined with `--selected-genome-ids` and `--exclude-genome-ids`; filters are applied after loading the cache.
 
-`hypergeometric-opportunity` scoring can write a theoretical opportunity cache. `empirical-background` does not build this cache by default, removes stale default theoretical opportunity caches from the current artifact directory, and uses `total_peptide_count` for opportunity binning. If `--theoretical-opportunity-cache` is not provided, the default cache for `hypergeometric-opportunity` is:
-
-```text
-<output_directory>/<output_stem>_artifacts/theoretical_opportunity_cache.pkl
-```
+`hypergeometric-opportunity` scoring can reuse or write a theoretical opportunity cache only when `--theoretical-opportunity-cache` is supplied. `empirical-background` does not build this cache by default, removes stale default theoretical opportunity caches from the current artifact directory, and uses `total_peptide_count` for opportunity binning.
 
 Use `--rebuild-theoretical-opportunity-cache` after changing genome digest files or when you want to force a fresh theoretical opportunity scan. New caches include digest file fingerprints so MetaUmbra can detect digest file changes before reusing the cache. Legacy caches without fingerprints are still accepted when genome IDs match, but rebuilding once enables stricter validation. Theoretical opportunity building can shard theoretical peptides across worker processes with `--num-workers-for-theoretical-opportunity`; if you do not set it, MetaUmbra reuses `--num-workers`.
 
@@ -627,7 +677,7 @@ p_unique = alpha ^ U_excess, when U_excess > 0; otherwise p_unique = 1
 
 By default, pooled background exclusion is adaptive. MetaUmbra starts by excluding the top 10% evidence-ranked genomes from the weak-background pool, computes preliminary genome-level q-values, estimates the fraction of candidate genomes with `q <= 0.20`, clamps that fraction to 10-30%, and rebuilds the final weak-background threshold. This matters for pooled or high-depth cohorts where many true present genomes can otherwise contaminate the weak-background pool and inflate `U_background`. In unit-aware mode, MetaUmbra fits this empirical background independently inside each analysis unit and uses more conservative per-unit exclusion defaults: 3% initial, 0% minimum, and 15% maximum.
 
-This is analogous in spirit to the shared peptide knockoff, but for genome-unique evidence: the shared knockoff calibrates shared weighted evidence, while `empirical-background` calibrates unique peptide counts against weak-background genomes at the same sample depth and opportunity scale. The direct empirical ECDF tail is retained as `p_unique_empirical_tail` for diagnostics, but it is not used as `pvalue_unique` because its resolution is too coarse for genome-level BH correction across thousands of genomes. `empirical-background` does not build the theoretical opportunity cache by default; it records `unique_empirical_background_opportunity_source = total_peptide_count` in `run_summary.json`, along with the initial and final background exclusion fractions, candidate q threshold, iteration count, threshold quantile, and alpha.
+This is analogous in spirit to the shared peptide knockoff, but for genome-unique evidence: the shared knockoff calibrates shared weighted evidence, while `empirical-background` calibrates unique peptide counts against weak-background genomes at the same sample depth and opportunity scale. The direct empirical ECDF tail is retained as `p_unique_empirical_tail` for diagnostics, but it is not used as `pvalue_unique` because its resolution is too coarse for genome-level BH correction across thousands of genomes. `empirical-background` does not build the theoretical opportunity cache by default. With `--export-diagnostics`, `run_summary.json` records `unique_empirical_background_opportunity_source = total_peptide_count`, along with the initial and final background exclusion fractions, candidate q threshold, iteration count, threshold quantile, and alpha.
 
 The threshold quantile is controlled by `--unique-empirical-background-threshold-quantile`. The same configured value is used for pooled `empirical-background` scoring and per-unit `empirical-background` scoring. In unit-aware empirical-background runs, the per-unit calibration table records the value in `unit_empirical_background_threshold_quantile`.
 
@@ -688,6 +738,7 @@ metaumbra score \
   --peptide-table results/observed_peptides.tsv \
   --genome-digest-dirs results/genome_digests \
   --output results/genome_presence.tsv \
+  --save-cache \
   --cache-path results/genome_presence_artifacts/matched_peptides.pkl \
   --use-cache-if-exists
 ```
