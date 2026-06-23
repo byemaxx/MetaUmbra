@@ -521,6 +521,7 @@ When `--unit-aware` is enabled, the requested `--output` path contains the main 
     unit_call_counts.tsv
     unit_specific_genome_list_q005.tsv
     unit_specific_genome_list_q001.tsv
+    unit_aware_manifest.json
 ```
 
 - `<requested output TSV>`: one row per `analysis_unit_id` x `genome_id`, including unit-specific `qvalue` and `pass_q_0_01` / `pass_q_0_05` flags.
@@ -529,6 +530,7 @@ When `--unit-aware` is enabled, the requested `--output` path contains the main 
 - `unit_call_counts.tsv`: number of significant genomes per unit.
 - `unit_specific_genome_list_q005.tsv`: default balanced long-format unit-specific genome-list output for downstream workflows.
 - `unit_specific_genome_list_q001.tsv`: stricter high-specificity long-format alternative.
+- `unit_aware_manifest.json`: compact machine-readable downstream manifest mapping each unit to sample columns and genome IDs at q<=0.05 and q<=0.01.
 
 Both unit-specific genome-list files use this schema:
 
@@ -541,6 +543,8 @@ qvalue
 ```
 
 For downstream peptide, protein, taxonomic, or OTF annotation workflows, prefer the tool-agnostic `unit_specific_genome_list_q005.tsv` list unless a stricter high-specificity list is required. Join `<stem>_artifacts/unit_aware/<stem>_sample_unit_mapping.tsv` to `unit_specific_genome_list_q005.tsv` or `unit_specific_genome_list_q001.tsv` when sample columns need to inherit their analysis unit's inferred genome list.
+
+The TSV files are the canonical tabular outputs. `unit_aware_manifest.json` is intended for downstream annotation workflows, including MetaX, that need a lightweight unit-to-samples and unit-to-genomes interface. It stores `default_genome_threshold: q0.05` and includes q<=0.01 genome IDs as a stricter subset, but it does not duplicate q-values, ranks, lineage, p-values, scores, or peptide counts from the TSVs.
 
 The unit-level table contains one row per `analysis_unit_id` and genome. Its default schema is:
 

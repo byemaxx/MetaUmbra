@@ -258,6 +258,7 @@ def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConf
             "unit_empirical_background_calibration.tsv",
             "unit_genome_presence_full.tsv",
             "*_sample_unit_mapping.tsv",
+            "unit_aware_manifest.json",
             "unit_threshold_summary.tsv",
             "unit_call_counts.tsv",
             "unit_q001_genomes.tsv",

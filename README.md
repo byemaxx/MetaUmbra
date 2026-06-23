@@ -96,6 +96,9 @@ Default unit-aware output files:
 - `<stem>_artifacts/unit_aware/unit_call_counts.tsv`: minimal per-unit QC counts.
 - `<stem>_artifacts/unit_aware/unit_specific_genome_list_q005.tsv`: preferred downstream genome-list interface.
 - `<stem>_artifacts/unit_aware/unit_specific_genome_list_q001.tsv`: stricter downstream genome-list interface.
+- `<stem>_artifacts/unit_aware/unit_aware_manifest.json`: compact machine-readable downstream manifest.
+
+The unit-aware TSV files are the canonical tabular outputs. `unit_aware_manifest.json` is a lightweight downstream integration file for annotation workflows, including MetaX: it maps each `analysis_unit_id` to sample columns, q<=0.05 genome IDs, and the stricter q<=0.01 subset. It does not duplicate q-values, ranks, lineage, p-values, scores, or peptide counts; those remain in the TSV files. The manifest's `default_genome_threshold` is `q0.05`.
 
 Each scoring run creates `<stem>_artifacts/` at startup and records `run_parameters.json`, `run.log`, and `run_status.json` for reproducibility and debugging. The parameter snapshot includes CPU model, logical CPU count, total memory, and platform/architecture metadata. Use `--export-diagnostics` to write heavier audit and figure-generation outputs such as `run_summary.json`, `full_internal_metrics.tsv`, knockoff diagnostics, pooled unit-aware results, redundant unit-level subsets, genome unions, and genome-by-unit matrices. Full unit-aware audit columns are written to `unit_aware/unit_genome_presence_full.tsv` with `--export-diagnostics` or unit-aware `--return-full-table`. In the CLI, use `--save-cache` to write `matched_peptides.pkl`; in the GUI, the matching "Save matched-peptide cache" option is enabled by default. When cache reuse is requested, the default `matched_peptides.pkl` cache is preserved during startup cleanup.
 

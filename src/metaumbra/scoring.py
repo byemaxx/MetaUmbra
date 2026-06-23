@@ -41,6 +41,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from . import __version__ as METAUMBRA_VERSION
 from ._scoring.empirical import (
     DEFAULT_UNIQUE_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE,
     EMPIRICAL_BACKGROUND_OUTPUT_COLUMNS,
@@ -91,6 +92,99 @@ def _format_elapsed_seconds(elapsed_seconds: object) -> str:
 def _strip_raw_suffix_from_sample_ids(values: pd.Series) -> pd.Series:
     """Normalize DIA-NN parquet sample IDs such as sample.raw to sample."""
     return values.astype("string").str.strip().str.replace(r"\.raw$", "", case=False, regex=True)
+
+
+def _build_unit_aware_manifest(
+    mapping_df: pd.DataFrame,
+    unit_specific_q005: pd.DataFrame,
+    unit_specific_q001: pd.DataFrame,
+    stem: str,
+) -> dict:
+    """Build a compact downstream manifest from already prepared unit-aware tables."""
+    required_mapping_cols = ["sample_id", "analysis_unit_id"]
+    required_genome_cols = ["analysis_unit_id", "genome_id"]
+
+    def _require_or_empty(table_name: str, table_df: pd.DataFrame, required_cols: List[str]) -> pd.DataFrame:
+        missing = [col for col in required_cols if col not in table_df.columns]
+        if missing:
+            if table_df.empty:
+                return pd.DataFrame(columns=required_cols)
+            raise RuntimeError(f"Unit-aware manifest build failed: {table_name} is missing columns: {missing}")
+        return table_df
+
+    mapping_df = _require_or_empty("sample_unit_mapping", mapping_df, required_mapping_cols)
+    unit_specific_q005 = _require_or_empty("unit_specific_genome_list_q005", unit_specific_q005, required_genome_cols)
+    unit_specific_q001 = _require_or_empty("unit_specific_genome_list_q001", unit_specific_q001, required_genome_cols)
+    mapping = mapping_df.loc[:, required_mapping_cols].copy()
+    q005 = unit_specific_q005.loc[:, required_genome_cols].copy()
+    q001 = unit_specific_q001.loc[:, required_genome_cols].copy()
+    for table in (mapping, q005, q001):
+        table["analysis_unit_id"] = table["analysis_unit_id"].astype(str)
+    mapping["sample_id"] = mapping["sample_id"].astype(str)
+    q005["genome_id"] = q005["genome_id"].astype(str)
+    q001["genome_id"] = q001["genome_id"].astype(str)
+
+    units = sorted(
+        set(mapping["analysis_unit_id"].tolist())
+        | set(q005["analysis_unit_id"].tolist())
+        | set(q001["analysis_unit_id"].tolist())
+    )
+    samples_by_unit: Dict[str, List[str]] = {}
+    for unit_id, group in mapping.groupby("analysis_unit_id", sort=False):
+        sample_ids = group["sample_id"].tolist()
+        if len(sample_ids) != len(set(sample_ids)):
+            raise RuntimeError(f"Unit-aware manifest build failed: duplicate sample IDs in unit {unit_id}.")
+        samples_by_unit[str(unit_id)] = sample_ids
+
+    def _genomes_by_unit(table: pd.DataFrame, label: str) -> Dict[str, List[str]]:
+        grouped: Dict[str, List[str]] = {}
+        for unit_id, group in table.groupby("analysis_unit_id", sort=False):
+            genome_ids = group["genome_id"].tolist()
+            if len(genome_ids) != len(set(genome_ids)):
+                raise RuntimeError(f"Unit-aware manifest build failed: duplicate genome IDs in {label} for unit {unit_id}.")
+            grouped[str(unit_id)] = genome_ids
+        return grouped
+
+    genomes_q005 = _genomes_by_unit(q005, "q0.05")
+    genomes_q001 = _genomes_by_unit(q001, "q0.01")
+
+    manifest_units = {}
+    for unit_id in units:
+        sample_columns = samples_by_unit.get(unit_id, [])
+        genome_ids_q005 = genomes_q005.get(unit_id, [])
+        genome_ids_q001 = genomes_q001.get(unit_id, [])
+        if not set(genome_ids_q001).issubset(set(genome_ids_q005)):
+            raise RuntimeError(f"Unit-aware manifest build failed: q0.01 genomes are not a subset of q0.05 for unit {unit_id}.")
+        manifest_units[unit_id] = {
+            "sample_columns": sample_columns,
+            "n_samples": len(sample_columns),
+            "genome_ids_q005": genome_ids_q005,
+            "genome_ids_q001": genome_ids_q001,
+        }
+
+    if set(mapping["analysis_unit_id"].tolist()) - set(manifest_units):
+        raise RuntimeError("Unit-aware manifest build failed: a mapped unit is missing from the manifest.")
+    if set(q005["analysis_unit_id"].tolist()) - set(manifest_units):
+        raise RuntimeError("Unit-aware manifest build failed: a q0.05 unit is missing from the manifest.")
+    for unit_id, unit_payload in manifest_units.items():
+        if unit_payload["n_samples"] != len(unit_payload["sample_columns"]):
+            raise RuntimeError(f"Unit-aware manifest build failed: n_samples mismatch for unit {unit_id}.")
+
+    return {
+        "schema_version": "metaumbra.unit_aware_manifest.v1",
+        "generated_by": {
+            "tool": "MetaUmbra",
+            "version": str(METAUMBRA_VERSION),
+        },
+        "default_genome_threshold": "q0.05",
+        "files": {
+            "sample_unit_mapping": f"{stem}_sample_unit_mapping.tsv",
+            "unit_call_counts": "unit_call_counts.tsv",
+            "unit_specific_genome_list_q005": "unit_specific_genome_list_q005.tsv",
+            "unit_specific_genome_list_q001": "unit_specific_genome_list_q001.tsv",
+        },
+        "units": manifest_units,
+    }
 
 
 def _drop_duplicate_pairs_with_pyarrow(
@@ -3348,6 +3442,7 @@ class GenomePresenceScorer:
         unit_call_counts_path = os.path.join(unit_aware_dir, "unit_call_counts.tsv")
         unit_specific_q001_path = os.path.join(unit_aware_dir, "unit_specific_genome_list_q001.tsv")
         unit_specific_q005_path = os.path.join(unit_aware_dir, "unit_specific_genome_list_q005.tsv")
+        manifest_path = os.path.join(unit_aware_dir, "unit_aware_manifest.json")
 
         self.unit_aware_output_paths = {
             "unit_genome_presence": unit_level_path,
@@ -3383,10 +3478,31 @@ class GenomePresenceScorer:
         unit_call_counts.to_csv(unit_call_counts_path, sep="\t", index=False)
         unit_specific_q001.to_csv(unit_specific_q001_path, sep="\t", index=False)
         unit_specific_q005.to_csv(unit_specific_q005_path, sep="\t", index=False)
+        manifest = _build_unit_aware_manifest(
+            mapping_df=mapping_df,
+            unit_specific_q005=unit_specific_q005,
+            unit_specific_q001=unit_specific_q001,
+            stem=stem,
+        )
+        with open(manifest_path, "w", encoding="utf-8") as handle:
+            json.dump(manifest, handle, indent=2)
+            handle.write("\n")
         self.unit_aware_output_paths["unit_call_counts"] = unit_call_counts_path
         self.unit_aware_output_paths["unit_specific_genome_list_q001"] = unit_specific_q001_path
         self.unit_aware_output_paths["unit_specific_genome_list_q005"] = unit_specific_q005_path
+        self.unit_aware_output_paths["unit_aware_manifest"] = manifest_path
         self.run_stats["unit_aware_unit_call_count_rows"] = int(len(unit_call_counts))
+        self.run_stats["unit_aware_manifest_path"] = manifest_path
+        self.run_stats["unit_aware_manifest_units"] = int(len(manifest["units"]))
+        self.run_stats["unit_aware_manifest_total_samples"] = int(
+            sum(unit_payload["n_samples"] for unit_payload in manifest["units"].values())
+        )
+        self.run_stats["unit_aware_manifest_total_unit_genome_links_q005"] = int(
+            sum(len(unit_payload["genome_ids_q005"]) for unit_payload in manifest["units"].values())
+        )
+        self.run_stats["unit_aware_manifest_total_unit_genome_links_q001"] = int(
+            sum(len(unit_payload["genome_ids_q001"]) for unit_payload in manifest["units"].values())
+        )
 
         if export_pooled_result:
             os.makedirs(artifact_dir, exist_ok=True)
@@ -3406,6 +3522,7 @@ class GenomePresenceScorer:
         self.logger.info(f"Saved unit-aware call counts: {unit_call_counts_path}")
         self.logger.info(f"Saved q<=0.01 unit-specific genome list: {unit_specific_q001_path}")
         self.logger.info(f"Saved q<=0.05 unit-specific genome list: {unit_specific_q005_path}")
+        self.logger.info(f"Saved unit-aware downstream manifest: {manifest_path}")
 
     def _export_unit_aware_derived_outputs(
         self,
@@ -4106,6 +4223,7 @@ class GenomePresenceScorer:
                 ("Unit genome presence", "unit_genome_presence"),
                 ("Cohort genome summary", "cohort_genome_summary"),
                 ("Sample-unit mapping", "sample_unit_mapping"),
+                ("Unit-aware manifest", "unit_aware_manifest"),
             ]
             for label, key in primary_labels:
                 path = self.unit_aware_output_paths.get(key)
