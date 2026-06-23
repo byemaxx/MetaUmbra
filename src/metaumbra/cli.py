@@ -463,7 +463,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="export_diagnostics",
         action="store_true",
         default=False,
-        help="Write diagnostic/audit artifact tables such as full_internal_metrics.tsv, run_summary.json, knockoff summaries, and unit-aware QC pivots.",
+        help="Write heavier diagnostic/audit artifact tables such as full_internal_metrics.tsv, knockoff summaries, and unit-aware QC pivots.",
     )
     _add_argument(
         score_optional,

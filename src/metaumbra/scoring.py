@@ -2594,40 +2594,8 @@ class GenomePresenceScorer:
     # Top-level pipeline
     # =========================
 
-    def _export_temp_artifacts(
-        self,
-        out_dir: str,
-        stem: str,
-        df_scored: pd.DataFrame,
-        export_peptide_contrib_topN: int = 0,
-    ) -> None:
-        """Export additional statistics for paper figures into out_dir/<stem>_artifacts/."""
-        temp_dir = os.path.join(out_dir, f"{stem}_artifacts")
-        os.makedirs(temp_dir, exist_ok=True)
-        temp_path = Path(temp_dir).resolve()
-        cleanup_names = {
-            "run_summary.json",
-            "full_internal_metrics.tsv",
-            "knockoff_pools.tsv",
-            "degeneracy_hist.tsv",
-            "p_shared_hist.tsv",
-            "q_calling_curve.tsv",
-            "shared_stratum_counts.tsv",
-        }
-        mode = str(self.run_stats.get("unique_pvalue_mode", self.unique_pvalue_mode)).strip().lower()
-        if mode != "hypergeometric-opportunity":
-            cleanup_names.add("theoretical_opportunity_cache.pkl")
-        cleanup_paths = [temp_path / name for name in cleanup_names]
-        cleanup_paths.extend(temp_path.glob("top*_peptide_contrib.tsv"))
-        for path in cleanup_paths:
-            try:
-                resolved = path.resolve()
-                if resolved.parent == temp_path and resolved.exists() and resolved.is_file():
-                    resolved.unlink()
-            except Exception:
-                pass
-
-        # --------------- run summary JSON ---------------
+    def _build_run_summary_payload(self, df_scored: pd.DataFrame) -> dict:
+        """Build the always-on lightweight scoring run summary."""
         meta = dict(self.run_stats) if isinstance(self.run_stats, dict) else {}
         meta["use_length_strata"] = bool(self.use_length_strata)
         meta["degeneracy_bin_edges"] = list(self.degeneracy_bin_edges)
@@ -2669,9 +2637,51 @@ class GenomePresenceScorer:
             pass
 
         meta["timing_seconds"] = {k: float(v) for k, v in (self.timing_stats or {}).items()}
+        return meta
 
+    def _export_run_summary_artifact(
+        self,
+        out_dir: str,
+        stem: str,
+        df_scored: pd.DataFrame,
+    ) -> None:
+        """Write the always-on machine-readable run summary."""
+        temp_dir = os.path.join(out_dir, f"{stem}_artifacts")
+        os.makedirs(temp_dir, exist_ok=True)
         with open(os.path.join(temp_dir, "run_summary.json"), "w", encoding="utf-8") as f:
-            json.dump(meta, f, indent=2)
+            json.dump(self._build_run_summary_payload(df_scored), f, indent=2)
+
+    def _export_temp_artifacts(
+        self,
+        out_dir: str,
+        stem: str,
+        df_scored: pd.DataFrame,
+        export_peptide_contrib_topN: int = 0,
+    ) -> None:
+        """Export additional statistics for paper figures into out_dir/<stem>_artifacts/."""
+        temp_dir = os.path.join(out_dir, f"{stem}_artifacts")
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_path = Path(temp_dir).resolve()
+        cleanup_names = {
+            "full_internal_metrics.tsv",
+            "knockoff_pools.tsv",
+            "degeneracy_hist.tsv",
+            "p_shared_hist.tsv",
+            "q_calling_curve.tsv",
+            "shared_stratum_counts.tsv",
+        }
+        mode = str(self.run_stats.get("unique_pvalue_mode", self.unique_pvalue_mode)).strip().lower()
+        if mode != "hypergeometric-opportunity":
+            cleanup_names.add("theoretical_opportunity_cache.pkl")
+        cleanup_paths = [temp_path / name for name in cleanup_names]
+        cleanup_paths.extend(temp_path.glob("top*_peptide_contrib.tsv"))
+        for path in cleanup_paths:
+            try:
+                resolved = path.resolve()
+                if resolved.parent == temp_path and resolved.exists() and resolved.is_file():
+                    resolved.unlink()
+            except Exception:
+                pass
 
         # --------------- full tables ---------------
         df_scored.to_csv(os.path.join(temp_dir, "full_internal_metrics.tsv"), sep="\t", index=False)
@@ -4137,6 +4147,11 @@ class GenomePresenceScorer:
                 self.timing_stats["export_temp"] = float(time.time() - t_export0)
             except Exception as e:
                 self.logger.warning(f"Failed to export temp artifacts: {e}")
+
+        try:
+            self._export_run_summary_artifact(out_dir=out_dir, stem=stem, df_scored=df_scored)
+        except Exception as e:
+            self.logger.warning(f"Failed to export run summary: {e}")
 
         self._print_summary()
         result = df_scored if return_full_table else df_main

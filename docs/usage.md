@@ -346,8 +346,8 @@ Important scoring options:
 | `--use-cache-if-exists` | off | Reuse an existing matched-peptide cache if available. |
 | `--save-cache` | off | Save matched-peptide cache output. If `--cache-path` is omitted, writes `<stem>_artifacts/matched_peptides.pkl`. |
 | `--no-compute-coverage` | off | Skip cumulative coverage calculations. |
-| `--export-diagnostics` | off | Write diagnostic/audit artifact tables such as `run_summary.json`, `full_internal_metrics.tsv`, knockoff summaries, pooled unit-aware results, and unit-aware QC pivots. |
-| `--no-export-temp` | off | Deprecated compatibility alias for leaving diagnostics disabled. Run parameters, run log, and run status are still written under `<stem>_artifacts/`. |
+| `--export-diagnostics` | off | Write heavier diagnostic/audit artifact tables such as `full_internal_metrics.tsv`, knockoff summaries, pooled unit-aware results, and unit-aware QC pivots. |
+| `--no-export-temp` | off | Deprecated compatibility alias for leaving diagnostics disabled. Run parameters, run log, run status, and run summary are still written under `<stem>_artifacts/`. |
 | `--return-full-table` | off | For non-unit-aware scoring, write the full internal result table instead of only the concise main result. In unit-aware mode, the requested output stays concise and full unit-level audit columns are written under `<stem>_artifacts/unit_aware/`. |
 
 Unique p-value strength is controlled by `--unique-pvalue-mode`. `--unique-peptide-error-source`, `--single-peptide-error-rate-upper-bound`, and `--unique-count-power` apply to `alpha-upper-bound`.
@@ -599,6 +599,7 @@ results/
     run_parameters.json
     run.log
     run_status.json
+    run_summary.json
 ```
 
 Use `--export-diagnostics` to add heavier audit, debug, and figure-generation outputs:
@@ -606,7 +607,6 @@ Use `--export-diagnostics` to add heavier audit, debug, and figure-generation ou
 ```text
 results/
   genome_presence_artifacts/
-    run_summary.json
     full_internal_metrics.tsv
     pooled_genome_presence.tsv  # unit-aware only
     knockoff_pools.tsv
@@ -628,7 +628,7 @@ results/
       genome_by_unit_qvalue_matrix.tsv
 ```
 
-The exact set of diagnostic tables depends on available runtime data. Diagnostics are off by default; `run_parameters.json`, `run.log`, and `run_status.json` are always written.
+The exact set of diagnostic tables depends on available runtime data. Diagnostics are off by default; `run_parameters.json`, `run.log`, `run_status.json`, and `run_summary.json` are always written.
 
 Common artifacts:
 
@@ -684,7 +684,7 @@ p_unique = alpha ^ U_excess, when U_excess > 0; otherwise p_unique = 1
 
 By default, pooled background exclusion is adaptive. MetaUmbra starts by excluding the top 10% evidence-ranked genomes from the weak-background pool, computes preliminary genome-level q-values, estimates the fraction of candidate genomes with `q <= 0.20`, clamps that fraction to 10-30%, and rebuilds the final weak-background threshold. This matters for pooled or high-depth cohorts where many true present genomes can otherwise contaminate the weak-background pool and inflate `U_background`. In unit-aware mode, MetaUmbra fits this empirical background independently inside each analysis unit and uses more conservative per-unit exclusion defaults: 3% initial, 0% minimum, and 15% maximum.
 
-This is analogous in spirit to the shared peptide knockoff, but for genome-unique evidence: the shared knockoff calibrates shared weighted evidence, while `empirical-background` calibrates unique peptide counts against weak-background genomes at the same sample depth and opportunity scale. The direct empirical ECDF tail is retained as `p_unique_empirical_tail` for diagnostics, but it is not used as `pvalue_unique` because its resolution is too coarse for genome-level BH correction across thousands of genomes. `empirical-background` does not build the theoretical opportunity cache by default. With `--export-diagnostics`, `run_summary.json` records `unique_empirical_background_opportunity_source = total_peptide_count`, along with the initial and final background exclusion fractions, candidate q threshold, iteration count, threshold quantile, and alpha.
+This is analogous in spirit to the shared peptide knockoff, but for genome-unique evidence: the shared knockoff calibrates shared weighted evidence, while `empirical-background` calibrates unique peptide counts against weak-background genomes at the same sample depth and opportunity scale. The direct empirical ECDF tail is retained as `p_unique_empirical_tail` for diagnostics, but it is not used as `pvalue_unique` because its resolution is too coarse for genome-level BH correction across thousands of genomes. `empirical-background` does not build the theoretical opportunity cache by default. `run_summary.json` records `unique_empirical_background_opportunity_source = total_peptide_count`, along with the initial and final background exclusion fractions, candidate q threshold, iteration count, threshold quantile, and alpha.
 
 The threshold quantile is controlled by `--unique-empirical-background-threshold-quantile`. The same configured value is used for pooled `empirical-background` scoring and per-unit `empirical-background` scoring. In unit-aware empirical-background runs, the per-unit calibration table records the value in `unit_empirical_background_threshold_quantile`.
 
