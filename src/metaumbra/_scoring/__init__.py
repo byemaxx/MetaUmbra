@@ -7,5 +7,5 @@ __all__ = [
     "ranking",
     "stats",
     "theoretical",
-    "unit_aware",
+    "unit_specific",
 ]

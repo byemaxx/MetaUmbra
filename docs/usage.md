@@ -116,7 +116,7 @@ The scoring tab also includes `Import Parquet...`, which converts a DIA-NN-style
 
 The observed peptide table field also accepts DIA-NN `report.parquet` files directly. When you click Run, the GUI auto-detects the expected columns and loads them into memory for scoring without writing a separate TSV. Use `Import Parquet...` if you need to customize the column mapping or export a peptide TSV.
 
-For multi-sample input, enable `Sample / Unit-aware Scoring`. The `Configure Sample / Unit Mapping` button reads the selected TSV/CSV/parquet table, detects sample IDs from the configured sample column, shows `n_total_rows` and `n_valid_peptides`, and lets you assign selected samples to a shared `analysis_unit_id`. You can also import or export a mapping TSV. A separate metadata table is still supported through the metadata table field.
+For multi-sample input, enable `Sample / Unit-specific Scoring`. The `Configure Sample / Unit Mapping` button reads the selected TSV/CSV/parquet table, detects sample IDs from the configured sample column, shows `n_total_rows` and `n_valid_peptides`, and lets you assign selected samples to a shared `analysis_unit_id`. You can also import or export a mapping TSV. A separate metadata table is still supported through the metadata table field.
 
 | Parquet column | Output TSV column |
 | --- | --- |
@@ -322,16 +322,16 @@ Important scoring options:
 | `--unique-pvalue-mode` | `empirical-background` | Unique evidence p-value mode. `empirical-background` estimates a sample-specific weak-genome unique peptide background threshold and accumulates only unique peptides above that threshold. `hypergeometric-opportunity` uses the observed genome-unique peptide pool and theoretical unique peptide opportunity. `alpha-upper-bound` uses `alpha^(U_raw^power)`. |
 | `--unique-peptide-error-source` | `global-alpha` | Error source for `alpha-upper-bound`: use the global alpha or per-peptide values from `--peptide-error-col`. |
 | `--unique-count-power` | `1.0` | Power exponent for `alpha-upper-bound` effective unique evidence count, `U_eff = U_raw^power`. |
-| `--unique-empirical-background-threshold-quantile` | `0.95` | Weak-background unique-count quantile used by `empirical-background`; applies to pooled scoring and unit-aware empirical-background scoring. |
-| `--unit-aware` | off | Enable per-analysis-unit genome presence scoring for long-format multi-sample peptide tables. |
-| `--sample-id-col` | `Run` | Sample or run ID column used by `--unit-aware`. |
-| `--intensity-col` | `Precursor.Quantity` | Intensity column used to call sample-level peptide presence for `--unit-aware`. |
+| `--unique-empirical-background-threshold-quantile` | `0.95` | Weak-background unique-count quantile used by `empirical-background`; applies to pooled scoring and unit-specific empirical-background scoring. |
+| `--unit-specific` | off | Enable per-analysis-unit genome presence scoring for long-format multi-sample peptide tables. |
+| `--sample-id-col` | `Run` | Sample or run ID column used by `--unit-specific`. |
+| `--intensity-col` | `Precursor.Quantity` | Intensity column used to call sample-level peptide presence for `--unit-specific`. |
 | `--intensity-min-value` | `0` | Minimum intensity required for sample-level peptide presence. |
 | `--intensity-min-quantile` | `0` | Optional within-sample intensity quantile cutoff for sample-level peptide presence. |
 | `--metadata-table` | none | Optional TSV/CSV table mapping samples to analysis units. |
 | `--metadata-sample-id-col` | `sample_id` | Sample ID column in `--metadata-table`. |
 | `--metadata-analysis-unit-col` | `analysis_unit_id` | Analysis unit column in `--metadata-table`. |
-| `--no-export-unit-derived-tables` | off | Deprecated compatibility option. Unit-aware diagnostic tables are now written only with `--export-diagnostics` unless this legacy switch is used by older scripts. |
+| `--no-export-unit-derived-tables` | off | Deprecated compatibility option. Unit-specific diagnostic tables are now written only with `--export-diagnostics` unless this legacy switch is used by older scripts. |
 | `--theoretical-opportunity-cache` | auto | Optional path for the theoretical opportunity cache used by `hypergeometric-opportunity`. |
 | `--rebuild-theoretical-opportunity-cache` | off | Rebuild the theoretical opportunity cache even if it already exists. |
 | `--num-workers-for-theoretical-opportunity` | same as `--num-workers` | Optional worker process count for theoretical opportunity sharding and reduction. |
@@ -346,17 +346,17 @@ Important scoring options:
 | `--use-cache-if-exists` | off | Reuse an existing matched-peptide cache if available. |
 | `--save-cache` | off | Save matched-peptide cache output. If `--cache-path` is omitted, writes `<stem>_artifacts/matched_peptides.pkl`. |
 | `--no-compute-coverage` | off | Skip cumulative coverage calculations. |
-| `--export-diagnostics` | off | Write heavier diagnostic/audit artifact tables such as `full_internal_metrics.tsv`, knockoff summaries, pooled unit-aware results, and unit-aware QC pivots. |
+| `--export-diagnostics` | off | Write heavier diagnostic/audit artifact tables such as `full_internal_metrics.tsv`, knockoff summaries, pooled unit-specific results, and unit-specific QC pivots. |
 | `--no-export-temp` | off | Deprecated compatibility alias for leaving diagnostics disabled. Run parameters, run log, run status, and run summary are still written under `<stem>_artifacts/`. |
-| `--return-full-table` | off | For non-unit-aware scoring, write the full internal result table instead of only the concise main result. In unit-aware mode, the requested output stays concise and full unit-level audit columns are written under `<stem>_artifacts/unit_aware/`. |
+| `--return-full-table` | off | For non-unit-specific scoring, write the full internal result table instead of only the concise main result. In unit-specific mode, the requested output stays concise and full unit-level audit columns are written under `<stem>_artifacts/unit_specific/`. |
 
 Unique p-value strength is controlled by `--unique-pvalue-mode`. `--unique-peptide-error-source`, `--single-peptide-error-rate-upper-bound`, and `--unique-count-power` apply to `alpha-upper-bound`.
 
-### Unit-aware scoring for multi-sample data
+### Unit-specific scoring for multi-sample data
 
 MetaUmbra can score genome presence for user-defined analysis units. An analysis unit may correspond to one sample, a technical replicate group, a donor-level group of repeated runs, or another manually defined group. Peptide presence is first determined within each raw sample using an intensity column, then sample-level peptide presence is aggregated into analysis units before genome-level scoring.
 
-Use unit-aware scoring when the input contains multiple samples or repeated runs:
+Use unit-specific scoring when the input contains multiple samples or repeated runs:
 
 ```bash
 metaumbra score \
@@ -364,14 +364,14 @@ metaumbra score \
   --genome-digest-dirs results/genome_digests \
   --output results/genome_presence.tsv \
   --peptide-seq-col Stripped.Sequence \
-  --unit-aware \
+  --unit-specific \
   --sample-id-col Run \
   --intensity-col Precursor.Quantity \
   --peptide-error-col Q.Value \
   --metadata-table results/sample_metadata.tsv
 ```
 
-The peptide table for `--unit-aware` must be long-format: each row should describe one peptide observation in one raw sample or run. For example:
+The peptide table for `--unit-specific` must be long-format: each row should describe one peptide observation in one raw sample or run. For example:
 
 ```text
 Run	Sequence	Evidence	Q.Value	Reverse	Precursor.Quantity
@@ -381,7 +381,7 @@ run_01	PEPTIDEB	0.91	0.010		43000
 run_03	PEPTIDEC	0.88	0.015		61000
 ```
 
-Wide peptide-by-sample matrices are not accepted directly by `--unit-aware`; convert them to long format first, with one sample/run ID column and one intensity column.
+Wide peptide-by-sample matrices are not accepted directly by `--unit-specific`; convert them to long format first, with one sample/run ID column and one intensity column.
 
 The metadata table is optional. If omitted, each sample is its own `analysis_unit_id`. If provided, it should contain columns like:
 
@@ -403,11 +403,11 @@ p_unique_g,u = P(X_g,u >= U_g,u)
 
 where `U_g,u` is the observed genome-unique peptide count for genome `g` in unit `u`, `S_u` is the observed genome-unique peptide pool size in unit `u`, `A_g` is the theoretical unique peptide opportunity for genome `g`, and `A_total` is the total theoretical unique peptide opportunity across the analyzed genome panel. BH correction is applied separately within each analysis unit.
 
-Pooled multi-sample scoring answers a cohort-level pooled support question and should not be interpreted as per-sample genome presence. Unit-aware scoring is recommended when the input contains multiple samples or repeated runs.
+Pooled multi-sample scoring answers a cohort-level pooled support question and should not be interpreted as per-sample genome presence. Unit-specific scoring is recommended when the input contains multiple samples or repeated runs.
 
 In the current implementation, peptide presence within an analysis unit is defined as the union of sample-level peptide presence across samples assigned to that unit. Unit-level p-values combine per-unit shared knockoff evidence and the selected per-unit unique evidence with Fisher's method, then apply BH correction separately within each analysis unit.
 
-When unit-aware `empirical-background` is selected, MetaUmbra also writes `unit_empirical_background_calibration.tsv` under `<stem>_artifacts/unit_aware/`. This table records each analysis unit's empirical-background iteration trace, configured threshold quantile, final exclusion fraction, iteration count, active matched genome count, and small-unit warnings. Units with fewer than 100 active matched genomes use no top-genome exclusion and one opportunity bin.
+When unit-specific `empirical-background` is selected, MetaUmbra also writes `unit_empirical_background_calibration.tsv` under `<stem>_artifacts/unit_specific/`. This table records each analysis unit's empirical-background iteration trace, configured threshold quantile, final exclusion fraction, iteration count, active matched genome count, and small-unit warnings. Units with fewer than 100 active matched genomes use no top-genome exclusion and one opportunity bin.
 
 For DIA-NN long/parquet input, `Precursor.Quantity` is recommended for peptide presence filtering. `Precursor.Normalised` can be selected for normalized intensity workflows, but it is not the recommended default for presence/absence detection.
 
@@ -506,31 +506,31 @@ The default scoring output is a concise TSV table with one row per genome.
 | `pass_q_0_01` | `true` when `qvalue <= 0.01`. |
 | `pass_q_0_05` | `true` when `qvalue <= 0.05`. |
 
-The concise output uses `pvalue` and `qvalue`. When `--return-full-table` is enabled for non-unit-aware scoring, the output retains the full internal table, including internal columns such as `p_presence`, `q_presence`, `weighted_evidence`, and `weighted_evidence_shared`. In unit-aware mode, the requested output remains concise; use `--export-diagnostics` or unit-aware `--return-full-table` for the full unit-level audit table.
+The concise output uses `pvalue` and `qvalue`. When `--return-full-table` is enabled for non-unit-specific scoring, the output retains the full internal table, including internal columns such as `p_presence`, `q_presence`, `weighted_evidence`, and `weighted_evidence_shared`. In unit-specific mode, the requested output remains concise; use `--export-diagnostics` or unit-specific `--return-full-table` for the full unit-level audit table.
 
-### Unit-aware output TSVs
+### Unit-specific output TSVs
 
-When `--unit-aware` is enabled, the requested `--output` path contains the main unit-level genome presence table. MetaUmbra also writes the primary unit-aware outputs:
+When `--unit-specific` is enabled, the requested `--output` path contains the main unit-level genome presence table. MetaUmbra also writes the primary unit-specific outputs:
 
 ```text
 <requested output TSV>
 <stem>_cohort_genome_summary.tsv
 <stem>_artifacts/
-  unit_aware/
+  unit_specific/
     <stem>_sample_unit_mapping.tsv
     unit_call_counts.tsv
     unit_specific_genome_list_q005.tsv
     unit_specific_genome_list_q001.tsv
-    unit_aware_manifest.json
+    unit_specific_manifest.json
 ```
 
 - `<requested output TSV>`: one row per `analysis_unit_id` x `genome_id`, including unit-specific `qvalue` and `pass_q_0_01` / `pass_q_0_05` flags.
 - `<stem>_cohort_genome_summary.tsv`: one row per genome, summarizing recurrence across units.
-- `<stem>_artifacts/unit_aware/<stem>_sample_unit_mapping.tsv`: final sample-to-analysis-unit mapping used for the run.
+- `<stem>_artifacts/unit_specific/<stem>_sample_unit_mapping.tsv`: final sample-to-analysis-unit mapping used for the run.
 - `unit_call_counts.tsv`: number of significant genomes per unit.
 - `unit_specific_genome_list_q005.tsv`: default balanced long-format unit-specific genome-list output for downstream workflows.
 - `unit_specific_genome_list_q001.tsv`: stricter high-specificity long-format alternative.
-- `unit_aware_manifest.json`: compact machine-readable downstream manifest mapping each unit to sample columns and genome IDs at q<=0.05 and q<=0.01.
+- `unit_specific_manifest.json`: compact machine-readable downstream manifest mapping each unit to sample columns and genome IDs at q<=0.05 and q<=0.01.
 
 Both unit-specific genome-list files use this schema:
 
@@ -542,9 +542,9 @@ presence_rank
 qvalue
 ```
 
-For downstream peptide, protein, taxonomic, or OTF annotation workflows, prefer the tool-agnostic `unit_specific_genome_list_q005.tsv` list unless a stricter high-specificity list is required. Join `<stem>_artifacts/unit_aware/<stem>_sample_unit_mapping.tsv` to `unit_specific_genome_list_q005.tsv` or `unit_specific_genome_list_q001.tsv` when sample columns need to inherit their analysis unit's inferred genome list.
+For downstream peptide, protein, taxonomic, or OTF annotation workflows, prefer the tool-agnostic `unit_specific_genome_list_q005.tsv` list unless a stricter high-specificity list is required. Join `<stem>_artifacts/unit_specific/<stem>_sample_unit_mapping.tsv` to `unit_specific_genome_list_q005.tsv` or `unit_specific_genome_list_q001.tsv` when sample columns need to inherit their analysis unit's inferred genome list.
 
-The TSV files are the canonical tabular outputs. `unit_aware_manifest.json` is intended for downstream annotation workflows, including MetaX, that need a lightweight unit-to-samples and unit-to-genomes interface. It stores `default_genome_threshold: q0.05` and includes q<=0.01 genome IDs as a stricter subset, but it does not duplicate q-values, ranks, lineage, p-values, scores, or peptide counts from the TSVs.
+The TSV files are the canonical tabular outputs. `unit_specific_manifest.json` is intended for downstream annotation workflows, including MetaX, that need a lightweight unit-to-samples and unit-to-genomes interface. It stores `default_genome_threshold: q0.05` and includes q<=0.01 genome IDs as a stricter subset, but it does not duplicate q-values, ranks, lineage, p-values, scores, or peptide counts from the TSVs.
 
 The unit-level table contains one row per `analysis_unit_id` and genome. Its default schema is:
 
@@ -608,14 +608,14 @@ Use `--export-diagnostics` to add heavier audit, debug, and figure-generation ou
 results/
   genome_presence_artifacts/
     full_internal_metrics.tsv
-    pooled_genome_presence.tsv  # unit-aware only
+    pooled_genome_presence.tsv  # unit-specific only
     knockoff_pools.tsv
     degeneracy_hist.tsv
     p_shared_hist.tsv
     q_calling_curve.tsv
     shared_stratum_counts.tsv
     topN_peptide_contrib.tsv  # only when export_peptide_contrib_topN > 0
-    unit_aware/
+    unit_specific/
       unit_empirical_background_calibration.tsv
       unit_genome_presence_full.tsv
       unit_threshold_summary.tsv
@@ -639,16 +639,16 @@ Common artifacts:
 | `run_status.json` | Completion status and final result summary for successful scoring runs. |
 | `run_summary.json` | Runtime settings, input summary, platform details, timing, and call counts. |
 | `full_internal_metrics.tsv` | Complete internal metrics table used to produce the concise output. |
-| `pooled_genome_presence.tsv` | Supplementary pooled peptide-set result for unit-aware runs. It is not the union of unit-level calls. |
+| `pooled_genome_presence.tsv` | Supplementary pooled peptide-set result for unit-specific runs. It is not the union of unit-level calls. |
 | `knockoff_pools.tsv` | Knockoff pool diagnostics for shared peptide evidence. |
 | `degeneracy_hist.tsv` | Distribution of peptide degeneracy across the analyzed genome set. |
 | `p_shared_hist.tsv` | Histogram of shared-evidence knockoff p-values. |
 | `q_calling_curve.tsv` | Number of called genomes over several q-value thresholds. |
 | `shared_stratum_counts.tsv` | Per-genome shared peptide stratum counts. |
 
-Diagnostic unit-aware tables are redundant with the primary outputs and are meant for audit, QC, or figure generation. `unit_q001_genomes.tsv` and `unit_q005_genomes.tsv` are filtered subsets of the main unit-level table. `genome_union_q001.tsv` and `genome_union_q005.tsv` can be recovered from `<stem>_cohort_genome_summary.tsv` using `n_units_q_le_0_01` or `n_units_q_le_0_05`. `genome_by_unit_*_matrix.tsv` files are QC/visualization pivots, not preferred downstream inputs.
+Diagnostic unit-specific tables are redundant with the primary outputs and are meant for audit, QC, or figure generation. `unit_q001_genomes.tsv` and `unit_q005_genomes.tsv` are filtered subsets of the main unit-level table. `genome_union_q001.tsv` and `genome_union_q005.tsv` can be recovered from `<stem>_cohort_genome_summary.tsv` using `n_units_q_le_0_01` or `n_units_q_le_0_05`. `genome_by_unit_*_matrix.tsv` files are QC/visualization pivots, not preferred downstream inputs.
 
-`unit_aware/unit_genome_presence_full.tsv` is the full unit-level audit table written with `--export-diagnostics` or unit-aware `--return-full-table`. It preserves internal columns that are intentionally omitted from the concise default requested output, including columns such as `unique_effective_count`, `theoretical_unique_peptides`, `unit_presence_rule`, and `unit_shared_mode`.
+`unit_specific/unit_genome_presence_full.tsv` is the full unit-level audit table written with `--export-diagnostics` or unit-specific `--return-full-table`. It preserves internal columns that are intentionally omitted from the concise default requested output, including columns such as `unique_effective_count`, `theoretical_unique_peptides`, `unit_presence_rule`, and `unit_shared_mode`.
 
 ### Matched-peptide cache
 
@@ -682,11 +682,11 @@ U_excess = max(0, U_g - U_background)
 p_unique = alpha ^ U_excess, when U_excess > 0; otherwise p_unique = 1
 ```
 
-By default, pooled background exclusion is adaptive. MetaUmbra starts by excluding the top 10% evidence-ranked genomes from the weak-background pool, computes preliminary genome-level q-values, estimates the fraction of candidate genomes with `q <= 0.20`, clamps that fraction to 10-30%, and rebuilds the final weak-background threshold. This matters for pooled or high-depth cohorts where many true present genomes can otherwise contaminate the weak-background pool and inflate `U_background`. In unit-aware mode, MetaUmbra fits this empirical background independently inside each analysis unit and uses more conservative per-unit exclusion defaults: 3% initial, 0% minimum, and 15% maximum.
+By default, pooled background exclusion is adaptive. MetaUmbra starts by excluding the top 10% evidence-ranked genomes from the weak-background pool, computes preliminary genome-level q-values, estimates the fraction of candidate genomes with `q <= 0.20`, clamps that fraction to 10-30%, and rebuilds the final weak-background threshold. This matters for pooled or high-depth cohorts where many true present genomes can otherwise contaminate the weak-background pool and inflate `U_background`. In unit-specific mode, MetaUmbra fits this empirical background independently inside each analysis unit and uses more conservative per-unit exclusion defaults: 3% initial, 0% minimum, and 15% maximum.
 
 This is analogous in spirit to the shared peptide knockoff, but for genome-unique evidence: the shared knockoff calibrates shared weighted evidence, while `empirical-background` calibrates unique peptide counts against weak-background genomes at the same sample depth and opportunity scale. The direct empirical ECDF tail is retained as `p_unique_empirical_tail` for diagnostics, but it is not used as `pvalue_unique` because its resolution is too coarse for genome-level BH correction across thousands of genomes. `empirical-background` does not build the theoretical opportunity cache by default. `run_summary.json` records `unique_empirical_background_opportunity_source = total_peptide_count`, along with the initial and final background exclusion fractions, candidate q threshold, iteration count, threshold quantile, and alpha.
 
-The threshold quantile is controlled by `--unique-empirical-background-threshold-quantile`. The same configured value is used for pooled `empirical-background` scoring and per-unit `empirical-background` scoring. In unit-aware empirical-background runs, the per-unit calibration table records the value in `unit_empirical_background_threshold_quantile`.
+The threshold quantile is controlled by `--unique-empirical-background-threshold-quantile`. The same configured value is used for pooled `empirical-background` scoring and per-unit `empirical-background` scoring. In unit-specific empirical-background runs, the per-unit calibration table records the value in `unit_empirical_background_threshold_quantile`.
 
 For `hypergeometric-opportunity` unique evidence, MetaUmbra compares observed genome-unique peptides against genome-specific theoretical unique peptide opportunity:
 

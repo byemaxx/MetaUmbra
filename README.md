@@ -81,26 +81,26 @@ MetaUmbra requires:
 
 Optional inputs include peptide scores, peptide-level error values, decoy flags, and genome lineage annotations.
 
-For multi-sample long tables such as DIA-NN reports, `metaumbra score --unit-aware` can call peptide presence per raw sample using `Precursor.Quantity`, aggregate samples into `analysis_unit_id` groups from an optional metadata table, and export clean per-unit, cohort recurrence, sample mapping, unit call-count, and downstream genome-list outputs by default.
+For multi-sample long tables such as DIA-NN reports, `metaumbra score --unit-specific` can call peptide presence per raw sample using `Precursor.Quantity`, aggregate samples into `analysis_unit_id` groups from an optional metadata table, and export clean per-unit, cohort recurrence, sample mapping, unit call-count, and downstream genome-list outputs by default.
 
 ## Output
 
 The default output is a concise TSV table containing genome-level evidence and significance values.
-When unit-aware scoring is enabled, the requested output path contains the main unit-level genome presence result and uses a concise downstream-ready schema.
+When unit-specific scoring is enabled, the requested output path contains the main unit-level genome presence result and uses a concise downstream-ready schema.
 
-Default unit-aware output files:
+Default unit-specific output files:
 
 - `<requested output>.tsv`: one row per `analysis_unit_id` x `genome_id`, including unit-specific `qvalue` and `pass_q` flags.
 - `<stem>_cohort_genome_summary.tsv`: one row per genome, summarizing recurrence across units.
-- `<stem>_artifacts/unit_aware/<stem>_sample_unit_mapping.tsv`: final sample-to-analysis-unit mapping used for the run.
-- `<stem>_artifacts/unit_aware/unit_call_counts.tsv`: minimal per-unit QC counts.
-- `<stem>_artifacts/unit_aware/unit_specific_genome_list_q005.tsv`: preferred downstream genome-list interface.
-- `<stem>_artifacts/unit_aware/unit_specific_genome_list_q001.tsv`: stricter downstream genome-list interface.
-- `<stem>_artifacts/unit_aware/unit_aware_manifest.json`: compact machine-readable downstream manifest.
+- `<stem>_artifacts/unit_specific/<stem>_sample_unit_mapping.tsv`: final sample-to-analysis-unit mapping used for the run.
+- `<stem>_artifacts/unit_specific/unit_call_counts.tsv`: minimal per-unit QC counts.
+- `<stem>_artifacts/unit_specific/unit_specific_genome_list_q005.tsv`: preferred downstream genome-list interface.
+- `<stem>_artifacts/unit_specific/unit_specific_genome_list_q001.tsv`: stricter downstream genome-list interface.
+- `<stem>_artifacts/unit_specific/unit_specific_manifest.json`: compact machine-readable downstream manifest.
 
-The unit-aware TSV files are the canonical tabular outputs. `unit_aware_manifest.json` is a lightweight downstream integration file for annotation workflows, including MetaX: it maps each `analysis_unit_id` to sample columns, q<=0.05 genome IDs, and the stricter q<=0.01 subset. It does not duplicate q-values, ranks, lineage, p-values, scores, or peptide counts; those remain in the TSV files. The manifest's `default_genome_threshold` is `q0.05`.
+The unit-specific TSV files are the canonical tabular outputs. `unit_specific_manifest.json` is a lightweight downstream integration file for annotation workflows, including MetaX: it maps each `analysis_unit_id` to sample columns, q<=0.05 genome IDs, and the stricter q<=0.01 subset. It does not duplicate q-values, ranks, lineage, p-values, scores, or peptide counts; those remain in the TSV files. The manifest's `default_genome_threshold` is `q0.05`.
 
-Each scoring run creates `<stem>_artifacts/` at startup and records `run_parameters.json`, `run.log`, `run_status.json`, and `run_summary.json` for reproducibility and debugging. The parameter snapshot includes CPU model, logical CPU count, total memory, and platform/architecture metadata. Use `--export-diagnostics` to write heavier audit and figure-generation outputs such as `full_internal_metrics.tsv`, knockoff diagnostics, pooled unit-aware results, redundant unit-level subsets, genome unions, and genome-by-unit matrices. Full unit-aware audit columns are written to `unit_aware/unit_genome_presence_full.tsv` with `--export-diagnostics` or unit-aware `--return-full-table`. In the CLI, use `--save-cache` to write `matched_peptides.pkl`; in the GUI, the matching "Save matched-peptide cache" option is enabled by default. When cache reuse is requested, the default `matched_peptides.pkl` cache is preserved during startup cleanup.
+Each scoring run creates `<stem>_artifacts/` at startup and records `run_parameters.json`, `run.log`, `run_status.json`, and `run_summary.json` for reproducibility and debugging. The parameter snapshot includes CPU model, logical CPU count, total memory, and platform/architecture metadata. Use `--export-diagnostics` to write heavier audit and figure-generation outputs such as `full_internal_metrics.tsv`, knockoff diagnostics, pooled unit-specific results, redundant unit-level subsets, genome unions, and genome-by-unit matrices. Full unit-specific audit columns are written to `unit_specific/unit_genome_presence_full.tsv` with `--export-diagnostics` or unit-specific `--return-full-table`. In the CLI, use `--save-cache` to write `matched_peptides.pkl`; in the GUI, the matching "Save matched-peptide cache" option is enabled by default. When cache reuse is requested, the default `matched_peptides.pkl` cache is preserved during startup cleanup.
 
 In the current implementation, peptide presence within an analysis unit is defined as the union of sample-level peptide presence across samples assigned to that unit. Unit-level p-values combine per-unit shared knockoff evidence (`pvalue_shared`) with the selected per-unit unique-evidence model (`pvalue_unique`) using Fisher's method, then apply BH correction separately within each analysis unit.
 

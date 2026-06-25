@@ -94,13 +94,13 @@ def _strip_raw_suffix_from_sample_ids(values: pd.Series) -> pd.Series:
     return values.astype("string").str.strip().str.replace(r"\.raw$", "", case=False, regex=True)
 
 
-def _build_unit_aware_manifest(
+def _build_unit_specific_manifest(
     mapping_df: pd.DataFrame,
     unit_specific_q005: pd.DataFrame,
     unit_specific_q001: pd.DataFrame,
     stem: str,
 ) -> dict:
-    """Build a compact downstream manifest from already prepared unit-aware tables."""
+    """Build a compact downstream manifest from already prepared unit-specific tables."""
     required_mapping_cols = ["sample_id", "analysis_unit_id"]
     required_genome_cols = ["analysis_unit_id", "genome_id"]
 
@@ -109,7 +109,7 @@ def _build_unit_aware_manifest(
         if missing:
             if table_df.empty:
                 return pd.DataFrame(columns=required_cols)
-            raise RuntimeError(f"Unit-aware manifest build failed: {table_name} is missing columns: {missing}")
+            raise RuntimeError(f"Unit-specific manifest build failed: {table_name} is missing columns: {missing}")
         return table_df
 
     mapping_df = _require_or_empty("sample_unit_mapping", mapping_df, required_mapping_cols)
@@ -133,7 +133,7 @@ def _build_unit_aware_manifest(
     for unit_id, group in mapping.groupby("analysis_unit_id", sort=False):
         sample_ids = group["sample_id"].tolist()
         if len(sample_ids) != len(set(sample_ids)):
-            raise RuntimeError(f"Unit-aware manifest build failed: duplicate sample IDs in unit {unit_id}.")
+            raise RuntimeError(f"Unit-specific manifest build failed: duplicate sample IDs in unit {unit_id}.")
         samples_by_unit[str(unit_id)] = sample_ids
 
     def _genomes_by_unit(table: pd.DataFrame, label: str) -> Dict[str, List[str]]:
@@ -141,7 +141,7 @@ def _build_unit_aware_manifest(
         for unit_id, group in table.groupby("analysis_unit_id", sort=False):
             genome_ids = group["genome_id"].tolist()
             if len(genome_ids) != len(set(genome_ids)):
-                raise RuntimeError(f"Unit-aware manifest build failed: duplicate genome IDs in {label} for unit {unit_id}.")
+                raise RuntimeError(f"Unit-specific manifest build failed: duplicate genome IDs in {label} for unit {unit_id}.")
             grouped[str(unit_id)] = genome_ids
         return grouped
 
@@ -154,7 +154,7 @@ def _build_unit_aware_manifest(
         genome_ids_q005 = genomes_q005.get(unit_id, [])
         genome_ids_q001 = genomes_q001.get(unit_id, [])
         if not set(genome_ids_q001).issubset(set(genome_ids_q005)):
-            raise RuntimeError(f"Unit-aware manifest build failed: q0.01 genomes are not a subset of q0.05 for unit {unit_id}.")
+            raise RuntimeError(f"Unit-specific manifest build failed: q0.01 genomes are not a subset of q0.05 for unit {unit_id}.")
         manifest_units[unit_id] = {
             "sample_columns": sample_columns,
             "n_samples": len(sample_columns),
@@ -163,15 +163,15 @@ def _build_unit_aware_manifest(
         }
 
     if set(mapping["analysis_unit_id"].tolist()) - set(manifest_units):
-        raise RuntimeError("Unit-aware manifest build failed: a mapped unit is missing from the manifest.")
+        raise RuntimeError("Unit-specific manifest build failed: a mapped unit is missing from the manifest.")
     if set(q005["analysis_unit_id"].tolist()) - set(manifest_units):
-        raise RuntimeError("Unit-aware manifest build failed: a q0.05 unit is missing from the manifest.")
+        raise RuntimeError("Unit-specific manifest build failed: a q0.05 unit is missing from the manifest.")
     for unit_id, unit_payload in manifest_units.items():
         if unit_payload["n_samples"] != len(unit_payload["sample_columns"]):
-            raise RuntimeError(f"Unit-aware manifest build failed: n_samples mismatch for unit {unit_id}.")
+            raise RuntimeError(f"Unit-specific manifest build failed: n_samples mismatch for unit {unit_id}.")
 
     return {
-        "schema_version": "metaumbra.unit_aware_manifest.v1",
+        "schema_version": "metaumbra.unit_specific_manifest.v1",
         "generated_by": {
             "tool": "MetaUmbra",
             "version": str(METAUMBRA_VERSION),
@@ -198,7 +198,7 @@ def _drop_duplicate_pairs_with_pyarrow(
         import pyarrow as pa
     except ImportError as exc:
         raise RuntimeError(
-            "pyarrow is required for threaded parquet unit-aware pair construction."
+            "pyarrow is required for threaded parquet unit-specific pair construction."
         ) from exc
 
     if logger is not None:
@@ -241,7 +241,7 @@ def _resolve_worker_count(num_workers: Optional[int], logger: Optional[logging.L
     return resolved
 
 
-from ._scoring.unit_aware import (
+from ._scoring.unit_specific import (
     UNIT_EMPIRICAL_BACKGROUND_CANDIDATE_Q,
     UNIT_EMPIRICAL_BACKGROUND_INITIAL_EXCLUDE_FRACTION,
     UNIT_EMPIRICAL_BACKGROUND_INTERNAL_COLUMNS,
@@ -251,8 +251,8 @@ from ._scoring.unit_aware import (
     UNIT_EMPIRICAL_BACKGROUND_OUTPUT_COLUMNS,
     UNIT_EMPIRICAL_BACKGROUND_SMALL_UNIT_MIN_ACTIVE_GENOMES,
     UNIT_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE,
-    _compute_unit_aware_single_unit_worker,
-    _init_unit_aware_worker,
+    _compute_unit_specific_single_unit_worker,
+    _init_unit_specific_worker,
     _unit_bh_qvalues,
     _unit_build_knockoff_pools_for_peptides,
     _unit_compute_weight,
@@ -402,7 +402,7 @@ class GenomePresenceScorer:
         self.knockoff_pool_stats: Optional[pd.DataFrame] = None
         self.peptide_error_upper_by_peptide: Dict[str, float] = {}  # peptide -> per-peptide upper bound (from error column)
         self.genome_lineage_df: Optional[pd.DataFrame] = None
-        self.unit_aware_enabled: bool = False
+        self.unit_specific_enabled: bool = False
         self.unit_presence_rule: str = "union"
         self.unit_shared_mode: str = "per-unit"
         self.unit_sample_ids: List[str] = []
@@ -412,9 +412,9 @@ class GenomePresenceScorer:
         self.unit_presence_matrix = None  # sparse peptide x analysis_unit matrix
         self.unit_sample_counts: Dict[str, int] = {}
         self.sample_unit_mapping_df: Optional[pd.DataFrame] = None
-        self.unit_aware_output_paths: Dict[str, str] = {}
-        self.unit_aware_cohort_summary_df: Optional[pd.DataFrame] = None
-        self.unit_aware_unit_threshold_summary_df: Optional[pd.DataFrame] = None
+        self.unit_specific_output_paths: Dict[str, str] = {}
+        self.unit_specific_cohort_summary_df: Optional[pd.DataFrame] = None
+        self.unit_specific_unit_threshold_summary_df: Optional[pd.DataFrame] = None
         self._last_unit_genome_presence_full_df: Optional[pd.DataFrame] = None
         self.unit_empirical_background_calibration_df: Optional[pd.DataFrame] = None
         self._export_unit_derived_tables: bool = False
@@ -1252,7 +1252,7 @@ class GenomePresenceScorer:
         self.logger.info(f"Observed peptides: {len(self.peptide_score)} (unique)")
         return True
 
-    def read_unit_aware_peptide_file(
+    def read_unit_specific_peptide_file(
         self,
         peptide_table_path: str,
         sample_id_col: str,
@@ -1285,16 +1285,16 @@ class GenomePresenceScorer:
         intensity_col = str(intensity_col).strip()
         error_col = str(peptide_error_col).strip() if peptide_error_col else None
         if not sample_col:
-            raise ValueError("sample_id_col must not be empty when unit-aware scoring is enabled.")
+            raise ValueError("sample_id_col must not be empty when unit-specific scoring is enabled.")
         if not seq_col:
-            raise ValueError("peptide_seq_col must not be empty when unit-aware scoring is enabled.")
+            raise ValueError("peptide_seq_col must not be empty when unit-specific scoring is enabled.")
         if not intensity_col:
-            raise ValueError("intensity_col must not be empty when unit-aware scoring is enabled.")
+            raise ValueError("intensity_col must not be empty when unit-specific scoring is enabled.")
 
         suffix = Path(peptide_file_path).suffix.lower()
         is_parquet_input = suffix in {".parquet", ".pq"}
         self.peptide_table_dir = os.path.dirname(peptide_file_path)
-        self.logger.info(f"Reading unit-aware peptide table: {peptide_file_path}")
+        self.logger.info(f"Reading unit-specific peptide table: {peptide_file_path}")
 
         def _norm_col_name(value: str) -> str:
             return "".join(ch.lower() for ch in str(value) if ch.isalnum())
@@ -1322,13 +1322,13 @@ class GenomePresenceScorer:
                 if match:
                     if preferred and match != preferred:
                         self.logger.info(
-                            f"Auto-detected unit-aware {required_label} column: '{match}' "
+                            f"Auto-detected unit-specific {required_label} column: '{match}' "
                             f"(configured/default was '{preferred}')."
                         )
                     return match
             if required:
                 raise ValueError(
-                    f"Unable to locate required unit-aware {required_label} column. "
+                    f"Unable to locate required unit-specific {required_label} column. "
                     f"Configured/default value: {preferred!r}. Available columns: {available}"
                 )
             return None
@@ -1349,7 +1349,7 @@ class GenomePresenceScorer:
             for candidate in ("True", "true", "1", "decoy", "Decoy", "DECOY", "T", "t"):
                 if candidate in value_set:
                     self.logger.info(
-                        f"Auto-detected unit-aware decoy marker for column '{decoy_col}': "
+                        f"Auto-detected unit-specific decoy marker for column '{decoy_col}': "
                         f"using '{candidate}' instead of '+'."
                     )
                     return candidate
@@ -1458,14 +1458,14 @@ class GenomePresenceScorer:
 
         if score_col and score_col not in df.columns:
             self.logger.warning(
-                f"Score column '{score_col}' not found; setting all unit-aware peptide scores=1."
+                f"Score column '{score_col}' not found; setting all unit-specific peptide scores=1."
             )
             score_col = None
         if decoy_col and decoy_col not in df.columns:
             decoy_col = None
         if error_col and error_col not in df.columns:
             self.logger.warning(
-                f"Error column '{error_col}' not found; skipping peptide-level error filtering for unit-aware input."
+                f"Error column '{error_col}' not found; skipping peptide-level error filtering for unit-specific input."
             )
             error_col = None
         if decoy_col:
@@ -1474,20 +1474,20 @@ class GenomePresenceScorer:
                 decoy_flag_value,
             )
 
-        self.run_stats["unit_aware"] = True
-        self.run_stats["unit_aware_peptide_rows_loaded"] = int(len(df))
-        self.run_stats["unit_aware_sample_id_col"] = sample_col
-        self.run_stats["unit_aware_peptide_seq_col"] = seq_col
-        self.run_stats["unit_aware_peptide_score_col"] = score_col if score_col else None
-        self.run_stats["unit_aware_peptide_decoy_flag_col"] = decoy_col if decoy_col else None
-        self.run_stats["unit_aware_decoy_flag_value"] = decoy_flag_value
-        self.run_stats["unit_aware_intensity_col"] = intensity_col
-        self.run_stats["unit_aware_peptide_error_col"] = error_col
-        self.run_stats["unit_aware_peptide_error_cutoff"] = float(peptide_error_cutoff)
-        self.run_stats["unit_aware_intensity_min_value"] = float(intensity_min_value)
-        self.run_stats["unit_aware_intensity_min_quantile"] = float(intensity_min_quantile)
+        self.run_stats["unit_specific"] = True
+        self.run_stats["unit_specific_peptide_rows_loaded"] = int(len(df))
+        self.run_stats["unit_specific_sample_id_col"] = sample_col
+        self.run_stats["unit_specific_peptide_seq_col"] = seq_col
+        self.run_stats["unit_specific_peptide_score_col"] = score_col if score_col else None
+        self.run_stats["unit_specific_peptide_decoy_flag_col"] = decoy_col if decoy_col else None
+        self.run_stats["unit_specific_decoy_flag_value"] = decoy_flag_value
+        self.run_stats["unit_specific_intensity_col"] = intensity_col
+        self.run_stats["unit_specific_peptide_error_col"] = error_col
+        self.run_stats["unit_specific_peptide_error_cutoff"] = float(peptide_error_cutoff)
+        self.run_stats["unit_specific_intensity_min_value"] = float(intensity_min_value)
+        self.run_stats["unit_specific_intensity_min_quantile"] = float(intensity_min_quantile)
 
-        self.logger.info(f"Preparing unit-aware columns for {len(df)} loaded row(s) ...")
+        self.logger.info(f"Preparing unit-specific columns for {len(df)} loaded row(s) ...")
         df = df.copy()
         df[sample_col] = df[sample_col].astype("string").str.strip()
         if is_parquet_input:
@@ -1510,10 +1510,10 @@ class GenomePresenceScorer:
         if decoy_col:
             before = int(len(df))
             df = df[(df[decoy_col] != str(decoy_flag_value)) | (df[decoy_col].isna())].copy()
-            self.logger.info(f"Unit-aware decoy filter on '{decoy_col}': {before} -> {len(df)} rows.")
-            self.run_stats["unit_aware_peptide_rows_after_decoy_filter"] = int(len(df))
+            self.logger.info(f"Unit-specific decoy filter on '{decoy_col}': {before} -> {len(df)} rows.")
+            self.run_stats["unit_specific_peptide_rows_after_decoy_filter"] = int(len(df))
 
-        self.logger.info("Counting total unit-aware rows per sample ...")
+        self.logger.info("Counting total unit-specific rows per sample ...")
         total_by_sample = (
             df[df[sample_col].notna() & (df[sample_col] != "")]
             .groupby(sample_col, dropna=False)
@@ -1531,14 +1531,14 @@ class GenomePresenceScorer:
             & (df[intensity_col] > float(intensity_min_value))
         ].copy()
         self.logger.info(
-            f"Unit-aware base validity/intensity filter on '{intensity_col}' (> {intensity_min_value}): "
+            f"Unit-specific base validity/intensity filter on '{intensity_col}' (> {intensity_min_value}): "
             f"{before} -> {len(valid)} rows."
         )
         if error_col:
             before = int(len(valid))
             valid = valid[valid[error_col].notna() & (valid[error_col] <= float(peptide_error_cutoff))].copy()
             self.logger.info(
-                f"Unit-aware error filter on '{error_col}' (<= {peptide_error_cutoff}): {before} -> {len(valid)} rows."
+                f"Unit-specific error filter on '{error_col}' (<= {peptide_error_cutoff}): {before} -> {len(valid)} rows."
             )
 
         quantile = float(intensity_min_quantile)
@@ -1549,13 +1549,13 @@ class GenomePresenceScorer:
             before = int(len(valid))
             valid = valid[valid[intensity_col] >= thresholds].copy()
             self.logger.info(
-                f"Unit-aware within-sample intensity quantile filter (>= q{quantile:g}): {before} -> {len(valid)} rows."
+                f"Unit-specific within-sample intensity quantile filter (>= q{quantile:g}): {before} -> {len(valid)} rows."
             )
 
         if valid.empty:
-            raise ValueError("No valid peptide observations remain after unit-aware intensity/error filtering.")
+            raise ValueError("No valid peptide observations remain after unit-specific intensity/error filtering.")
 
-        self.logger.info("Resolving unit-aware sample IDs and optional metadata mapping ...")
+        self.logger.info("Resolving unit-specific sample IDs and optional metadata mapping ...")
         sample_ids = [str(x) for x in pd.unique(df.loc[df[sample_col].notna() & (df[sample_col] != ""), sample_col])]
         sample_to_unit = {sample_id: sample_id for sample_id in sample_ids}
         excluded_samples: Set[str] = set()
@@ -1615,7 +1615,7 @@ class GenomePresenceScorer:
                 }
             )
 
-        self.logger.info("Building unit-aware unique peptide-sample pairs ...")
+        self.logger.info("Building unit-specific unique peptide-sample pairs ...")
         t_pairs0 = time.time()
         pair_source = valid[[seq_col, sample_col]]
         if is_parquet_input:
@@ -1637,15 +1637,15 @@ class GenomePresenceScorer:
         peptide_list = [str(x) for x in peptide_uniques.tolist()]
         pair_cols = pd.Categorical(valid_pairs_for_matrix[sample_col], categories=valid_sample_ids).codes
         if (pair_cols < 0).any():
-            raise RuntimeError("Failed to encode unit-aware sample IDs for sparse matrix construction.")
+            raise RuntimeError("Failed to encode unit-specific sample IDs for sparse matrix construction.")
         analysis_unit_ids = sorted({str(sample_to_unit.get(sample_id, sample_id)) for sample_id in valid_sample_ids})
         elapsed_pairs = float(time.time() - t_pairs0)
         self.logger.info(
-            f"Unit-aware unique peptide-sample pairs: {len(valid_pairs_for_matrix)} pair(s), "
+            f"Unit-specific unique peptide-sample pairs: {len(valid_pairs_for_matrix)} pair(s), "
             f"{len(peptide_list)} peptide(s), {len(valid_sample_ids)} included sample(s), "
             f"{len(analysis_unit_ids)} analysis unit(s); built in {_format_elapsed_seconds(elapsed_pairs)}."
         )
-        self.timing_stats["unit_aware_unique_pairs"] = elapsed_pairs
+        self.timing_stats["unit_specific_unique_pairs"] = elapsed_pairs
 
         peptide_index = {peptide: i for i, peptide in enumerate(peptide_list)}
         sample_index = {sample_id: i for i, sample_id in enumerate(valid_sample_ids)}
@@ -1684,7 +1684,7 @@ class GenomePresenceScorer:
         x_unit_counts = x_sample @ b_matrix
         x_unit = (x_unit_counts > 0).astype(COUNT_DTYPE).tocsr()
 
-        self.logger.info("Preparing unit-aware sample-unit mapping output table ...")
+        self.logger.info("Preparing unit-specific sample-unit mapping output table ...")
         valid_counts = valid_pairs.groupby(sample_col).size().astype(int).to_dict()
         mapping_rows = []
         for sample_id in sample_ids:
@@ -1723,7 +1723,7 @@ class GenomePresenceScorer:
                     how="left",
                 )
 
-        self.unit_aware_enabled = True
+        self.unit_specific_enabled = True
         self.unit_presence_rule = "union"
         self.unit_shared_mode = "per-unit"
         self.unit_sample_ids = valid_sample_ids
@@ -1737,7 +1737,7 @@ class GenomePresenceScorer:
         }
         self.sample_unit_mapping_df = mapping_df
         if score_col and score_col in valid.columns:
-            self.logger.info("Computing unit-aware peptide scores from the configured score column ...")
+            self.logger.info("Computing unit-specific peptide scores from the configured score column ...")
             score_source = valid[
                 valid[sample_col].isin(valid_sample_ids)
                 & valid[seq_col].astype(str).isin(set(peptide_list))
@@ -1780,7 +1780,7 @@ class GenomePresenceScorer:
         self.run_stats["single_peptide_error_rate_upper_bound"] = float(self.single_peptide_error_rate_upper_bound)
         self.peptide_error_upper_by_peptide = {}
         if error_col and error_col in valid.columns:
-            self.logger.info("Computing unit-aware per-peptide error upper bounds ...")
+            self.logger.info("Computing unit-specific per-peptide error upper bounds ...")
             pep_err = valid.groupby(seq_col)[error_col].max().reset_index()
             pep_err.columns = ["Peptide", "Error"]
             pep_err["Error"] = pd.to_numeric(pep_err["Error"], errors="coerce").clip(lower=1e-12, upper=1.0)
@@ -1792,14 +1792,14 @@ class GenomePresenceScorer:
         self.run_stats["observed_unique_peptides"] = int(len(self.peptide_score))
         self.run_stats["per_peptide_error_mapping_available"] = bool(self.peptide_error_upper_by_peptide)
         self.run_stats["per_peptide_error_mapping_size"] = int(len(self.peptide_error_upper_by_peptide))
-        self.run_stats["unit_aware_valid_rows"] = int(len(valid))
-        self.run_stats["unit_aware_samples_total"] = int(len(sample_ids))
-        self.run_stats["unit_aware_samples_included"] = int(len(valid_sample_ids))
-        self.run_stats["unit_aware_analysis_units"] = int(len(analysis_unit_ids))
+        self.run_stats["unit_specific_valid_rows"] = int(len(valid))
+        self.run_stats["unit_specific_samples_total"] = int(len(sample_ids))
+        self.run_stats["unit_specific_samples_included"] = int(len(valid_sample_ids))
+        self.run_stats["unit_specific_analysis_units"] = int(len(analysis_unit_ids))
         self.run_stats["unit_presence_rule"] = self.unit_presence_rule
         self.run_stats["unit_shared_mode"] = self.unit_shared_mode
         self.logger.info(
-            f"Unit-aware observed peptides: {len(self.peptide_score)} unique across "
+            f"Unit-specific observed peptides: {len(self.peptide_score)} unique across "
             f"{len(valid_sample_ids)} sample(s) and {len(analysis_unit_ids)} analysis unit(s)."
         )
         return True
@@ -2619,18 +2619,18 @@ class GenomePresenceScorer:
                 meta["genomes_q_le_0p05"] = int(df_scored["pass_q_0_05"].fillna(False).sum())
                 meta["pooled_genomes_q_le_0p05"] = int(meta["genomes_q_le_0p05"])
             meta["genomes_q_fields_scope"] = "pooled peptide-set scoring"
-            if isinstance(self.unit_aware_cohort_summary_df, pd.DataFrame) and not self.unit_aware_cohort_summary_df.empty:
-                cohort = self.unit_aware_cohort_summary_df
+            if isinstance(self.unit_specific_cohort_summary_df, pd.DataFrame) and not self.unit_specific_cohort_summary_df.empty:
+                cohort = self.unit_specific_cohort_summary_df
                 q001_units = pd.to_numeric(cohort.get("n_units_q_le_0_01", pd.Series(dtype=float)), errors="coerce").fillna(0).astype(int)
                 q005_units = pd.to_numeric(cohort.get("n_units_q_le_0_05", pd.Series(dtype=float)), errors="coerce").fillna(0).astype(int)
-                meta["unit_aware_genomes_union_q_le_0p01"] = int((q001_units >= 1).sum())
-                meta["unit_aware_genomes_union_q_le_0p05"] = int((q005_units >= 1).sum())
+                meta["unit_specific_genomes_union_q_le_0p01"] = int((q001_units >= 1).sum())
+                meta["unit_specific_genomes_union_q_le_0p05"] = int((q005_units >= 1).sum())
             if isinstance(self._last_unit_genome_presence_df, pd.DataFrame) and not self._last_unit_genome_presence_df.empty:
                 unit_df = self._last_unit_genome_presence_df
-                meta["unit_aware_total_unit_genome_calls_q_le_0p01"] = int(
+                meta["unit_specific_total_unit_genome_calls_q_le_0p01"] = int(
                     unit_df.get("pass_q_0_01", pd.Series(dtype=bool)).fillna(False).astype(bool).sum()
                 )
-                meta["unit_aware_total_unit_genome_calls_q_le_0p05"] = int(
+                meta["unit_specific_total_unit_genome_calls_q_le_0p05"] = int(
                     unit_df.get("pass_q_0_05", pd.Series(dtype=bool)).fillna(False).astype(bool).sum()
                 )
         except Exception:
@@ -2782,7 +2782,7 @@ class GenomePresenceScorer:
                     index=False
                 )
 
-    def _compute_unit_aware_presence(
+    def _compute_unit_specific_presence(
         self,
         df_scored: pd.DataFrame,
         peptide_deg: Dict[str, int],
@@ -2792,8 +2792,8 @@ class GenomePresenceScorer:
         """Compute per-analysis-unit genome presence using already scanned genome matches."""
         from scipy.sparse import csr_matrix
 
-        if not self.unit_aware_enabled or self.unit_presence_matrix is None:
-            raise RuntimeError("Unit-aware peptide presence is not available. Call read_unit_aware_peptide_file first.")
+        if not self.unit_specific_enabled or self.unit_presence_matrix is None:
+            raise RuntimeError("Unit-specific peptide presence is not available. Call read_unit_specific_peptide_file first.")
         self.unit_presence_rule = "union"
         self.unit_shared_mode = "per-unit"
 
@@ -2809,7 +2809,7 @@ class GenomePresenceScorer:
             return empty_unit, empty_summary
 
         self.logger.info(
-            f"Preparing unit-aware sparse genome matrices for {n_genomes} genome(s), "
+            f"Preparing unit-specific sparse genome matrices for {n_genomes} genome(s), "
             f"{n_peptides} peptide(s), and {n_units} analysis unit(s) ..."
         )
         g_rows: List[int] = []
@@ -2827,9 +2827,9 @@ class GenomePresenceScorer:
             shape=(n_genomes, n_peptides),
             dtype=COUNT_DTYPE,
         )
-        self.logger.info(f"Genome x unit-aware peptide matrix built with {len(g_rows)} non-zero entry/entries.")
+        self.logger.info(f"Genome x unit-specific peptide matrix built with {len(g_rows)} non-zero entry/entries.")
 
-        self.logger.info("Preparing unit-aware genome-unique peptide matrix ...")
+        self.logger.info("Preparing unit-specific genome-unique peptide matrix ...")
         gu_rows: List[int] = []
         gu_cols: List[int] = []
         for peptide, owner in peptide_unique_owner.items():
@@ -2853,7 +2853,7 @@ class GenomePresenceScorer:
         if matched_matrix.min() < 0 or unique_matrix.min() < 0:
             raise RuntimeError("Negative peptide counts detected; check sparse matrix dtype.")
         self.logger.info(
-            f"Unit-aware count matrices ready: matched nnz={matched_matrix.nnz}, unique nnz={unique_matrix.nnz}."
+            f"Unit-specific count matrices ready: matched nnz={matched_matrix.nnz}, unique nnz={unique_matrix.nnz}."
         )
 
         peptide_by_index = list(self.unit_peptides)
@@ -2865,7 +2865,7 @@ class GenomePresenceScorer:
         a_total = int(self.total_theoretical_unique_peptides_all_genomes)
         if mode == "hypergeometric-opportunity" and a_total <= 0:
             raise ValueError(
-                "Unit-aware hypergeometric-opportunity p-values require theoretical unique peptide opportunity."
+                "Unit-specific hypergeometric-opportunity p-values require theoretical unique peptide opportunity."
             )
 
         K1 = int(max(50, self.knockoff_mc_iterations))
@@ -2874,24 +2874,24 @@ class GenomePresenceScorer:
 
         unit_log_interval = max(1, n_units // 10)
         self.logger.info(
-            f"Computing unit-aware per-unit shared knockoff and {mode} unique p/q values "
+            f"Computing unit-specific per-unit shared knockoff and {mode} unique p/q values "
             f"for {n_units} unit(s) x {n_genomes} genome(s) ..."
         )
         resolved_workers = _resolve_worker_count(self.num_workers, logger=self.logger)
         parallel_unit_workers = min(int(resolved_workers), int(n_units))
         use_parallel = bool(self.num_workers > 1 and n_units > 1 and parallel_unit_workers > 1)
         effective_unit_workers = parallel_unit_workers if use_parallel else 1
-        self.run_stats["unit_aware_parallelized"] = bool(use_parallel)
-        self.run_stats["unit_aware_num_workers"] = int(effective_unit_workers)
-        self.run_stats["unit_aware_parallel_unit_count"] = int(n_units if use_parallel else 0)
+        self.run_stats["unit_specific_parallelized"] = bool(use_parallel)
+        self.run_stats["unit_specific_num_workers"] = int(effective_unit_workers)
+        self.run_stats["unit_specific_parallel_unit_count"] = int(n_units if use_parallel else 0)
         if use_parallel:
             self.logger.info(
-                f"Unit-aware scoring running in parallel with {effective_unit_workers} worker(s) "
+                f"Unit-specific scoring running in parallel with {effective_unit_workers} worker(s) "
                 f"across {n_units} analysis unit(s)."
             )
         else:
             self.logger.info(
-                f"Unit-aware scoring running serially with 1 worker across {n_units} analysis unit(s)."
+                f"Unit-specific scoring running serially with 1 worker across {n_units} analysis unit(s)."
             )
 
         worker_context = {
@@ -2945,11 +2945,11 @@ class GenomePresenceScorer:
         if use_parallel:
             with concurrent.futures.ProcessPoolExecutor(
                 max_workers=effective_unit_workers,
-                initializer=_init_unit_aware_worker,
+                initializer=_init_unit_specific_worker,
                 initargs=(worker_context,),
             ) as executor:
                 future_to_unit_idx = {
-                    executor.submit(_compute_unit_aware_single_unit_worker, args): int(args["unit_idx"])
+                    executor.submit(_compute_unit_specific_single_unit_worker, args): int(args["unit_idx"])
                     for args in worker_args
                 }
                 completed = 0
@@ -2958,16 +2958,16 @@ class GenomePresenceScorer:
                     completed += 1
                     if completed == 1 or completed % unit_log_interval == 0 or completed == n_units:
                         self.logger.info(
-                            f"Unit-aware p/q progress: {completed}/{n_units} analysis unit(s) processed."
+                            f"Unit-specific p/q progress: {completed}/{n_units} analysis unit(s) processed."
                         )
         else:
-            _init_unit_aware_worker(dict(worker_context))
+            _init_unit_specific_worker(dict(worker_context))
             for args in worker_args:
-                unit_results.append(_compute_unit_aware_single_unit_worker(args))
+                unit_results.append(_compute_unit_specific_single_unit_worker(args))
                 completed = int(args["unit_idx"]) + 1
                 if completed == 1 or completed % unit_log_interval == 0 or completed == n_units:
                     self.logger.info(
-                        f"Unit-aware p/q progress: {completed}/{n_units} analysis unit(s) processed."
+                        f"Unit-specific p/q progress: {completed}/{n_units} analysis unit(s) processed."
                     )
 
         rows = []
@@ -2998,7 +2998,7 @@ class GenomePresenceScorer:
         if "Lineage" in unit_level_df.columns and unit_level_df["Lineage"].isna().all():
             unit_level_df = unit_level_df.drop(columns=["Lineage"])
 
-        self.logger.info("Building unit-aware cohort summary table ...")
+        self.logger.info("Building unit-specific cohort summary table ...")
         summary_rows = []
         grouped = unit_level_df.groupby("genome_id", sort=False)
         for genome_id, group in grouped:
@@ -3045,25 +3045,25 @@ class GenomePresenceScorer:
                 kind="mergesort",
             ).reset_index(drop=True)
 
-        self.run_stats["unit_aware_output_rows"] = int(len(unit_level_df))
-        self.run_stats["unit_aware_cohort_summary_rows"] = int(len(cohort_summary_df))
-        self.run_stats["unit_aware_unique_pvalue_mode"] = mode
-        self.run_stats["unit_aware_presence_rule"] = "union"
-        self.run_stats["unit_aware_shared_mode"] = "per-unit"
-        self.run_stats["unit_aware_genomes_union_q_le_0p01"] = int(
+        self.run_stats["unit_specific_output_rows"] = int(len(unit_level_df))
+        self.run_stats["unit_specific_cohort_summary_rows"] = int(len(cohort_summary_df))
+        self.run_stats["unit_specific_unique_pvalue_mode"] = mode
+        self.run_stats["unit_specific_presence_rule"] = "union"
+        self.run_stats["unit_specific_shared_mode"] = "per-unit"
+        self.run_stats["unit_specific_genomes_union_q_le_0p01"] = int(
             (pd.to_numeric(cohort_summary_df.get("n_units_q_le_0_01", pd.Series(dtype=float)), errors="coerce")
              .fillna(0)
              .astype(int) >= 1).sum()
         )
-        self.run_stats["unit_aware_genomes_union_q_le_0p05"] = int(
+        self.run_stats["unit_specific_genomes_union_q_le_0p05"] = int(
             (pd.to_numeric(cohort_summary_df.get("n_units_q_le_0_05", pd.Series(dtype=float)), errors="coerce")
              .fillna(0)
              .astype(int) >= 1).sum()
         )
-        self.run_stats["unit_aware_total_unit_genome_calls_q_le_0p01"] = int(
+        self.run_stats["unit_specific_total_unit_genome_calls_q_le_0p01"] = int(
             unit_level_df.get("pass_q_0_01", pd.Series(dtype=bool)).fillna(False).astype(bool).sum()
         )
-        self.run_stats["unit_aware_total_unit_genome_calls_q_le_0p05"] = int(
+        self.run_stats["unit_specific_total_unit_genome_calls_q_le_0p05"] = int(
             unit_level_df.get("pass_q_0_05", pd.Series(dtype=bool)).fillna(False).astype(bool).sum()
         )
         if mode == "empirical-background":
@@ -3083,12 +3083,12 @@ class GenomePresenceScorer:
             )
         return unit_level_df, cohort_summary_df
 
-    def _prepare_unit_aware_output_tables(
+    def _prepare_unit_specific_output_tables(
         self,
         unit_level_df: pd.DataFrame,
         cohort_summary_df: pd.DataFrame,
     ) -> Dict[str, pd.DataFrame]:
-        """Validate and prepare primary and derived unit-aware output tables."""
+        """Validate and prepare primary and derived unit-specific output tables."""
         def _ordered_columns(df: pd.DataFrame, preferred: List[str]) -> pd.DataFrame:
             ordered = [col for col in preferred if col in df.columns]
             ordered.extend([col for col in df.columns if col not in ordered])
@@ -3112,13 +3112,13 @@ class GenomePresenceScorer:
             valid = normalized.isna() | normalized.isin(truthy.union(falsy))
             if not bool(valid.all()):
                 bad_values = sorted({str(v) for v in series.loc[~valid].head(5).tolist()})
-                raise RuntimeError(f"Unit-aware sanity check failed: {column_name} is not boolean-like: {bad_values}")
+                raise RuntimeError(f"Unit-specific sanity check failed: {column_name} is not boolean-like: {bad_values}")
             return normalized.isin(truthy).fillna(False).astype(bool)
 
         def _require_columns(df: pd.DataFrame, required: List[str], table_name: str) -> None:
             missing = [col for col in required if col not in df.columns]
             if missing:
-                raise RuntimeError(f"Unit-aware sanity check failed: {table_name} is missing required columns: {missing}")
+                raise RuntimeError(f"Unit-specific sanity check failed: {table_name} is missing required columns: {missing}")
 
         def _sort_existing(df: pd.DataFrame, columns: List[str], ascending: List[bool]) -> pd.DataFrame:
             sort_cols = [col for col in columns if col in df.columns]
@@ -3267,15 +3267,15 @@ class GenomePresenceScorer:
         matched = pd.to_numeric(unit_level_df["num_peptides_matched"], errors="coerce")
         unique = pd.to_numeric(unit_level_df["num_peptides_unique"], errors="coerce")
         if bool((matched < 0).fillna(False).any()) or bool((unique < 0).fillna(False).any()):
-            raise RuntimeError("Unit-aware sanity check failed: negative peptide counts detected.")
+            raise RuntimeError("Unit-specific sanity check failed: negative peptide counts detected.")
         if bool((matched < unique).fillna(False).any()):
-            raise RuntimeError("Unit-aware sanity check failed: num_peptides_matched is smaller than num_peptides_unique.")
+            raise RuntimeError("Unit-specific sanity check failed: num_peptides_matched is smaller than num_peptides_unique.")
         unit_level_df["pass_q_0_01"] = _coerce_bool_like(unit_level_df["pass_q_0_01"], "pass_q_0_01")
         unit_level_df["pass_q_0_05"] = _coerce_bool_like(unit_level_df["pass_q_0_05"], "pass_q_0_05")
         q001_units = pd.to_numeric(cohort_summary_df["n_units_q_le_0_01"], errors="coerce").fillna(0).astype(int)
         q005_units = pd.to_numeric(cohort_summary_df["n_units_q_le_0_05"], errors="coerce").fillna(0).astype(int)
         if bool((q001_units > q005_units).any()):
-            raise RuntimeError("Unit-aware sanity check failed: n_units_q_le_0_01 exceeds n_units_q_le_0_05.")
+            raise RuntimeError("Unit-specific sanity check failed: n_units_q_le_0_01 exceeds n_units_q_le_0_05.")
 
         unit_level_default_columns = [
             "analysis_unit_id",
@@ -3398,7 +3398,7 @@ class GenomePresenceScorer:
             [False, True, False, True],
         )
         if not set(genome_union_q001["genome_id"].astype(str)).issubset(set(genome_union_q005["genome_id"].astype(str))):
-            raise RuntimeError("Unit-aware sanity check failed: genome_union_q001 is not a subset of genome_union_q005.")
+            raise RuntimeError("Unit-specific sanity check failed: genome_union_q001 is not a subset of genome_union_q005.")
 
         matrix_df = unit_level_df.copy()
         matrix_df["analysis_unit_id"] = matrix_df["analysis_unit_id"].astype(str)
@@ -3429,7 +3429,7 @@ class GenomePresenceScorer:
             "genome_by_unit_qvalue_matrix": matrix_qvalue,
         }
 
-    def _export_unit_aware_primary_outputs(
+    def _export_unit_specific_primary_outputs(
         self,
         out_dir: str,
         stem: str,
@@ -3439,22 +3439,22 @@ class GenomePresenceScorer:
         mapping_df: pd.DataFrame,
         export_pooled_result: bool,
     ) -> None:
-        """Write the primary unit-aware outputs."""
+        """Write the primary unit-specific outputs."""
         os.makedirs(out_dir or ".", exist_ok=True)
         artifact_dir = os.path.join(out_dir, f"{stem}_artifacts")
         unit_level_path = str(requested_output_path)
         cohort_path = os.path.join(out_dir, f"{stem}_cohort_genome_summary.tsv")
-        unit_aware_dir = os.path.join(artifact_dir, "unit_aware")
-        mapping_path = os.path.join(unit_aware_dir, f"{stem}_sample_unit_mapping.tsv")
+        unit_specific_dir = os.path.join(artifact_dir, "unit_specific")
+        mapping_path = os.path.join(unit_specific_dir, f"{stem}_sample_unit_mapping.tsv")
         stale_root_mapping_path = os.path.join(out_dir, f"{stem}_sample_unit_mapping.tsv")
         stale_artifact_mapping_path = os.path.join(artifact_dir, f"{stem}_sample_unit_mapping.tsv")
         pooled_path = os.path.join(artifact_dir, "pooled_genome_presence.tsv")
-        unit_call_counts_path = os.path.join(unit_aware_dir, "unit_call_counts.tsv")
-        unit_specific_q001_path = os.path.join(unit_aware_dir, "unit_specific_genome_list_q001.tsv")
-        unit_specific_q005_path = os.path.join(unit_aware_dir, "unit_specific_genome_list_q005.tsv")
-        manifest_path = os.path.join(unit_aware_dir, "unit_aware_manifest.json")
+        unit_call_counts_path = os.path.join(unit_specific_dir, "unit_call_counts.tsv")
+        unit_specific_q001_path = os.path.join(unit_specific_dir, "unit_specific_genome_list_q001.tsv")
+        unit_specific_q005_path = os.path.join(unit_specific_dir, "unit_specific_genome_list_q005.tsv")
+        manifest_path = os.path.join(unit_specific_dir, "unit_specific_manifest.json")
 
-        self.unit_aware_output_paths = {
+        self.unit_specific_output_paths = {
             "unit_genome_presence": unit_level_path,
             "cohort_genome_summary": cohort_path,
             "sample_unit_mapping": mapping_path,
@@ -3464,8 +3464,8 @@ class GenomePresenceScorer:
         unit_call_counts = tables["unit_call_counts"]
         unit_specific_q001 = tables["unit_specific_genome_list_q001"]
         unit_specific_q005 = tables["unit_specific_genome_list_q005"]
-        self.unit_aware_cohort_summary_df = cohort_summary_out.copy()
-        self.unit_aware_unit_threshold_summary_df = unit_call_counts.copy()
+        self.unit_specific_cohort_summary_df = cohort_summary_out.copy()
+        self.unit_specific_unit_threshold_summary_df = unit_call_counts.copy()
         self._last_unit_genome_presence_df = unit_level_out.copy()
         self._last_unit_genome_presence_full_df = (
             tables["unit_genome_presence_full"].copy()
@@ -3484,11 +3484,11 @@ class GenomePresenceScorer:
         except Exception:
             pass
         mapping_df.to_csv(mapping_path, sep="\t", index=False)
-        os.makedirs(unit_aware_dir, exist_ok=True)
+        os.makedirs(unit_specific_dir, exist_ok=True)
         unit_call_counts.to_csv(unit_call_counts_path, sep="\t", index=False)
         unit_specific_q001.to_csv(unit_specific_q001_path, sep="\t", index=False)
         unit_specific_q005.to_csv(unit_specific_q005_path, sep="\t", index=False)
-        manifest = _build_unit_aware_manifest(
+        manifest = _build_unit_specific_manifest(
             mapping_df=mapping_df,
             unit_specific_q005=unit_specific_q005,
             unit_specific_q001=unit_specific_q001,
@@ -3497,51 +3497,51 @@ class GenomePresenceScorer:
         with open(manifest_path, "w", encoding="utf-8") as handle:
             json.dump(manifest, handle, indent=2)
             handle.write("\n")
-        self.unit_aware_output_paths["unit_call_counts"] = unit_call_counts_path
-        self.unit_aware_output_paths["unit_specific_genome_list_q001"] = unit_specific_q001_path
-        self.unit_aware_output_paths["unit_specific_genome_list_q005"] = unit_specific_q005_path
-        self.unit_aware_output_paths["unit_aware_manifest"] = manifest_path
-        self.run_stats["unit_aware_unit_call_count_rows"] = int(len(unit_call_counts))
-        self.run_stats["unit_aware_manifest_path"] = manifest_path
-        self.run_stats["unit_aware_manifest_units"] = int(len(manifest["units"]))
-        self.run_stats["unit_aware_manifest_total_samples"] = int(
+        self.unit_specific_output_paths["unit_call_counts"] = unit_call_counts_path
+        self.unit_specific_output_paths["unit_specific_genome_list_q001"] = unit_specific_q001_path
+        self.unit_specific_output_paths["unit_specific_genome_list_q005"] = unit_specific_q005_path
+        self.unit_specific_output_paths["unit_specific_manifest"] = manifest_path
+        self.run_stats["unit_specific_unit_call_count_rows"] = int(len(unit_call_counts))
+        self.run_stats["unit_specific_manifest_path"] = manifest_path
+        self.run_stats["unit_specific_manifest_units"] = int(len(manifest["units"]))
+        self.run_stats["unit_specific_manifest_total_samples"] = int(
             sum(unit_payload["n_samples"] for unit_payload in manifest["units"].values())
         )
-        self.run_stats["unit_aware_manifest_total_unit_genome_links_q005"] = int(
+        self.run_stats["unit_specific_manifest_total_unit_genome_links_q005"] = int(
             sum(len(unit_payload["genome_ids_q005"]) for unit_payload in manifest["units"].values())
         )
-        self.run_stats["unit_aware_manifest_total_unit_genome_links_q001"] = int(
+        self.run_stats["unit_specific_manifest_total_unit_genome_links_q001"] = int(
             sum(len(unit_payload["genome_ids_q001"]) for unit_payload in manifest["units"].values())
         )
 
         if export_pooled_result:
             os.makedirs(artifact_dir, exist_ok=True)
             pooled_df.to_csv(pooled_path, sep="\t", index=False)
-            self.unit_aware_output_paths["pooled_genome_presence"] = pooled_path
+            self.unit_specific_output_paths["pooled_genome_presence"] = pooled_path
             self.logger.info(f"Saved pooled peptide-set genome presence table: {pooled_path}")
 
-        self.run_stats["unit_aware_derived_tables_exported"] = False
-        self.run_stats["unit_aware_genome_union_q001_rows"] = 0
-        self.run_stats["unit_aware_genome_union_q005_rows"] = 0
-        self.run_stats["unit_aware_unit_threshold_summary_rows"] = 0
+        self.run_stats["unit_specific_derived_tables_exported"] = False
+        self.run_stats["unit_specific_genome_union_q001_rows"] = 0
+        self.run_stats["unit_specific_genome_union_q005_rows"] = 0
+        self.run_stats["unit_specific_unit_threshold_summary_rows"] = 0
         self.run_stats.setdefault("unit_empirical_background_calibration_rows", 0)
-        self.run_stats["unit_aware_output_paths"] = dict(self.unit_aware_output_paths)
-        self.logger.info(f"Saved unit-aware genome presence table: {unit_level_path}")
-        self.logger.info(f"Saved unit-aware cohort summary: {cohort_path}")
+        self.run_stats["unit_specific_output_paths"] = dict(self.unit_specific_output_paths)
+        self.logger.info(f"Saved unit-specific genome presence table: {unit_level_path}")
+        self.logger.info(f"Saved unit-specific cohort summary: {cohort_path}")
         self.logger.info(f"Saved sample-unit mapping: {mapping_path}")
-        self.logger.info(f"Saved unit-aware call counts: {unit_call_counts_path}")
+        self.logger.info(f"Saved unit-specific call counts: {unit_call_counts_path}")
         self.logger.info(f"Saved q<=0.01 unit-specific genome list: {unit_specific_q001_path}")
         self.logger.info(f"Saved q<=0.05 unit-specific genome list: {unit_specific_q005_path}")
-        self.logger.info(f"Saved unit-aware downstream manifest: {manifest_path}")
+        self.logger.info(f"Saved unit-specific downstream manifest: {manifest_path}")
 
-    def _export_unit_aware_derived_outputs(
+    def _export_unit_specific_derived_outputs(
         self,
         out_dir: str,
         stem: str,
         tables: Dict[str, pd.DataFrame],
     ) -> None:
-        """Write optional derived unit-aware tables under the artifacts directory."""
-        derived_dir = os.path.join(out_dir, f"{stem}_artifacts", "unit_aware")
+        """Write optional derived unit-specific tables under the artifacts directory."""
+        derived_dir = os.path.join(out_dir, f"{stem}_artifacts", "unit_specific")
         os.makedirs(derived_dir, exist_ok=True)
         derived_paths = {
             "unit_genome_presence_full": os.path.join(derived_dir, "unit_genome_presence_full.tsv"),
@@ -3557,24 +3557,24 @@ class GenomePresenceScorer:
         missing = [key for key in derived_paths if key not in tables]
         if missing:
             raise RuntimeError(
-                "Derived unit-aware tables were requested but not prepared: " + ", ".join(missing)
+                "Derived unit-specific tables were requested but not prepared: " + ", ".join(missing)
             )
         for key, path in derived_paths.items():
             tables[key].to_csv(path, sep="\t", index=False)
-            self.unit_aware_output_paths[key] = path
+            self.unit_specific_output_paths[key] = path
         calibration_df = self.unit_empirical_background_calibration_df
         if calibration_df is not None and not calibration_df.empty:
             calibration_path = os.path.join(derived_dir, "unit_empirical_background_calibration.tsv")
             calibration_df.to_csv(calibration_path, sep="\t", index=False)
-            self.unit_aware_output_paths["unit_empirical_background_calibration"] = calibration_path
+            self.unit_specific_output_paths["unit_empirical_background_calibration"] = calibration_path
             self.run_stats["unit_empirical_background_calibration_rows"] = int(len(calibration_df))
-        self.unit_aware_output_paths["derived_unit_aware_tables_dir"] = derived_dir
-        self.run_stats["unit_aware_output_paths"] = dict(self.unit_aware_output_paths)
-        self.run_stats["unit_aware_derived_tables_exported"] = True
-        self.run_stats["unit_aware_unit_threshold_summary_rows"] = int(len(tables["unit_threshold_summary"]))
-        self.run_stats["unit_aware_genome_union_q001_rows"] = int(len(tables["genome_union_q001"]))
-        self.run_stats["unit_aware_genome_union_q005_rows"] = int(len(tables["genome_union_q005"]))
-        self.logger.info(f"Saved derived unit-aware tables: {derived_dir}")
+        self.unit_specific_output_paths["derived_unit_specific_tables_dir"] = derived_dir
+        self.run_stats["unit_specific_output_paths"] = dict(self.unit_specific_output_paths)
+        self.run_stats["unit_specific_derived_tables_exported"] = True
+        self.run_stats["unit_specific_unit_threshold_summary_rows"] = int(len(tables["unit_threshold_summary"]))
+        self.run_stats["unit_specific_genome_union_q001_rows"] = int(len(tables["genome_union_q001"]))
+        self.run_stats["unit_specific_genome_union_q005_rows"] = int(len(tables["genome_union_q005"]))
+        self.logger.info(f"Saved derived unit-specific tables: {derived_dir}")
 
     def analyze_genomes(
         self,
@@ -3601,7 +3601,7 @@ class GenomePresenceScorer:
         rebuild_theoretical_opportunity_cache: bool = False,
         num_workers_for_theoretical_opportunity: Optional[int] = None,
         return_full_table: bool = False,
-        unit_aware: bool = False,
+        unit_specific: bool = False,
         export_unit_derived_tables: Optional[bool] = None,
     ) -> pd.DataFrame:
         """End-to-end analysis producing a genome-level q-value (q_presence)."""
@@ -3610,21 +3610,21 @@ class GenomePresenceScorer:
         unique_count_power = float(unique_count_power)
         if not np.isfinite(unique_count_power) or not (0 < unique_count_power <= 1):
             raise ValueError("unique_count_power must be in the interval (0, 1].")
-        if unit_aware:
-            if not self.unit_aware_enabled:
-                raise ValueError("unit_aware=True requires read_unit_aware_peptide_file() before analyze_genomes().")
+        if unit_specific:
+            if not self.unit_specific_enabled:
+                raise ValueError("unit_specific=True requires read_unit_specific_peptide_file() before analyze_genomes().")
             self.unit_presence_rule = "union"
             self.unit_shared_mode = "per-unit"
         effective_export_diagnostics = bool(export_temp) if export_temp is not None else bool(export_diagnostics)
         effective_export_unit_derived_tables = (
-            effective_export_diagnostics or (bool(unit_aware) and bool(return_full_table))
+            effective_export_diagnostics or (bool(unit_specific) and bool(return_full_table))
             if export_unit_derived_tables is None
             else bool(export_unit_derived_tables)
         )
         self._export_unit_derived_tables = bool(effective_export_unit_derived_tables)
         self._last_unit_genome_presence_df = None
         self._last_unit_genome_presence_full_df = None
-        self.unit_aware_unit_threshold_summary_df = None
+        self.unit_specific_unit_threshold_summary_df = None
         self.unique_pvalue_mode = mode
         self.unique_peptide_error_source = unique_peptide_error_source
         self.unique_count_power = float(unique_count_power)
@@ -3686,9 +3686,9 @@ class GenomePresenceScorer:
 
         t_all0 = time.time()
         self.timing_stats = {}
-        self.unit_aware_output_paths = {}
-        self.unit_aware_cohort_summary_df = None
-        self.unit_aware_unit_threshold_summary_df = None
+        self.unit_specific_output_paths = {}
+        self.unit_specific_cohort_summary_df = None
+        self.unit_specific_unit_threshold_summary_df = None
         self._last_unit_genome_presence_full_df = None
         self.unit_empirical_background_calibration_df = None
 
@@ -4054,17 +4054,17 @@ class GenomePresenceScorer:
         df_scored = self._attach_lineage_column(df_scored)
         self.genome_scores_df = df_scored
 
-        if unit_aware:
+        if unit_specific:
             t_unit0 = time.time()
-            self.logger.info("Computing unit-aware genome presence outputs...")
-            unit_level_df, cohort_summary_df = self._compute_unit_aware_presence(
+            self.logger.info("Computing unit-specific genome presence outputs...")
+            unit_level_df, cohort_summary_df = self._compute_unit_specific_presence(
                 df_scored=df_scored,
                 peptide_deg=peptide_deg,
                 peptide_unique_owner=peptide_unique_owner,
                 mode=mode,
             )
             mapping_df = self.sample_unit_mapping_df if self.sample_unit_mapping_df is not None else pd.DataFrame()
-            self.timing_stats["unit_aware_outputs"] = float(time.time() - t_unit0)
+            self.timing_stats["unit_specific_outputs"] = float(time.time() - t_unit0)
         else:
             unit_level_df = None
             cohort_summary_df = None
@@ -4108,15 +4108,15 @@ class GenomePresenceScorer:
         
         df_out = df_scored if return_full_table else df_main
         t_save0 = time.time()
-        if unit_aware:
-            self.logger.info(f"Saving unit-aware primary results to: {output_tsv_path}")
+        if unit_specific:
+            self.logger.info(f"Saving unit-specific primary results to: {output_tsv_path}")
             if unit_level_df is None or cohort_summary_df is None or mapping_df is None:
-                raise RuntimeError("Unit-aware output tables were not computed.")
-            unit_tables = self._prepare_unit_aware_output_tables(
+                raise RuntimeError("Unit-specific output tables were not computed.")
+            unit_tables = self._prepare_unit_specific_output_tables(
                 unit_level_df=unit_level_df,
                 cohort_summary_df=cohort_summary_df,
             )
-            self._export_unit_aware_primary_outputs(
+            self._export_unit_specific_primary_outputs(
                 out_dir=out_dir,
                 stem=stem,
                 requested_output_path=output_tsv_path,
@@ -4126,7 +4126,7 @@ class GenomePresenceScorer:
                 export_pooled_result=effective_export_diagnostics,
             )
             if self._export_unit_derived_tables:
-                self._export_unit_aware_derived_outputs(out_dir=out_dir, stem=stem, tables=unit_tables)
+                self._export_unit_specific_derived_outputs(out_dir=out_dir, stem=stem, tables=unit_tables)
         else:
             self.logger.info(f"Saving results to: {output_tsv_path}")
             df_out.to_csv(output_tsv_path, sep="\t", index=False)
@@ -4155,9 +4155,9 @@ class GenomePresenceScorer:
 
         self._print_summary()
         result = df_scored if return_full_table else df_main
-        if unit_aware and return_full_table and isinstance(self._last_unit_genome_presence_full_df, pd.DataFrame):
+        if unit_specific and return_full_table and isinstance(self._last_unit_genome_presence_full_df, pd.DataFrame):
             return self._last_unit_genome_presence_full_df.copy()
-        if unit_aware and isinstance(self._last_unit_genome_presence_df, pd.DataFrame):
+        if unit_specific and isinstance(self._last_unit_genome_presence_df, pd.DataFrame):
             return self._last_unit_genome_presence_df.copy()
         return result
 
@@ -4232,16 +4232,16 @@ class GenomePresenceScorer:
             if not printed_any:
                 print("(no genomes around this threshold)")
 
-        if self.unit_aware_output_paths:
-            print("\nPrimary unit-aware outputs:")
+        if self.unit_specific_output_paths:
+            print("\nPrimary unit-specific outputs:")
             primary_labels = [
                 ("Unit genome presence", "unit_genome_presence"),
                 ("Cohort genome summary", "cohort_genome_summary"),
                 ("Sample-unit mapping", "sample_unit_mapping"),
-                ("Unit-aware manifest", "unit_aware_manifest"),
+                ("Unit-specific manifest", "unit_specific_manifest"),
             ]
             for label, key in primary_labels:
-                path = self.unit_aware_output_paths.get(key)
+                path = self.unit_specific_output_paths.get(key)
                 if path:
                     print(f"  {label}: {path}")
 
@@ -4254,22 +4254,22 @@ class GenomePresenceScorer:
                 ("Unit-specific genomes q<=0.05", "unit_specific_genome_list_q005"),
                 ("Unit threshold summary", "unit_threshold_summary"),
                 ("Unit empirical-background calibration", "unit_empirical_background_calibration"),
-                ("Derived unit-aware tables", "derived_unit_aware_tables_dir"),
+                ("Derived unit-specific tables", "derived_unit_specific_tables_dir"),
             ]
             for label, key in supplementary_labels:
-                path = self.unit_aware_output_paths.get(key)
+                path = self.unit_specific_output_paths.get(key)
                 if path:
                     print(f"  {label}: {path}")
 
         print("\n======= MetaUmbra scoring summary =======")
-        print(f"Mode: {'unit-aware' if self.unit_aware_output_paths else 'pooled peptide-set scoring'}")
+        print(f"Mode: {'unit-specific' if self.unit_specific_output_paths else 'pooled peptide-set scoring'}")
         print(f"Genomes analyzed: {len(df)}")
         print(f"Genomes with matched>=1: {int(df['_genomes_with_any_match'].sum())}")
 
         if "q_presence" in df.columns:
             keep01 = int(df["pass_q_0_01"].fillna(False).sum())
             keep05 = int(df["pass_q_0_05"].fillna(False).sum())
-            if self.unit_aware_output_paths:
+            if self.unit_specific_output_paths:
                 print("\nPooled peptide-set result:")
                 print(f"Pooled genomes q<=0.01: {keep01}")
                 print(f"Pooled genomes q<=0.05: {keep05}")
@@ -4277,8 +4277,8 @@ class GenomePresenceScorer:
                 print(f"Genomes q<=0.01: {keep01}")
                 print(f"Genomes q<=0.05: {keep05}")
 
-        if self.unit_aware_output_paths:
-            cohort = self.unit_aware_cohort_summary_df
+        if self.unit_specific_output_paths:
+            cohort = self.unit_specific_cohort_summary_df
             if cohort is not None and not cohort.empty:
                 n_units = int(pd.to_numeric(cohort["n_units_tested"], errors="coerce").fillna(0).max())
                 q01_units = pd.to_numeric(cohort["n_units_q_le_0_01"], errors="coerce").fillna(0).astype(int)
@@ -4302,7 +4302,7 @@ class GenomePresenceScorer:
             print(f"Genomes q<=0.01 in >=1 unit: {q01_any}")
             print(f"Genomes q<=0.01 in all units: {q01_all}")
 
-            unit_threshold_summary = self.unit_aware_unit_threshold_summary_df
+            unit_threshold_summary = self.unit_specific_unit_threshold_summary_df
             print("\nPer-unit q-value genome counts:")
             print("analysis_unit_id\tq001_genomes\tq005_genomes")
             if unit_threshold_summary is not None and not unit_threshold_summary.empty:

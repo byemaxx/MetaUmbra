@@ -274,42 +274,42 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.95,
         help=(
             "Weak-background unique-count quantile used by empirical-background mode. "
-            "Applies to pooled scoring and unit-aware empirical-background scoring."
+            "Applies to pooled scoring and unit-specific empirical-background scoring."
         ),
     )
     _add_argument(
         score_optional,
-        "--unit-aware",
+        "--unit-specific",
         action="store_true",
-        help="Enable analysis-unit aware scoring for long-format multi-sample peptide tables.",
+        help="Enable per-analysis-unit scoring for long-format multi-sample peptide tables.",
     )
-    _add_argument(score_optional, "--sample-id-col", default="Run", help="Sample/run ID column for --unit-aware input.")
+    _add_argument(score_optional, "--sample-id-col", default="Run", help="Sample/run ID column for --unit-specific input.")
     _add_argument(
         score_optional,
         "--intensity-col",
         default="Precursor.Quantity",
-        help="Intensity column used for unit-aware sample-level peptide presence filtering.",
+        help="Intensity column used for unit-specific sample-level peptide presence filtering.",
     )
     _add_argument(
         score_optional,
         "--intensity-min-value",
         type=float,
         default=0.0,
-        help="Minimum intensity for unit-aware sample-level peptide presence.",
+        help="Minimum intensity for unit-specific sample-level peptide presence.",
     )
     _add_argument(
         score_optional,
         "--intensity-min-quantile",
         type=float,
         default=0.0,
-        help="Within-sample intensity quantile cutoff for unit-aware peptide presence.",
+        help="Within-sample intensity quantile cutoff for unit-specific peptide presence.",
     )
     _add_argument(
         score_optional,
         "--metadata-table",
         default="",
         display_default="none",
-        help="Optional sample-to-analysis-unit metadata TSV/CSV for --unit-aware scoring.",
+        help="Optional sample-to-analysis-unit metadata TSV/CSV for --unit-specific scoring.",
     )
     _add_argument(
         score_optional,
@@ -340,7 +340,7 @@ def build_parser() -> argparse.ArgumentParser:
         const=False,
         display_default="diagnostics only",
         help=(
-            "Deprecated compatibility option. Derived unit-aware diagnostic tables are now written only with "
+            "Deprecated compatibility option. Derived unit-specific diagnostic tables are now written only with "
             "--export-diagnostics."
         ),
     )
@@ -463,7 +463,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="export_diagnostics",
         action="store_true",
         default=False,
-        help="Write heavier diagnostic/audit artifact tables such as full_internal_metrics.tsv, knockoff summaries, and unit-aware QC pivots.",
+        help="Write heavier diagnostic/audit artifact tables such as full_internal_metrics.tsv, knockoff summaries, and unit-specific QC pivots.",
     )
     _add_argument(
         score_optional,
@@ -563,7 +563,7 @@ def _run_score(args: argparse.Namespace) -> int:
         unique_peptide_error_source=args.unique_peptide_error_source,
         unique_count_power=args.unique_count_power,
         unique_empirical_background_threshold_quantile=args.unique_empirical_background_threshold_quantile,
-        unit_aware=args.unit_aware,
+        unit_specific=args.unit_specific,
         sample_id_col=args.sample_id_col,
         intensity_col=args.intensity_col,
         intensity_min_value=args.intensity_min_value,

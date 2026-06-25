@@ -1,4 +1,4 @@
-"""Unit-aware scoring worker helpers.
+"""Unit-specific scoring worker helpers.
 
 This module is intentionally self-contained so Windows spawn-based
 multiprocessing can import worker initializers and worker functions without
@@ -371,12 +371,12 @@ def _unit_in_any_stage2_range(value: float, ranges: List[Tuple[float, float]]) -
 _UNIT_WORKER_CONTEXT: Dict[str, object] = {}
 
 
-def _init_unit_aware_worker(context: Dict[str, object]) -> None:
+def _init_unit_specific_worker(context: Dict[str, object]) -> None:
     _UNIT_WORKER_CONTEXT.clear()
     _UNIT_WORKER_CONTEXT.update(context)
 
 
-def _compute_unit_aware_single_unit_worker(args: Dict[str, object]) -> Dict[str, object]:
+def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[str, object]:
     context = _UNIT_WORKER_CONTEXT
     unit_idx = int(args["unit_idx"])
     unit_id = str(args["analysis_unit_id"])

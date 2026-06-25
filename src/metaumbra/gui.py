@@ -2002,24 +2002,24 @@ class ScoringTab(QWidget):
         columns_layout.addLayout(columns_grid)
         layout.addWidget(columns_box)
 
-        self.unit_aware_checkbox = QCheckBox("Enable unit-aware multi-sample scoring")
-        self.unit_aware_checkbox.setToolTip(
+        self.unit_specific_checkbox = QCheckBox("Enable unit-specific multi-sample scoring")
+        self.unit_specific_checkbox.setToolTip(
             "Interpret the observed peptide table as long-format sample evidence and score genome presence per analysis unit."
         )
-        unit_aware_row = QWidget()
-        unit_aware_row.setObjectName("InlineOptionRow")
-        unit_aware_row_layout = QHBoxLayout(unit_aware_row)
-        unit_aware_row_layout.setContentsMargins(10, 6, 10, 6)
-        unit_aware_row_layout.addWidget(self.unit_aware_checkbox)
-        unit_aware_row_layout.addStretch(1)
-        layout.addWidget(unit_aware_row)
+        unit_specific_row = QWidget()
+        unit_specific_row.setObjectName("InlineOptionRow")
+        unit_specific_row_layout = QHBoxLayout(unit_specific_row)
+        unit_specific_row_layout.setContentsMargins(10, 6, 10, 6)
+        unit_specific_row_layout.addWidget(self.unit_specific_checkbox)
+        unit_specific_row_layout.addStretch(1)
+        layout.addWidget(unit_specific_row)
 
-        self.unit_box = QGroupBox("Unit-aware Sample Definition")
+        self.unit_box = QGroupBox("Unit-specific Sample Definition")
         self.unit_box.setProperty("subtle", True)
         unit_layout = QVBoxLayout(self.unit_box)
-        self.export_unit_derived_tables_checkbox = QCheckBox("Export unit-aware diagnostic tables")
+        self.export_unit_derived_tables_checkbox = QCheckBox("Export unit-specific diagnostic tables")
         self.export_unit_derived_tables_checkbox.setToolTip(
-            "Write redundant unit-aware significant-call, genome-union, and matrix tables under the artifacts folder."
+            "Write redundant unit-specific significant-call, genome-union, and matrix tables under the artifacts folder."
         )
         self.export_unit_derived_tables_checkbox.setChecked(False)
         self.intensity_min_value_spin = QSpinBox()
@@ -2313,12 +2313,12 @@ class ScoringTab(QWidget):
         self.genome_lineage_table_edit.textChanged.connect(self._update_genome_lineage_column_options)
         self.genome_lineage_table_edit.textChanged.connect(self._sync_genome_lineage_column_visibility)
         self.metadata_table_edit.textChanged.connect(self._update_metadata_table_column_options)
-        self.unit_aware_checkbox.toggled.connect(self._sync_unit_aware_visibility)
+        self.unit_specific_checkbox.toggled.connect(self._sync_unit_specific_visibility)
         self.load_last_excluded_genomes_button.clicked.connect(self._load_last_excluded_genomes)
         self.clear_excluded_genomes_button.clicked.connect(self.exclude_text.clear)
         self.load_last_selected_genomes_button.clicked.connect(self._load_last_selected_genomes)
         self.clear_selected_genomes_button.clicked.connect(self.selected_genomes_text.clear)
-        self._sync_unit_aware_visibility()
+        self._sync_unit_specific_visibility()
 
     def _suggest_output_tsv_path(self, peptide_table_path: str) -> str:
         peptide_path = Path(peptide_table_path.strip())
@@ -2661,7 +2661,7 @@ class ScoringTab(QWidget):
             return
         self._sample_unit_mapping_rows = dialog.mapping_rows()
         self._sample_unit_mapping_source_path = peptide_table_path
-        self.unit_aware_checkbox.setChecked(True)
+        self.unit_specific_checkbox.setChecked(True)
         self._update_sample_mapping_status()
 
     def _materialize_sample_unit_mapping(self, config: ScoringConfig) -> None:
@@ -2745,14 +2745,14 @@ class ScoringTab(QWidget):
         self.theoretical_opportunity_processes_label.setVisible(show_exact_cache)
         self.theoretical_opportunity_processes_spin.setVisible(show_exact_cache)
 
-    def _sync_unit_aware_visibility(self) -> None:
-        unit_aware = self.unit_aware_checkbox.isChecked()
-        self.unit_box.setVisible(unit_aware)
-        self.sample_filter_box.setVisible(unit_aware)
-        self.metadata_box.setVisible(unit_aware)
-        self.export_unit_derived_tables_checkbox.setVisible(unit_aware)
-        self.configure_sample_mapping_button.setVisible(unit_aware)
-        self.sample_mapping_status_label.setVisible(unit_aware)
+    def _sync_unit_specific_visibility(self) -> None:
+        unit_specific = self.unit_specific_checkbox.isChecked()
+        self.unit_box.setVisible(unit_specific)
+        self.sample_filter_box.setVisible(unit_specific)
+        self.metadata_box.setVisible(unit_specific)
+        self.export_unit_derived_tables_checkbox.setVisible(unit_specific)
+        self.configure_sample_mapping_button.setVisible(unit_specific)
+        self.sample_mapping_status_label.setVisible(unit_specific)
         self._sync_unique_mode_visibility()
 
     def _load_last_excluded_genomes(self) -> None:
@@ -2835,7 +2835,7 @@ class ScoringTab(QWidget):
             unique_empirical_background_threshold_quantile=float(
                 self.unique_empirical_background_threshold_quantile_spin.value()
             ),
-            unit_aware=self.unit_aware_checkbox.isChecked(),
+            unit_specific=self.unit_specific_checkbox.isChecked(),
             sample_id_col=self.sample_id_col_edit.currentText().strip(),
             intensity_col=self.intensity_col_edit.currentText().strip(),
             intensity_min_value=int(self.intensity_min_value_spin.value()),
@@ -2846,7 +2846,7 @@ class ScoringTab(QWidget):
             export_unit_derived_tables=(
                 self.export_unit_derived_tables_checkbox.isChecked()
                 or self.export_temp_checkbox.isChecked()
-                if self.unit_aware_checkbox.isChecked()
+                if self.unit_specific_checkbox.isChecked()
                 else None
             ),
             theoretical_opportunity_cache_path=self.theoretical_opportunity_cache_edit.text().strip(),
@@ -2898,11 +2898,11 @@ class ScoringTab(QWidget):
                 raise ValueError("Please provide the sequence column name.")
             if not config.peptide_score_col:
                 raise ValueError("Please provide the score column name.")
-            if config.unit_aware:
+            if config.unit_specific:
                 if not config.sample_id_col:
-                    raise ValueError("Please provide the sample ID column name for unit-aware scoring.")
+                    raise ValueError("Please provide the sample ID column name for unit-specific scoring.")
                 if not config.intensity_col:
-                    raise ValueError("Please provide the intensity column name for unit-aware scoring.")
+                    raise ValueError("Please provide the intensity column name for unit-specific scoring.")
                 if config.intensity_min_quantile < 0 or config.intensity_min_quantile > 1:
                     raise ValueError("Minimum within-sample intensity quantile must be between 0 and 1.")
                 if config.metadata_table_path and not self._sample_unit_mapping_rows:
@@ -2919,7 +2919,7 @@ class ScoringTab(QWidget):
                 _require_output_parent_directory(config.matched_peptides_cache_path, "matched peptide cache")
             if config.theoretical_opportunity_cache_path:
                 _require_output_parent_directory(config.theoretical_opportunity_cache_path, "theoretical opportunity cache")
-            if config.unit_aware:
+            if config.unit_specific:
                 self._materialize_sample_unit_mapping(config)
         return config
 
@@ -2945,7 +2945,7 @@ class ScoringTab(QWidget):
         self.unique_empirical_background_threshold_quantile_spin.setValue(
             float(config.unique_empirical_background_threshold_quantile)
         )
-        self.unit_aware_checkbox.setChecked(bool(config.unit_aware))
+        self.unit_specific_checkbox.setChecked(bool(config.unit_specific))
         self.export_unit_derived_tables_checkbox.setChecked(
             False if config.export_unit_derived_tables is None else bool(config.export_unit_derived_tables)
         )
@@ -2980,7 +2980,7 @@ class ScoringTab(QWidget):
             if config.num_workers_for_theoretical_opportunity is not None
             else 0
         )
-        self._sync_unit_aware_visibility()
+        self._sync_unit_specific_visibility()
         self.peptide_decoy_flag_col_edit.setEditText(config.peptide_decoy_flag_col)
         self.decoy_flag_value_edit.setEditText(config.decoy_flag_value)
         self.processes_spin.setValue(config.num_workers if config.num_workers is not None else DEFAULT_PROCESS_COUNT)
@@ -3006,7 +3006,7 @@ class ScoringTab(QWidget):
             bool(config.export_temp) if config.export_temp is not None else bool(config.export_diagnostics)
         )
         self.return_full_table_checkbox.setChecked(config.return_full_table)
-        self._sync_unit_aware_visibility()
+        self._sync_unit_specific_visibility()
         self._last_browse_dir = _remember_dialog_directory(
             config.peptide_table_path
             or config.genome_lineage_table_path
@@ -3876,7 +3876,7 @@ class MainWindow(QMainWindow):
                 if lineage_col is not None:
                     self.scoring_tab.genome_lineage_lineage_col_edit.setEditText(str(lineage_col))
 
-            self.scoring_tab._sync_unit_aware_visibility()
+            self.scoring_tab._sync_unit_specific_visibility()
             
             self.scoring_tab._sync_genome_lineage_column_visibility()
         except Exception as exc:
