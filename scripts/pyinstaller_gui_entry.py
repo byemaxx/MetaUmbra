@@ -15,7 +15,7 @@ def _run_smoke_imports() -> None:
     import metaumbra._scoring.ranking
     import metaumbra._scoring.stats
     import metaumbra._scoring.theoretical
-    import metaumbra._scoring.unit_aware
+    import metaumbra._scoring.unit_specific
     import metaumbra.digest
     import metaumbra.scoring
     import pandas.plotting

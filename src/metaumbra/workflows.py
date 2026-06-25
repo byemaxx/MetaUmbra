@@ -69,7 +69,7 @@ class ScoringConfig:
     theoretical_opportunity_cache_path: str = ""
     rebuild_theoretical_opportunity_cache: bool = False
     num_workers_for_theoretical_opportunity: Optional[int] = None
-    unit_aware: bool = False
+    unit_specific: bool = False
     sample_id_col: str = "Run"
     intensity_col: str = "Precursor.Quantity"
     intensity_min_value: float = 0.0
@@ -252,13 +252,13 @@ def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConf
     cleanup_paths = [artifact_dir / name for name in known_files]
     cleanup_paths.extend(artifact_dir.glob("top*_peptide_contrib.tsv"))
     cleanup_paths.extend(artifact_dir.glob("*_sample_unit_mapping.tsv"))
-    unit_aware_dir = artifact_dir / "unit_aware"
-    if unit_aware_dir.exists():
+    unit_specific_dir = artifact_dir / "unit_specific"
+    if unit_specific_dir.exists():
         for pattern in (
             "unit_empirical_background_calibration.tsv",
             "unit_genome_presence_full.tsv",
             "*_sample_unit_mapping.tsv",
-            "unit_aware_manifest.json",
+            "unit_specific_manifest.json",
             "unit_threshold_summary.tsv",
             "unit_call_counts.tsv",
             "unit_q001_genomes.tsv",
@@ -271,7 +271,7 @@ def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConf
             "genome_by_unit_q005_matrix.tsv",
             "genome_by_unit_qvalue_matrix.tsv",
         ):
-            cleanup_paths.extend(unit_aware_dir.glob(pattern))
+            cleanup_paths.extend(unit_specific_dir.glob(pattern))
 
     artifact_root = artifact_dir.resolve()
     for path in cleanup_paths:
@@ -692,7 +692,7 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
     peptide_table_df = None
     resolved_columns: dict[str, Optional[str]] | None = None
     effective_decoy_flag_value = config.decoy_flag_value
-    if (not config.unit_aware) and _is_parquet_path(peptide_table_path):
+    if (not config.unit_specific) and _is_parquet_path(peptide_table_path):
         if not os.path.isfile(peptide_table_path):
             raise FileNotFoundError(f"Peptide parquet file does not exist: {peptide_table_path}")
         peptide_table_df, resolved_columns = _load_parquet_peptide_table(
@@ -738,8 +738,8 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
         calc.knockoff_random_seed = int(config.knockoff_random_seed)
         calc.knockoff_top_n_targets = config.knockoff_top_n_targets
 
-        if config.unit_aware:
-            calc.read_unit_aware_peptide_file(
+        if config.unit_specific:
+            calc.read_unit_specific_peptide_file(
                 peptide_table_path=peptide_table_path,
                 sample_id_col=config.sample_id_col,
                 peptide_seq_col=config.peptide_seq_col,
@@ -820,7 +820,7 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
             rebuild_theoretical_opportunity_cache=bool(config.rebuild_theoretical_opportunity_cache),
             num_workers_for_theoretical_opportunity=config.num_workers_for_theoretical_opportunity,
             return_full_table=bool(config.return_full_table),
-            unit_aware=bool(config.unit_aware),
+            unit_specific=bool(config.unit_specific),
             export_unit_derived_tables=config.export_unit_derived_tables,
         )
 
