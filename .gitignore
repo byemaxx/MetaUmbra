@@ -3,6 +3,8 @@ __pycache__/
 local/
 test/
 tests/
+!tests/
+!tests/*.py
 test_data/
 .venv/
 build/

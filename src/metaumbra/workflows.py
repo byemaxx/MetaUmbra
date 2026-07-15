@@ -69,7 +69,7 @@ class ScoringConfig:
     theoretical_opportunity_cache_path: str = ""
     rebuild_theoretical_opportunity_cache: bool = False
     num_workers_for_theoretical_opportunity: Optional[int] = None
-    unit_specific: bool = False
+    unit_mode: str = "all-samples"
     sample_id_col: str = "Run"
     intensity_col: str = "Precursor.Quantity"
     intensity_min_value: float = 0.0
@@ -208,6 +208,17 @@ def _normalize_output_path(path_str: str) -> str:
     return str(Path(path_str).expanduser())
 
 
+def _resolve_scoring_output_path(path_str: str) -> str:
+    """Resolve the unified results directory to its canonical unit table."""
+    normalized = _normalize_output_path(path_str)
+    if not normalized:
+        return ""
+    path = Path(normalized)
+    if path.suffix.lower() in {".tsv", ".txt"}:
+        return str(path)
+    return str(path / "unit_genome_results.tsv")
+
+
 def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -217,7 +228,7 @@ def _scoring_artifact_dir(output_tsv_path: str) -> Optional[Path]:
     if not normalized_output:
         return None
     output_path = Path(normalized_output)
-    return output_path.parent / f"{output_path.stem}_artifacts"
+    return output_path.parent / "artifacts"
 
 
 def _write_json_file(path: Path, payload: dict) -> None:
@@ -236,7 +247,6 @@ def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConf
         "p_shared_hist.tsv",
         "q_calling_curve.tsv",
         "shared_stratum_counts.tsv",
-        "pooled_genome_presence.tsv",
     }
     if (
         not bool(config.use_cache_if_exists)
@@ -251,33 +261,15 @@ def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConf
 
     cleanup_paths = [artifact_dir / name for name in known_files]
     cleanup_paths.extend(artifact_dir.glob("top*_peptide_contrib.tsv"))
-    cleanup_paths.extend(artifact_dir.glob("*_sample_unit_mapping.tsv"))
-    unit_specific_dir = artifact_dir / "unit_specific"
-    if unit_specific_dir.exists():
-        for pattern in (
-            "unit_empirical_background_calibration.tsv",
-            "unit_genome_presence_full.tsv",
-            "*_sample_unit_mapping.tsv",
-            "unit_specific_manifest.json",
-            "unit_threshold_summary.tsv",
-            "unit_call_counts.tsv",
-            "unit_q001_genomes.tsv",
-            "unit_q005_genomes.tsv",
-            "unit_specific_genome_list_q001.tsv",
-            "unit_specific_genome_list_q005.tsv",
-            "genome_union_q001.tsv",
-            "genome_union_q005.tsv",
-            "genome_by_unit_q001_matrix.tsv",
-            "genome_by_unit_q005_matrix.tsv",
-            "genome_by_unit_qvalue_matrix.tsv",
-        ):
-            cleanup_paths.extend(unit_specific_dir.glob(pattern))
+    diagnostics_dir = artifact_dir / "diagnostics"
+    if diagnostics_dir.exists():
+        cleanup_paths.extend(path for path in diagnostics_dir.iterdir() if path.is_file())
 
     artifact_root = artifact_dir.resolve()
     for path in cleanup_paths:
         try:
             resolved = path.resolve()
-            if resolved.is_file() and (resolved.parent == artifact_root or resolved.parent.parent == artifact_root):
+            if resolved.is_file() and (resolved.parent == artifact_root or resolved.parent == diagnostics_dir.resolve()):
                 resolved.unlink()
         except Exception:
             pass
@@ -678,7 +670,7 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
     scoring_module = importlib.import_module("metaumbra.scoring")
 
     start = time.time()
-    output_tsv_path = _normalize_output_path(config.output_tsv_path)
+    output_tsv_path = _resolve_scoring_output_path(config.output_tsv_path)
     artifact_dir, artifact_log_callback, started_at_utc = _initialize_scoring_artifacts(
         config=config,
         output_tsv_path=output_tsv_path,
@@ -689,32 +681,6 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
         active_log_callback(f"Starting genome presence scoring for: {config.peptide_table_path}")
 
     peptide_table_path = str(Path(config.peptide_table_path).expanduser())
-    peptide_table_df = None
-    resolved_columns: dict[str, Optional[str]] | None = None
-    effective_decoy_flag_value = config.decoy_flag_value
-    if (not config.unit_specific) and _is_parquet_path(peptide_table_path):
-        if not os.path.isfile(peptide_table_path):
-            raise FileNotFoundError(f"Peptide parquet file does not exist: {peptide_table_path}")
-        peptide_table_df, resolved_columns = _load_parquet_peptide_table(
-            parquet_path=peptide_table_path,
-            peptide_seq_col=config.peptide_seq_col,
-            peptide_score_col=_none_if_blank(config.peptide_score_col),
-            peptide_error_col=_none_if_blank(config.peptide_error_col),
-            peptide_decoy_flag_col=_none_if_blank(config.peptide_decoy_flag_col),
-            log_callback=active_log_callback,
-        )
-        peptide_table_df = _clean_parquet_peptide_table(
-            peptide_table_df=peptide_table_df,
-            resolved_columns=resolved_columns,
-            log_callback=active_log_callback,
-        )
-        effective_decoy_flag_value = _infer_decoy_flag_value(
-            peptide_table_df=peptide_table_df,
-            resolved_columns=resolved_columns,
-            configured_value=config.decoy_flag_value,
-            log_callback=active_log_callback,
-        )
-
     normalized_ranges = [
         (float(bounds[0]), float(bounds[1]))
         for bounds in config.knockoff_stage2_p_exist_ranges
@@ -738,53 +704,29 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
         calc.knockoff_random_seed = int(config.knockoff_random_seed)
         calc.knockoff_top_n_targets = config.knockoff_top_n_targets
 
-        if config.unit_specific:
-            calc.read_unit_specific_peptide_file(
-                peptide_table_path=peptide_table_path,
-                sample_id_col=config.sample_id_col,
-                peptide_seq_col=config.peptide_seq_col,
-                peptide_score_col=_none_if_blank(config.peptide_score_col),
-                peptide_decoy_flag_col=_none_if_blank(config.peptide_decoy_flag_col),
-                decoy_flag_value=config.decoy_flag_value,
-                intensity_col=config.intensity_col,
-                peptide_error_col=_none_if_blank(config.peptide_error_col),
-                peptide_error_cutoff=float(config.peptide_error_cutoff),
-                single_peptide_error_rate_upper_bound=float(config.single_peptide_error_rate_upper_bound),
-                intensity_min_value=float(config.intensity_min_value),
-                intensity_min_quantile=float(config.intensity_min_quantile),
-                metadata_table_path=_normalize_output_path(config.metadata_table_path) or None,
-                metadata_sample_id_col=config.metadata_sample_id_col,
-                metadata_analysis_unit_col=config.metadata_analysis_unit_col,
-                peptide_table_sep="\t",
-            )
-        elif peptide_table_df is None:
-            calc.read_peptide_file(
-                peptide_table_path=peptide_table_path,
-                peptide_seq_col=config.peptide_seq_col,
-                peptide_score_col=_none_if_blank(config.peptide_score_col),
-                peptide_decoy_flag_col=_none_if_blank(config.peptide_decoy_flag_col),
-                decoy_flag_value=config.decoy_flag_value,
-                peptide_table_sep="\t",
-                peptide_error_col=_none_if_blank(config.peptide_error_col),
-                peptide_error_cutoff=float(config.peptide_error_cutoff),
-                single_peptide_error_rate_upper_bound=float(config.single_peptide_error_rate_upper_bound),
-            )
-        else:
-            effective_seq_col = resolved_columns.get("peptide_seq_col") if resolved_columns else None
-            if not effective_seq_col:
-                raise RuntimeError("Unable to resolve a peptide sequence column for parquet scoring.")
-            calc.read_peptide_file(
-                peptide_table_df=peptide_table_df,
-                peptide_seq_col=effective_seq_col,
-                peptide_score_col=resolved_columns.get("peptide_score_col") if resolved_columns else None,
-                peptide_decoy_flag_col=resolved_columns.get("peptide_decoy_flag_col") if resolved_columns else None,
-                decoy_flag_value=effective_decoy_flag_value,
-                peptide_table_sep="\t",
-                peptide_error_col=resolved_columns.get("peptide_error_col") if resolved_columns else None,
-                peptide_error_cutoff=float(config.peptide_error_cutoff),
-                single_peptide_error_rate_upper_bound=float(config.single_peptide_error_rate_upper_bound),
-            )
-            calc.peptide_table_dir = os.path.dirname(peptide_table_path)
+        calc.read_analysis_unit_peptide_file(
+            peptide_table_path=peptide_table_path,
+            unit_mode=config.unit_mode,
+            sample_id_col=config.sample_id_col,
+            peptide_seq_col=config.peptide_seq_col,
+            peptide_score_col=_none_if_blank(config.peptide_score_col),
+            peptide_decoy_flag_col=_none_if_blank(config.peptide_decoy_flag_col),
+            decoy_flag_value=config.decoy_flag_value,
+            intensity_col=config.intensity_col,
+            peptide_error_col=_none_if_blank(config.peptide_error_col),
+            peptide_error_cutoff=float(config.peptide_error_cutoff),
+            single_peptide_error_rate_upper_bound=float(config.single_peptide_error_rate_upper_bound),
+            intensity_min_value=float(config.intensity_min_value),
+            intensity_min_quantile=float(config.intensity_min_quantile),
+            metadata_table_path=(
+                _normalize_output_path(config.metadata_table_path) or None
+                if config.unit_mode == "metadata"
+                else None
+            ),
+            metadata_sample_id_col=config.metadata_sample_id_col,
+            metadata_analysis_unit_col=config.metadata_analysis_unit_col,
+            peptide_table_sep="\t",
+        )
 
         unique_empirical_background_threshold_quantile = float(
             config.unique_empirical_background_threshold_quantile
@@ -820,7 +762,6 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
             rebuild_theoretical_opportunity_cache=bool(config.rebuild_theoretical_opportunity_cache),
             num_workers_for_theoretical_opportunity=config.num_workers_for_theoretical_opportunity,
             return_full_table=bool(config.return_full_table),
-            unit_specific=bool(config.unit_specific),
             export_unit_derived_tables=config.export_unit_derived_tables,
         )
 
@@ -836,6 +777,8 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
         "rows": int(len(result_df)),
         "elapsed_seconds": round(time.time() - start, 2),
     }
+    result["manifest"] = str(Path(saved_output).parent / "genome_selection_manifest.json")
+    result["n_units"] = int(len(getattr(calc, "unit_analysis_unit_ids", [])))
     _write_scoring_status(artifact_dir, "success", started_at_utc, result=result)
     if active_log_callback:
         active_log_callback(
