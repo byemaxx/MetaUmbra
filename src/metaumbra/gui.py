@@ -2064,7 +2064,6 @@ class ScoringTab(QWidget):
         _add_compact_field(sample_filter_grid, 1, 1, "Drop lowest percent (%)", self.intensity_min_quantile_spin, None)
         sample_filter_layout = QVBoxLayout(self.sample_filter_box)
         sample_filter_layout.addLayout(sample_filter_grid)
-        unit_layout.addWidget(self.sample_filter_box)
 
         self.metadata_box = QGroupBox("Sample / Unit Mapping")
         self.metadata_box.setProperty("subtle", True)
@@ -2084,12 +2083,13 @@ class ScoringTab(QWidget):
             None,
         )
         metadata_layout.addLayout(metadata_grid)
-        unit_layout.addWidget(self.metadata_box)
 
         unit_output_grid = _create_compact_grid()
         unit_output_grid.addWidget(self.configure_sample_mapping_button, 0, 0, 1, 2)
         unit_output_grid.addWidget(self.sample_mapping_status_label, 0, 2, 1, 2)
-        unit_layout.addLayout(unit_output_grid)
+        metadata_layout.addLayout(unit_output_grid)
+        unit_layout.addWidget(self.metadata_box)
+        unit_layout.addWidget(self.sample_filter_box)
         layout.addWidget(self.unit_box)
 
         unique_box = QGroupBox("Unique Evidence Settings")
