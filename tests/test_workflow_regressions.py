@@ -101,6 +101,10 @@ def test_artifact_cleanup_preserves_configured_inputs_and_unknown_files(tmp_path
         artifact_dir / "run_summary.json",
         diagnostics_dir / "full_internal_metrics.tsv",
         diagnostics_dir / "top5_peptide_contrib.tsv",
+        diagnostics_dir / "unit_call_counts.tsv",
+        diagnostics_dir / "unit_genome_presence_full.tsv",
+        diagnostics_dir / "genome_union_q001.tsv",
+        diagnostics_dir / "unit_empirical_background_calibration.tsv",
     ]
     for path in generated_paths:
         path.write_text("stale", encoding="utf-8")

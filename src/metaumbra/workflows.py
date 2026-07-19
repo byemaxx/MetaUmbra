@@ -313,6 +313,17 @@ def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConf
         "p_shared_hist.tsv",
         "q_calling_curve.tsv",
         "shared_stratum_counts.tsv",
+        "unit_call_counts.tsv",
+        "unit_genome_presence_full.tsv",
+        "unit_threshold_summary.tsv",
+        "unit_q001_genomes.tsv",
+        "unit_q005_genomes.tsv",
+        "genome_union_q001.tsv",
+        "genome_union_q005.tsv",
+        "genome_by_unit_q001_matrix.tsv",
+        "genome_by_unit_q005_matrix.tsv",
+        "genome_by_unit_qvalue_matrix.tsv",
+        "unit_empirical_background_calibration.tsv",
     }
     known_files = {"run_summary.json", "run_status.json", *diagnostic_files}
     if (
