@@ -279,6 +279,7 @@ def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConf
     """Remove generated diagnostics that should not carry across independent runs."""
     known_files = {
         "run_summary.json",
+        "run_status.json",
         "full_internal_metrics.tsv",
         "knockoff_pools.tsv",
         "degeneracy_hist.tsv",
@@ -311,6 +312,51 @@ def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConf
                 resolved.unlink()
         except Exception:
             pass
+
+
+def _clean_scoring_primary_outputs_for_new_run(
+    output_tsv_path: str,
+    config: ScoringConfig,
+) -> None:
+    """Invalidate and remove canonical outputs before replacing a results run."""
+    output_path = Path(output_tsv_path).expanduser()
+    output_dir = output_path.parent
+    cleanup_paths = [
+        output_dir / "genome_selection_manifest.json",
+        output_path,
+        output_dir / "cohort_genome_summary.tsv",
+        output_dir / "sample_unit_mapping.tsv",
+    ]
+    protected_inputs = {
+        "observed peptide table": config.peptide_table_path,
+        "metadata table": config.metadata_table_path,
+        "genome lineage table": config.genome_lineage_table_path,
+    }
+    protected_resolved = {
+        Path(path).expanduser().resolve(): label
+        for label, path in protected_inputs.items()
+        if str(path).strip()
+    }
+    for path in cleanup_paths:
+        protected_label = protected_resolved.get(path.resolve())
+        if protected_label:
+            raise ValueError(
+                f"Scoring outputs must not overwrite an active input file ({protected_label}): {path}"
+            )
+
+    seen: set[Path] = set()
+    for path in cleanup_paths:
+        normalized = path.resolve()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if not path.exists() and not path.is_symlink():
+            continue
+        if path.is_dir() and not path.is_symlink():
+            raise IsADirectoryError(
+                f"Cannot replace scoring output because a directory exists at: {path}"
+            )
+        path.unlink()
 
 
 def _detect_cpu_model() -> Optional[str]:
@@ -425,6 +471,7 @@ def _initialize_scoring_artifacts(
     if artifact_dir is None:
         return None, None, started_at_utc
 
+    _clean_scoring_primary_outputs_for_new_run(output_tsv_path, config)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     _clean_scoring_artifacts_for_new_run(artifact_dir, config)
     parameters_payload = {

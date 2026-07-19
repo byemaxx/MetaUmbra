@@ -51,11 +51,31 @@ def test_default_parquet_extraction_preserves_required_scoring_columns(tmp_path)
         sample_id_col="Run",
         peptide_seq_col="Sequence",
     )
-    assert scorer.unit_sample_ids == ["s1.raw"]
+    direct_scorer = GenomePresenceScorer(num_workers=1)
+    direct_scorer.read_analysis_unit_peptide_file(
+        peptide_table_path=str(parquet_path),
+        unit_mode="all-samples",
+        sample_id_col="Run",
+        peptide_seq_col="Sequence",
+    )
+    assert scorer.unit_sample_ids == ["s1"]
+    assert scorer.unit_sample_ids == direct_scorer.unit_sample_ids
 
 
 def test_failed_directory_run_writes_status_to_results_artifacts(tmp_path):
     results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    stale_outputs = [
+        "unit_genome_results.tsv",
+        "cohort_genome_summary.tsv",
+        "sample_unit_mapping.tsv",
+        "genome_selection_manifest.json",
+    ]
+    for name in stale_outputs:
+        (results_dir / name).write_text("stale", encoding="utf-8")
+    unrelated_path = results_dir / "notes.txt"
+    unrelated_path.write_text("keep", encoding="utf-8")
+
     with pytest.raises(FileNotFoundError, match="Peptide file does not exist"):
         run_scoring_workflow(
             ScoringConfig(
@@ -67,7 +87,25 @@ def test_failed_directory_run_writes_status_to_results_artifacts(tmp_path):
 
     status_path = results_dir / "artifacts" / "run_status.json"
     assert json.loads(status_path.read_text(encoding="utf-8"))["status"] == "failed"
+    assert not any((results_dir / name).exists() for name in stale_outputs)
+    assert unrelated_path.read_text(encoding="utf-8") == "keep"
     assert not (tmp_path / "artifacts").exists()
+
+
+def test_scoring_output_cannot_overwrite_peptide_input(tmp_path):
+    peptide_path = tmp_path / "peptides.tsv"
+    peptide_path.write_text("Run\tSequence\tPrecursor.Quantity\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must not overwrite"):
+        run_scoring_workflow(
+            ScoringConfig(
+                peptide_table_path=str(peptide_path),
+                genome_digest_dirs=[str(tmp_path / "digests")],
+                output_tsv_path=str(peptide_path),
+            )
+        )
+
+    assert peptide_path.exists()
 
 
 @pytest.mark.parametrize(

@@ -959,9 +959,7 @@ def _read_sample_unit_preview_rows(
         df = _read_delimited_table_for_columns(path, read_cols)
 
     df = df.copy()
-    df[sample_col] = df[sample_col].astype("string").str.strip()
-    if is_parquet_input:
-        df[sample_col] = _strip_raw_suffix_from_sample_ids(df[sample_col])
+    df[sample_col] = _strip_raw_suffix_from_sample_ids(df[sample_col])
     df[seq_col] = df[seq_col].astype("string").str.strip()
     if decoy_col and decoy_col in df.columns:
         df[decoy_col] = df[decoy_col].astype("string").str.strip()

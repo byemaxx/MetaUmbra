@@ -92,7 +92,7 @@ def _format_elapsed_seconds(elapsed_seconds: object) -> str:
 
 
 def _strip_raw_suffix_from_sample_ids(values: pd.Series) -> pd.Series:
-    """Normalize DIA-NN parquet sample IDs such as sample.raw to sample."""
+    """Normalize DIA-NN sample IDs such as sample.raw to sample."""
     return values.astype("string").str.strip().str.replace(r"\.raw$", "", case=False, regex=True)
 
 
@@ -1106,14 +1106,15 @@ class GenomePresenceScorer:
         self.logger.info(f"Preparing unit-specific columns for {len(df)} loaded row(s) ...")
         df = df.copy()
         df[sample_col] = df[sample_col].astype("string").str.strip()
-        if is_parquet_input:
-            sample_values_before = df[sample_col].copy()
-            df[sample_col] = _strip_raw_suffix_from_sample_ids(df[sample_col])
-            changed_rows = int((sample_values_before.notna() & (sample_values_before != df[sample_col])).sum())
-            if changed_rows:
-                self.logger.info(
-                    f"Normalized parquet sample IDs by removing trailing '.raw' from {changed_rows} row(s)."
-                )
+        sample_values_before = df[sample_col].copy()
+        df[sample_col] = _strip_raw_suffix_from_sample_ids(df[sample_col])
+        changed_rows = int(
+            (sample_values_before.notna() & (sample_values_before != df[sample_col])).sum()
+        )
+        if changed_rows:
+            self.logger.info(
+                f"Normalized sample IDs by removing trailing '.raw' from {changed_rows} row(s)."
+            )
         df[seq_col] = df[seq_col].astype("string").str.strip()
         if score_col:
             df[score_col] = pd.to_numeric(df[score_col], errors="coerce")
