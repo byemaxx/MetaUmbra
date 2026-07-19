@@ -259,7 +259,10 @@ def _resolve_scoring_output_path(path_str: str) -> str:
         return ""
     path = Path(normalized)
     if path.suffix.lower() in {".tsv", ".txt"}:
-        return str(path)
+        raise ValueError(
+            "Scoring output must be a unified results directory, not a TSV or TXT file: "
+            f"{path}"
+        )
     return str(path / "unit_genome_results.tsv")
 
 

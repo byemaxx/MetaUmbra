@@ -2695,7 +2695,8 @@ class ScoringTab(QWidget):
                 "Open Configure Sample / Unit Mapping again for the current input."
             )
         out_path = Path(config.output_tsv_path).expanduser()
-        mapping_path = out_path.with_name(f"{out_path.stem}_gui_sample_unit_mapping.tsv")
+        mapping_path = out_path / "artifacts" / "gui_sample_unit_mapping.tsv"
+        mapping_path.parent.mkdir(parents=True, exist_ok=True)
         rows = [
             {
                 "sample_id": str(row.get("sample_id", "")).strip(),

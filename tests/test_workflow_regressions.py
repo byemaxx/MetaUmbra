@@ -93,7 +93,9 @@ def test_failed_directory_run_writes_status_to_results_artifacts(tmp_path):
 
 
 def test_scoring_output_cannot_overwrite_peptide_input(tmp_path):
-    peptide_path = tmp_path / "peptides.tsv"
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    peptide_path = results_dir / "unit_genome_results.tsv"
     peptide_path.write_text("Run\tSequence\tPrecursor.Quantity\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="must not overwrite"):
@@ -101,11 +103,29 @@ def test_scoring_output_cannot_overwrite_peptide_input(tmp_path):
             ScoringConfig(
                 peptide_table_path=str(peptide_path),
                 genome_digest_dirs=[str(tmp_path / "digests")],
-                output_tsv_path=str(peptide_path),
+                output_tsv_path=str(results_dir),
             )
         )
 
     assert peptide_path.exists()
+
+
+@pytest.mark.parametrize("suffix", [".tsv", ".TXT"])
+def test_scoring_workflow_rejects_file_output_paths(tmp_path, suffix):
+    output_path = tmp_path / f"run{suffix}"
+
+    with pytest.raises(ValueError, match="must be a unified results directory"):
+        run_scoring_workflow(
+            ScoringConfig(
+                peptide_table_path=str(tmp_path / "peptides.tsv"),
+                genome_digest_dirs=[str(tmp_path / "digests")],
+                output_tsv_path=str(output_path),
+            )
+        )
+
+    assert not output_path.exists()
+    assert not (tmp_path / "cohort_genome_summary.tsv").exists()
+    assert not (tmp_path / "artifacts").exists()
 
 
 def test_scoring_output_cannot_share_genome_digest_directory(tmp_path):
