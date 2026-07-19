@@ -108,6 +108,29 @@ def test_scoring_output_cannot_overwrite_peptide_input(tmp_path):
     assert peptide_path.exists()
 
 
+def test_scoring_output_cannot_share_genome_digest_directory(tmp_path):
+    peptide_path = tmp_path / "peptides.tsv"
+    peptide_path.write_text("Sequence\nPEPTIDE\n", encoding="utf-8")
+    digest_dir = tmp_path / "digests"
+    digest_dir.mkdir()
+    digest_path = digest_dir / "g1.tsv"
+    digest_contents = "Peptide\nPEPTIDE\n"
+    digest_path.write_text(digest_contents, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must not be the same as a genome digest directory"):
+        run_scoring_workflow(
+            ScoringConfig(
+                peptide_table_path=str(peptide_path),
+                genome_digest_dirs=[str(digest_dir)],
+                output_tsv_path=str(digest_dir),
+            )
+        )
+
+    assert digest_path.read_text(encoding="utf-8") == digest_contents
+    assert not (digest_dir / "unit_genome_results.tsv").exists()
+    assert not (digest_dir / "artifacts").exists()
+
+
 def test_all_samples_workflow_accepts_peptide_only_input(tmp_path):
     peptide_path = tmp_path / "peptides.tsv"
     pd.DataFrame(

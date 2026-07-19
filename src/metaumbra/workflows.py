@@ -275,6 +275,26 @@ def _scoring_artifact_dir(output_tsv_path: str) -> Optional[Path]:
     return output_path.parent / "artifacts"
 
 
+def _validate_scoring_output_directory(
+    output_tsv_path: str,
+    config: ScoringConfig,
+) -> None:
+    if not output_tsv_path:
+        return
+
+    output_dir = Path(output_tsv_path).expanduser().resolve().parent
+    digest_dirs = {
+        Path(path).expanduser().resolve()
+        for path in config.genome_digest_dirs
+        if str(path).strip()
+    }
+    if output_dir in digest_dirs:
+        raise ValueError(
+            "Output results directory must not be the same as a genome digest directory: "
+            f"{output_dir}"
+        )
+
+
 def _write_json_file(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
@@ -698,6 +718,8 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
 
 
 def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallback] = None) -> dict:
+    output_tsv_path = _resolve_scoring_output_path(config.output_tsv_path)
+    _validate_scoring_output_directory(output_tsv_path, config)
     try:
         return _run_scoring_workflow_uncaught(config, log_callback)
     except Exception as exc:
