@@ -2926,6 +2926,8 @@ class ScoringTab(QWidget):
             if config.intensity_min_quantile < 0 or config.intensity_min_quantile > 1:
                 raise ValueError("Minimum within-sample intensity quantile must be between 0 and 1.")
             if config.unit_mode == "metadata":
+                if self._sample_unit_mapping_rows:
+                    self._materialize_sample_unit_mapping(config)
                 _require_existing_file(config.metadata_table_path, "sample metadata table")
                 if not config.metadata_sample_id_col:
                     raise ValueError("Please provide the metadata sample ID column name.")
@@ -2939,8 +2941,6 @@ class ScoringTab(QWidget):
                 _require_output_parent_directory(config.matched_peptides_cache_path, "matched peptide cache")
             if config.theoretical_opportunity_cache_path:
                 _require_output_parent_directory(config.theoretical_opportunity_cache_path, "theoretical opportunity cache")
-            if config.unit_mode == "metadata" and self._sample_unit_mapping_rows:
-                self._materialize_sample_unit_mapping(config)
         return config
 
     def load_config(self, config: ScoringConfig) -> None:
