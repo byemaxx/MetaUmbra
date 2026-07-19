@@ -11,6 +11,7 @@
 ### Changed
 
 - Unified global and grouped genome selection around one analysis-unit scoring engine.
+- Applied a moderately more permissive empirical-background calibration to `all-samples` while retaining the conservative grouped-unit profile.
 - Updated the CLI, GUI, and Python workflow to use the same unit-definition and scoring backend.
 - Made genome processing order deterministic so repeated Monte Carlo runs produce stable results.
 - Placed Sample / Unit Mapping directly below Analysis Unit Definition in the GUI.

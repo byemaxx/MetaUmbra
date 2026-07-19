@@ -34,6 +34,16 @@ UNIT_EMPIRICAL_BACKGROUND_CANDIDATE_Q = 0.20
 UNIT_EMPIRICAL_BACKGROUND_MAX_ITERATIONS = 3
 UNIT_EMPIRICAL_BACKGROUND_SMALL_UNIT_MIN_ACTIVE_GENOMES = 100
 UNIT_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE = DEFAULT_UNIQUE_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE
+
+# The cohort-wide unit intentionally uses a moderately more permissive
+# empirical-background calibration.  Pooling every sample raises the absolute
+# unique-peptide background as well as the signal, so using the grouped-unit
+# profile unchanged can erase real cohort-wide excess evidence.  These bounds
+# remain below the legacy pooled scorer's 0.10--0.30 range.
+ALL_SAMPLES_EMPIRICAL_BACKGROUND_INITIAL_EXCLUDE_FRACTION = 0.10
+ALL_SAMPLES_EMPIRICAL_BACKGROUND_MIN_EXCLUDE_FRACTION = 0.05
+ALL_SAMPLES_EMPIRICAL_BACKGROUND_MAX_EXCLUDE_FRACTION = 0.20
+ALL_SAMPLES_EMPIRICAL_BACKGROUND_MAX_ITERATIONS = 5
 UNIT_EMPIRICAL_BACKGROUND_OUTPUT_COLUMNS = (
     "unique_empirical_background_bin",
     "unique_empirical_background_size",
@@ -49,6 +59,27 @@ UNIT_EMPIRICAL_BACKGROUND_INTERNAL_COLUMNS = (
     "unit_empirical_background_active_genomes",
     "unit_empirical_background_warning",
 )
+
+
+def _empirical_background_calibration_for_unit_mode(unit_mode: str) -> Dict[str, object]:
+    """Return the explicit empirical-null calibration profile for a unit mode."""
+    if str(unit_mode).strip() == "all-samples":
+        return {
+            "profile": "all-samples-moderately-permissive",
+            "initial_exclude_fraction": ALL_SAMPLES_EMPIRICAL_BACKGROUND_INITIAL_EXCLUDE_FRACTION,
+            "min_exclude_fraction": ALL_SAMPLES_EMPIRICAL_BACKGROUND_MIN_EXCLUDE_FRACTION,
+            "max_exclude_fraction": ALL_SAMPLES_EMPIRICAL_BACKGROUND_MAX_EXCLUDE_FRACTION,
+            "candidate_q": UNIT_EMPIRICAL_BACKGROUND_CANDIDATE_Q,
+            "max_iterations": ALL_SAMPLES_EMPIRICAL_BACKGROUND_MAX_ITERATIONS,
+        }
+    return {
+        "profile": "grouped-unit-conservative",
+        "initial_exclude_fraction": UNIT_EMPIRICAL_BACKGROUND_INITIAL_EXCLUDE_FRACTION,
+        "min_exclude_fraction": UNIT_EMPIRICAL_BACKGROUND_MIN_EXCLUDE_FRACTION,
+        "max_exclude_fraction": UNIT_EMPIRICAL_BACKGROUND_MAX_EXCLUDE_FRACTION,
+        "candidate_q": UNIT_EMPIRICAL_BACKGROUND_CANDIDATE_Q,
+        "max_iterations": UNIT_EMPIRICAL_BACKGROUND_MAX_ITERATIONS,
+    }
 
 
 def _unit_knock_deg_bin(d: int, degeneracy_bin_edges: List[int]) -> int:

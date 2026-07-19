@@ -81,7 +81,7 @@ MetaUmbra requires:
 
 Optional inputs include peptide scores, peptide-level error values, decoy flags, and genome lineage annotations.
 
-All scoring uses one analysis-unit workflow. Select `--unit-mode all-samples`, `per-sample`, or `metadata`; each option builds a sample-to-unit assignment and invokes the same per-unit p/q-value engine.
+All scoring uses one analysis-unit workflow. Select `--unit-mode all-samples`, `per-sample`, or `metadata`; each option builds a sample-to-unit assignment and invokes the same per-unit p/q-value engine. The cohort-wide `all-samples` mode uses a moderately more permissive empirical-background calibration profile, recorded in the run summary, so pooled strong signals do not inflate their own null background.
 
 ## Output
 

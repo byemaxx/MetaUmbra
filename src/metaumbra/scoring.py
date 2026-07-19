@@ -65,12 +65,8 @@ from ._scoring.theoretical import (
     _read_unique_peptides_from_digest,
 )
 from ._scoring.unit_specific import (
-    UNIT_EMPIRICAL_BACKGROUND_CANDIDATE_Q,
-    UNIT_EMPIRICAL_BACKGROUND_INITIAL_EXCLUDE_FRACTION,
-    UNIT_EMPIRICAL_BACKGROUND_MAX_EXCLUDE_FRACTION,
-    UNIT_EMPIRICAL_BACKGROUND_MAX_ITERATIONS,
-    UNIT_EMPIRICAL_BACKGROUND_MIN_EXCLUDE_FRACTION,
     _compute_unit_specific_single_unit_worker,
+    _empirical_background_calibration_for_unit_mode,
     _init_unit_specific_worker,
 )
 
@@ -1888,6 +1884,9 @@ class GenomePresenceScorer:
         K1 = int(max(50, self.knockoff_mc_iterations))
         K2 = int(max(50, self.knockoff_stage2_mc_iterations)) if self.knockoff_stage2_mc_iterations is not None else None
         ranges = list(self.knockoff_stage2_p_exist_ranges or [])
+        empirical_calibration = _empirical_background_calibration_for_unit_mode(
+            self.unit_definition.mode
+        )
 
         unit_log_interval = max(1, n_units // 10)
         self.logger.info(
@@ -1930,11 +1929,11 @@ class GenomePresenceScorer:
             "knockoff_mc_iterations": int(K1),
             "knockoff_stage2_mc_iterations": K2,
             "knockoff_stage2_p_exist_ranges": ranges,
-            "unit_empirical_background_initial_exclude_fraction": UNIT_EMPIRICAL_BACKGROUND_INITIAL_EXCLUDE_FRACTION,
-            "unit_empirical_background_min_exclude_fraction": UNIT_EMPIRICAL_BACKGROUND_MIN_EXCLUDE_FRACTION,
-            "unit_empirical_background_max_exclude_fraction": UNIT_EMPIRICAL_BACKGROUND_MAX_EXCLUDE_FRACTION,
-            "unit_empirical_background_candidate_q": UNIT_EMPIRICAL_BACKGROUND_CANDIDATE_Q,
-            "unit_empirical_background_max_iterations": UNIT_EMPIRICAL_BACKGROUND_MAX_ITERATIONS,
+            "unit_empirical_background_initial_exclude_fraction": empirical_calibration["initial_exclude_fraction"],
+            "unit_empirical_background_min_exclude_fraction": empirical_calibration["min_exclude_fraction"],
+            "unit_empirical_background_max_exclude_fraction": empirical_calibration["max_exclude_fraction"],
+            "unit_empirical_background_candidate_q": empirical_calibration["candidate_q"],
+            "unit_empirical_background_max_iterations": empirical_calibration["max_iterations"],
             "unit_empirical_background_threshold_quantile": float(
                 self.unique_empirical_background_threshold_quantile
             ),
@@ -2111,17 +2110,24 @@ class GenomePresenceScorer:
             unit_level_df.get("pass_q_0_05", pd.Series(dtype=bool)).fillna(False).astype(bool).sum()
         )
         if mode == "empirical-background":
+            self.run_stats["empirical_background_calibration_profile"] = str(
+                empirical_calibration["profile"]
+            )
             self.run_stats["unit_empirical_background_initial_exclude_fraction"] = (
-                UNIT_EMPIRICAL_BACKGROUND_INITIAL_EXCLUDE_FRACTION
+                float(empirical_calibration["initial_exclude_fraction"])
             )
             self.run_stats["unit_empirical_background_min_exclude_fraction"] = (
-                UNIT_EMPIRICAL_BACKGROUND_MIN_EXCLUDE_FRACTION
+                float(empirical_calibration["min_exclude_fraction"])
             )
             self.run_stats["unit_empirical_background_max_exclude_fraction"] = (
-                UNIT_EMPIRICAL_BACKGROUND_MAX_EXCLUDE_FRACTION
+                float(empirical_calibration["max_exclude_fraction"])
             )
-            self.run_stats["unit_empirical_background_candidate_q"] = UNIT_EMPIRICAL_BACKGROUND_CANDIDATE_Q
-            self.run_stats["unit_empirical_background_max_iterations"] = UNIT_EMPIRICAL_BACKGROUND_MAX_ITERATIONS
+            self.run_stats["unit_empirical_background_candidate_q"] = float(
+                empirical_calibration["candidate_q"]
+            )
+            self.run_stats["unit_empirical_background_max_iterations"] = int(
+                empirical_calibration["max_iterations"]
+            )
             self.run_stats["unit_empirical_background_threshold_quantile"] = (
                 float(self.unique_empirical_background_threshold_quantile)
             )

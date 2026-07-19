@@ -3,6 +3,31 @@ import json
 import pandas as pd
 
 from metaumbra.scoring import GenomePresenceScorer
+from metaumbra._scoring.unit_specific import (
+    _empirical_background_calibration_for_unit_mode,
+)
+
+
+def test_all_samples_uses_moderately_permissive_empirical_background_profile():
+    pooled = _empirical_background_calibration_for_unit_mode("all-samples")
+    grouped = _empirical_background_calibration_for_unit_mode("metadata")
+
+    assert pooled == {
+        "profile": "all-samples-moderately-permissive",
+        "initial_exclude_fraction": 0.10,
+        "min_exclude_fraction": 0.05,
+        "max_exclude_fraction": 0.20,
+        "candidate_q": 0.20,
+        "max_iterations": 5,
+    }
+    assert grouped == {
+        "profile": "grouped-unit-conservative",
+        "initial_exclude_fraction": 0.03,
+        "min_exclude_fraction": 0.00,
+        "max_exclude_fraction": 0.15,
+        "candidate_q": 0.20,
+        "max_iterations": 3,
+    }
 
 
 def test_analysis_unit_worker_is_the_only_qvalue_engine(tmp_path):
@@ -71,6 +96,7 @@ def test_analysis_unit_worker_is_the_only_qvalue_engine(tmp_path):
     assert summary["scoring_engine"] == "per-analysis-unit"
     assert summary["pooled_scoring_performed"] is False
     assert summary["genomes_q_fields_scope"].startswith("per-analysis-unit scoring")
+    assert summary["empirical_background_calibration_profile"] == "grouped-unit-conservative"
     assert "pooled_genomes_q_le_0p05" not in summary
 
 
@@ -107,3 +133,7 @@ def test_public_peptide_reader_adapts_to_all_samples_scoring(tmp_path):
     assert scorer.sample_unit_mapping_df[["sample_id", "analysis_unit_id"]].values.tolist() == [
         ["__global__", "__global__"]
     ]
+    assert (
+        scorer.run_stats["empirical_background_calibration_profile"]
+        == "all-samples-moderately-permissive"
+    )
