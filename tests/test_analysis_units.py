@@ -88,6 +88,79 @@ def test_diann_parquet_builds_global_analysis_unit(tmp_path):
     assert scorer.unit_presence_matrix.shape == (2, 1)
 
 
+def test_metadata_included_flag_excludes_samples_from_scoring(tmp_path):
+    from metaumbra.genome_selection_manifest import build_genome_selection_manifest
+    from metaumbra.scoring import GenomePresenceScorer
+
+    peptide_path = tmp_path / "peptides.tsv"
+    pd.DataFrame(
+        {
+            "Run": ["s1", "s2"],
+            "Sequence": ["PEPTIDEA", "PEPTIDEB"],
+            "Intensity": [100.0, 200.0],
+        }
+    ).to_csv(peptide_path, sep="\t", index=False)
+    metadata_path = tmp_path / "metadata.tsv"
+    pd.DataFrame(
+        {
+            "sample_id": ["s1", "s2"],
+            "analysis_unit_id": ["u1", "u2"],
+            "included": ["true", "false"],
+        }
+    ).to_csv(metadata_path, sep="\t", index=False)
+
+    scorer = GenomePresenceScorer(num_workers=1)
+    scorer.read_analysis_unit_peptide_file(
+        peptide_table_path=str(peptide_path),
+        unit_mode="metadata",
+        sample_id_col="Run",
+        peptide_seq_col="Sequence",
+        peptide_score_col=None,
+        peptide_decoy_flag_col=None,
+        intensity_col="Intensity",
+        peptide_error_col=None,
+        metadata_table_path=str(metadata_path),
+    )
+
+    assert scorer.unit_sample_ids == ["s1"]
+    assert scorer.unit_analysis_unit_ids == ["u1"]
+    assert scorer.unit_peptides == ["PEPTIDEA"]
+    assert scorer.unit_presence_matrix.shape == (1, 1)
+    assert scorer.sample_unit_mapping_df[
+        ["sample_id", "analysis_unit_id", "included"]
+    ].to_dict("records") == [
+        {"sample_id": "s1", "analysis_unit_id": "u1", "included": True},
+        {"sample_id": "s2", "analysis_unit_id": "u2", "included": False},
+    ]
+    manifest = build_genome_selection_manifest(
+        mapping_df=scorer.sample_unit_mapping_df,
+        unit_genome_results=pd.DataFrame(
+            {
+                "analysis_unit_id": ["u1"],
+                "genome_id": ["g1"],
+                "pass_q_0_01": [True],
+                "pass_q_0_05": [True],
+            }
+        ),
+        unit_mode="metadata",
+        sample_id_column="Run",
+        analysis_unit_column="analysis_unit_id",
+        peptide_table_path=str(peptide_path),
+        metadata_table_path=str(metadata_path),
+        genome_digest_directories=[str(tmp_path / "digests")],
+        artifacts={"unit_genome_results": "unit_genome_results.tsv"},
+        scoring_method="test",
+    )
+    assert manifest["units"] == {
+        "u1": {
+            "sample_ids": ["s1"],
+            "n_samples": 1,
+            "genome_ids_q005": ["g1"],
+            "genome_ids_q001": ["g1"],
+        }
+    }
+
+
 def test_cli_exposes_unit_mode_and_rejects_removed_boolean():
     from metaumbra.cli import build_parser
 

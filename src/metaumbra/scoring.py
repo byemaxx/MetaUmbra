@@ -1191,6 +1191,14 @@ class GenomePresenceScorer:
         )
         sample_to_unit = dict(zip(mapping_base["sample_id"], mapping_base["analysis_unit_id"]))
         excluded_samples: Set[str] = set()
+        if metadata_fields is not None and "included" in metadata_fields.columns:
+            included_values = metadata_fields["included"].astype("string").str.strip().str.lower()
+            excluded_samples = set(
+                metadata_fields.loc[
+                    included_values.isin({"0", "false", "no", "n", "off"}),
+                    "sample_id",
+                ].astype(str)
+            )
         self.unit_definition = definition
         self.unit_metadata_table_path = str(metadata_table_path or "")
         self.unit_peptide_table_path = peptide_file_path
