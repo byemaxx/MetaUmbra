@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 import pandas as pd
 import pytest
 
@@ -54,4 +56,36 @@ def test_manifest_rejects_duplicate_cross_unit_sample(tmp_path):
     }
     manifest["unit_definition"]["n_units"] = 2
     with pytest.raises(ValueError, match="multiple units"):
+        validate_genome_selection_manifest(manifest)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["generated_by", "unit_definition", "selection", "inputs", "units", "artifacts", "warnings"],
+)
+def test_manifest_rejects_missing_top_level_fields(tmp_path, field):
+    manifest = _manifest(tmp_path)
+    del manifest[field]
+
+    with pytest.raises(ValueError, match=f"missing required fields: {field}"):
+        validate_genome_selection_manifest(manifest)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda manifest: manifest["generated_by"].pop("run_id"), "generated_by is missing required fields"),
+        (lambda manifest: manifest.__setitem__("warnings", "warning"), "warnings must be an array"),
+        (
+            lambda manifest: manifest["units"]["__global__"].__setitem__("sample_ids", ["s1", 2]),
+            "sample_ids must contain only strings",
+        ),
+        (lambda manifest: manifest.__setitem__("unexpected", True), "unexpected fields"),
+    ],
+)
+def test_manifest_rejects_schema_type_and_shape_violations(tmp_path, mutation, message):
+    manifest = deepcopy(_manifest(tmp_path))
+    mutation(manifest)
+
+    with pytest.raises(ValueError, match=message):
         validate_genome_selection_manifest(manifest)

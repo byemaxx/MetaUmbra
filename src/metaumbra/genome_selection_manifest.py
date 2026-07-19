@@ -15,50 +15,143 @@ SCHEMA_VERSION = "metaumbra.genome_selection_manifest.v1"
 GENOME_THRESHOLDS = ("q0.05", "q0.01")
 
 
+def _require_object_fields(
+    value: object,
+    *,
+    name: str,
+    required: set[str],
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} must be an object")
+    missing = sorted(required - set(value))
+    if missing:
+        raise ValueError(f"{name} is missing required fields: {', '.join(missing)}")
+    return value
+
+
+def _require_string_list(value: object, *, name: str, nonempty: bool = False) -> list[str]:
+    if not isinstance(value, list) or (nonempty and not value):
+        qualifier = "a non-empty" if nonempty else "an"
+        raise ValueError(f"{name} must be {qualifier} array")
+    if not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{name} must contain only strings")
+    if len(value) != len(set(value)):
+        raise ValueError(f"{name} must not contain duplicates")
+    return value
+
+
 def validate_genome_selection_manifest(data: dict[str, Any]) -> None:
+    required_top_level = {
+        "schema_version",
+        "generated_by",
+        "unit_definition",
+        "selection",
+        "inputs",
+        "units",
+        "artifacts",
+        "warnings",
+    }
+    data = _require_object_fields(
+        data,
+        name="manifest",
+        required=required_top_level,
+    )
+    unexpected = sorted(set(data) - required_top_level)
+    if unexpected:
+        raise ValueError(f"manifest contains unexpected fields: {', '.join(unexpected)}")
     if data.get("schema_version") != SCHEMA_VERSION:
         raise ValueError(f"schema_version must be {SCHEMA_VERSION!r}")
-    generated_by = data.get("generated_by")
-    if not isinstance(generated_by, dict) or generated_by.get("software") != "MetaUmbra":
+    generated_by = _require_object_fields(
+        data["generated_by"],
+        name="generated_by",
+        required={"software", "version", "run_id", "generated_at"},
+    )
+    if generated_by["software"] != "MetaUmbra":
         raise ValueError("generated_by.software must be 'MetaUmbra'")
-    unit_definition = data.get("unit_definition")
-    if not isinstance(unit_definition, dict):
-        raise ValueError("unit_definition must be an object")
-    units = data.get("units")
+    for field in ("version", "run_id", "generated_at"):
+        if not isinstance(generated_by[field], str):
+            raise ValueError(f"generated_by.{field} must be a string")
+    try:
+        generated_at = datetime.fromisoformat(generated_by["generated_at"].replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("generated_by.generated_at must be an RFC 3339 date-time") from exc
+    if generated_at.tzinfo is None or generated_at.utcoffset() is None:
+        raise ValueError("generated_by.generated_at must include a timezone")
+
+    unit_definition = _require_object_fields(
+        data["unit_definition"],
+        name="unit_definition",
+        required={"mode", "sample_id_column", "analysis_unit_column", "n_units"},
+    )
+    if unit_definition["mode"] not in {"all-samples", "per-sample", "metadata"}:
+        raise ValueError("unit_definition.mode is invalid")
+    if not isinstance(unit_definition["sample_id_column"], str):
+        raise ValueError("unit_definition.sample_id_column must be a string")
+    if unit_definition["analysis_unit_column"] is not None and not isinstance(
+        unit_definition["analysis_unit_column"], str
+    ):
+        raise ValueError("unit_definition.analysis_unit_column must be a string or null")
+    n_units = unit_definition["n_units"]
+    if not isinstance(n_units, int) or isinstance(n_units, bool) or n_units < 1:
+        raise ValueError("unit_definition.n_units must be a positive integer")
+
+    units = data["units"]
     if not isinstance(units, dict) or not units:
         raise ValueError("units must contain at least one analysis unit")
-    if int(unit_definition.get("n_units", -1)) != len(units):
+    if n_units != len(units):
         raise ValueError("unit_definition.n_units does not match units")
-    selection = data.get("selection")
-    if not isinstance(selection, dict):
-        raise ValueError("selection must be an object")
-    default_threshold = selection.get("default_genome_threshold")
-    available = selection.get("available_genome_thresholds")
+    selection = _require_object_fields(
+        data["selection"],
+        name="selection",
+        required={"default_genome_threshold", "available_genome_thresholds", "scoring_method"},
+    )
+    default_threshold = selection["default_genome_threshold"]
+    available = selection["available_genome_thresholds"]
     if default_threshold not in GENOME_THRESHOLDS or available != list(GENOME_THRESHOLDS):
         raise ValueError("selection thresholds must be q0.05 and q0.01")
+    if not isinstance(selection["scoring_method"], str):
+        raise ValueError("selection.scoring_method must be a string")
+    if not isinstance(data["inputs"], dict):
+        raise ValueError("inputs must be an object")
+    if not isinstance(data["artifacts"], dict):
+        raise ValueError("artifacts must be an object")
+    warnings = data["warnings"]
+    if not isinstance(warnings, list) or not all(isinstance(item, str) for item in warnings):
+        raise ValueError("warnings must be an array of strings")
 
     seen_samples: dict[str, str] = {}
     for unit_id, payload in units.items():
-        if not isinstance(payload, dict):
-            raise ValueError(f"Unit {unit_id!r} must be an object")
-        samples = payload.get("sample_ids")
-        if not isinstance(samples, list) or not samples:
-            raise ValueError(f"Unit {unit_id!r} must contain sample_ids")
-        if int(payload.get("n_samples", -1)) != len(samples):
+        if not isinstance(unit_id, str):
+            raise ValueError("Unit IDs must be strings")
+        payload = _require_object_fields(
+            payload,
+            name=f"Unit {unit_id!r}",
+            required={"sample_ids", "n_samples", "genome_ids_q005", "genome_ids_q001"},
+        )
+        samples = _require_string_list(
+            payload["sample_ids"],
+            name=f"Unit {unit_id!r} sample_ids",
+            nonempty=True,
+        )
+        n_samples = payload["n_samples"]
+        if not isinstance(n_samples, int) or isinstance(n_samples, bool) or n_samples < 1:
+            raise ValueError(f"Unit {unit_id!r} n_samples must be a positive integer")
+        if n_samples != len(samples):
             raise ValueError(f"Unit {unit_id!r} has inconsistent n_samples")
         for sample in samples:
-            sample = str(sample)
             if sample in seen_samples:
                 raise ValueError(
                     f"Sample {sample!r} is assigned to multiple units: "
                     f"{seen_samples[sample]!r} and {unit_id!r}"
                 )
             seen_samples[sample] = str(unit_id)
-        q005 = payload.get("genome_ids_q005")
-        q001 = payload.get("genome_ids_q001")
-        if not isinstance(q005, list) or not isinstance(q001, list):
-            raise ValueError(f"Unit {unit_id!r} must contain both genome threshold lists")
-        if not set(map(str, q001)).issubset(set(map(str, q005))):
+        q005 = _require_string_list(
+            payload["genome_ids_q005"], name=f"Unit {unit_id!r} genome_ids_q005"
+        )
+        q001 = _require_string_list(
+            payload["genome_ids_q001"], name=f"Unit {unit_id!r} genome_ids_q001"
+        )
+        if not set(q001).issubset(set(q005)):
             raise ValueError(f"Unit {unit_id!r} q0.01 genomes are not a subset of q0.05")
 
 
