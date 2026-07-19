@@ -72,3 +72,38 @@ def test_analysis_unit_worker_is_the_only_qvalue_engine(tmp_path):
     assert summary["pooled_scoring_performed"] is False
     assert summary["genomes_q_fields_scope"].startswith("per-analysis-unit scoring")
     assert "pooled_genomes_q_le_0p05" not in summary
+
+
+def test_public_peptide_reader_adapts_to_all_samples_scoring(tmp_path):
+    peptide_table = tmp_path / "legacy_peptides.tsv"
+    pd.DataFrame({"Sequence": ["PEPA", "PEPB"]}).to_csv(
+        peptide_table,
+        sep="\t",
+        index=False,
+    )
+
+    scorer = GenomePresenceScorer(num_workers=1)
+    scorer.knockoff_mc_iterations = 50
+    scorer.knockoff_stage2_mc_iterations = None
+    scorer.read_peptide_file(
+        peptide_table_path=str(peptide_table),
+        peptide_seq_col="Sequence",
+        peptide_score_col=None,
+        peptide_decoy_flag_col=None,
+    )
+
+    result = scorer.analyze_genomes(
+        genome_digest_dirs=[str(tmp_path)],
+        output_tsv_path=str(tmp_path / "unit_genome_results.tsv"),
+        all_matched_peptides=[
+            ("g1", {"PEPA"}, 1),
+            ("g2", {"PEPB"}, 1),
+        ],
+        compute_coverage=False,
+    )
+
+    assert set(result["analysis_unit_id"]) == {"__global__"}
+    assert scorer.unit_sample_ids == ["__global__"]
+    assert scorer.sample_unit_mapping_df[["sample_id", "analysis_unit_id"]].values.tolist() == [
+        ["__global__", "__global__"]
+    ]

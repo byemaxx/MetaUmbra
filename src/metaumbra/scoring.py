@@ -285,6 +285,9 @@ class GenomePresenceScorer:
         self.peptide_error_upper_by_peptide: Dict[str, float] = {}  # peptide -> per-peptide upper bound (from error column)
         self.genome_lineage_df: Optional[pd.DataFrame] = None
         self.unit_specific_enabled: bool = False
+        self.unit_definition = AnalysisUnitDefinition()
+        self.unit_peptide_table_path: str = ""
+        self.unit_metadata_table_path: str = ""
         self.unit_presence_rule: str = "union"
         self.unit_shared_mode: str = "per-unit"
         self.unit_sample_ids: List[str] = []
@@ -677,6 +680,40 @@ class GenomePresenceScorer:
         if cached_totals:
             self.genome_total_theoretical_peptides.update(cached_totals)
 
+    def _initialize_legacy_all_samples_unit(self, peptide_table_path: Optional[str]) -> None:
+        """Adapt the public pooled reader to the unified analysis-unit engine."""
+        from scipy.sparse import csr_matrix
+
+        peptide_list = sorted(self.peptide_score)
+        peptide_index = {peptide: index for index, peptide in enumerate(peptide_list)}
+        definition = AnalysisUnitDefinition(mode="all-samples", sample_id_column="sample_id")
+        mapping_df, _ = build_sample_unit_mapping([GLOBAL_UNIT_ID], definition)
+        mapping_df["included"] = True
+        mapping_df["n_valid_peptides"] = len(peptide_list)
+        mapping_df["n_total_rows"] = len(peptide_list)
+
+        self.unit_specific_enabled = True
+        self.unit_definition = definition
+        self.unit_peptide_table_path = str(peptide_table_path or "<in-memory peptide table>")
+        self.unit_metadata_table_path = ""
+        self.unit_presence_rule = "union"
+        self.unit_shared_mode = "per-unit"
+        self.unit_sample_ids = [GLOBAL_UNIT_ID]
+        self.unit_analysis_unit_ids = [GLOBAL_UNIT_ID]
+        self.unit_peptides = peptide_list
+        self.unit_peptide_index = peptide_index
+        self.unit_presence_matrix = csr_matrix(
+            np.ones((len(peptide_list), 1), dtype=COUNT_DTYPE),
+            dtype=COUNT_DTYPE,
+        )
+        self.unit_sample_counts = {GLOBAL_UNIT_ID: 1}
+        self.sample_unit_mapping_df = mapping_df
+        self.run_stats["unit_mode"] = "all-samples"
+        self.run_stats["unit_presence_rule"] = self.unit_presence_rule
+        self.run_stats["unit_shared_mode"] = self.unit_shared_mode
+        self.run_stats["unit_specific_sample_id_synthesized"] = True
+        self.run_stats["unit_specific_analysis_units"] = 1
+
     def read_peptide_file(
         self,
         peptide_table_path: Optional[str] = None,
@@ -865,6 +902,7 @@ class GenomePresenceScorer:
         self.run_stats.setdefault("peptide_rows_after_decoy_filter", int(len(df)))
         self.run_stats.setdefault("peptide_rows_after_error_filter", int(len(df)))
 
+        self._initialize_legacy_all_samples_unit(peptide_table_path)
         self.logger.info(f"Observed peptides: {len(self.peptide_score)} (unique)")
         return True
 
