@@ -62,6 +62,27 @@ def test_metadata_rejects_duplicate_sample_assignments(tmp_path):
         )
 
 
+def test_metadata_normalizes_raw_suffix_on_both_mapping_sides(tmp_path):
+    path = tmp_path / "metadata.tsv"
+    pd.DataFrame({"sample": ["s1.raw"], "unit": ["u1"]}).to_csv(
+        path, sep="\t", index=False
+    )
+
+    mapping, metadata = build_sample_unit_mapping(
+        ["s1.raw"],
+        AnalysisUnitDefinition(mode="metadata", analysis_unit_column="unit"),
+        metadata_table_path=path,
+        metadata_sample_id_column="sample",
+    )
+
+    assert mapping.to_dict("records") == [
+        {"sample_id": "s1", "analysis_unit_id": "u1"}
+    ]
+    assert metadata[["sample_id", "analysis_unit_id"]].to_dict("records") == [
+        {"sample_id": "s1", "analysis_unit_id": "u1"}
+    ]
+
+
 def test_diann_parquet_builds_global_analysis_unit(tmp_path):
     pytest.importorskip("pyarrow")
     from metaumbra.scoring import GenomePresenceScorer

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Iterable
 
 import pandas as pd
@@ -9,6 +10,10 @@ import pandas as pd
 
 UNIT_MODES = ("all-samples", "per-sample", "metadata")
 GLOBAL_UNIT_ID = "__global__"
+
+
+def _normalize_sample_id(value: object) -> str:
+    return re.sub(r"\.raw$", "", str(value).strip(), flags=re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -48,7 +53,12 @@ def load_metadata_mapping(
             f"available columns: {metadata.columns.tolist()}"
         )
     metadata = metadata.copy()
-    metadata[sample_id_column] = metadata[sample_id_column].astype("string").str.strip()
+    metadata[sample_id_column] = (
+        metadata[sample_id_column]
+        .astype("string")
+        .str.strip()
+        .str.replace(r"\.raw$", "", case=False, regex=True)
+    )
     metadata[analysis_unit_column] = metadata[analysis_unit_column].astype("string").str.strip()
     invalid = (
         metadata[sample_id_column].isna()
@@ -77,7 +87,7 @@ def build_sample_unit_mapping(
 ) -> tuple[pd.DataFrame, pd.DataFrame | None]:
     """Create the one authoritative sample-to-analysis-unit assignment."""
     definition.validate()
-    samples = [str(value).strip() for value in sample_ids]
+    samples = [_normalize_sample_id(value) for value in sample_ids]
     if not samples or any(not value for value in samples):
         raise ValueError("At least one non-empty sample ID is required")
     if len(samples) != len(set(samples)):
@@ -123,4 +133,3 @@ def build_sample_unit_mapping(
     return mapping, metadata.rename(
         columns={metadata_sample_id_column: "sample_id", unit_column: "analysis_unit_id"}
     )
-
