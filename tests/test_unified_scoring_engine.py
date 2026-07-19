@@ -63,6 +63,7 @@ def test_analysis_unit_worker_is_the_only_qvalue_engine(tmp_path):
     manifest = json.loads(
         (tmp_path / "genome_selection_manifest.json").read_text(encoding="utf-8")
     )
+    assert manifest["artifacts"]["run_summary"] == "artifacts/run_summary.json"
     assert "run_parameters" not in manifest["artifacts"]
     assert "logs" not in manifest["artifacts"]
     assert all((tmp_path / path).exists() for path in manifest["artifacts"].values())

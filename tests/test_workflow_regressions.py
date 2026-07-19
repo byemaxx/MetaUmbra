@@ -188,6 +188,7 @@ def test_all_samples_workflow_accepts_peptide_only_input(tmp_path):
     manifest = json.loads(
         (results_dir / "genome_selection_manifest.json").read_text(encoding="utf-8")
     )
+    assert manifest["artifacts"]["run_summary"] == "artifacts/run_summary.json"
     assert "run_parameters" in manifest["artifacts"]
     assert "logs" in manifest["artifacts"]
     assert all((results_dir / path).exists() for path in manifest["artifacts"].values())

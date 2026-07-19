@@ -44,6 +44,7 @@ from tqdm import tqdm
 from .analysis_units import AnalysisUnitDefinition, GLOBAL_UNIT_ID, build_sample_unit_mapping
 from .genome_selection_manifest import (
     build_genome_selection_manifest,
+    load_genome_selection_manifest,
     write_genome_selection_manifest,
 )
 from ._scoring.empirical import (
@@ -1580,6 +1581,27 @@ class GenomePresenceScorer:
         with open(os.path.join(temp_dir, "run_summary.json"), "w", encoding="utf-8") as f:
             json.dump(self._build_run_summary_payload(df_scored), f, indent=2)
 
+    def _refresh_manifest_optional_artifacts(self) -> None:
+        manifest_path_str = self.unit_specific_output_paths.get("genome_selection_manifest")
+        if not manifest_path_str:
+            return
+
+        manifest_path = Path(manifest_path_str)
+        manifest = load_genome_selection_manifest(manifest_path)
+        artifacts = manifest["artifacts"]
+        artifact_dir = manifest_path.parent / "artifacts"
+        optional_artifacts = {
+            "run_summary": artifact_dir / "run_summary.json",
+            "run_parameters": artifact_dir / "run_parameters.json",
+            "logs": artifact_dir / "run.log",
+        }
+        for key, path in optional_artifacts.items():
+            if path.is_file():
+                artifacts[key] = f"artifacts/{path.name}"
+            else:
+                artifacts.pop(key, None)
+        write_genome_selection_manifest(manifest_path, manifest)
+
     def _export_temp_artifacts(
         self,
         out_dir: str,
@@ -3046,6 +3068,7 @@ class GenomePresenceScorer:
 
         try:
             self._export_run_summary_artifact(out_dir=out_dir, stem=stem, df_scored=unit_scored_full)
+            self._refresh_manifest_optional_artifacts()
         except Exception as e:
             self.logger.warning(f"Failed to export run summary: {e}")
 
