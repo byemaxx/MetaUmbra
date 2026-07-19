@@ -60,14 +60,16 @@ def load_metadata_mapping(
         .str.replace(r"\.raw$", "", case=False, regex=True)
     )
     metadata[analysis_unit_column] = metadata[analysis_unit_column].astype("string").str.strip()
-    invalid = (
-        metadata[sample_id_column].isna()
-        | (metadata[sample_id_column] == "")
-        | metadata[analysis_unit_column].isna()
-        | (metadata[analysis_unit_column] == "")
-    )
-    if bool(invalid.any()):
-        raise ValueError("Metadata contains empty sample IDs or analysis unit IDs")
+    invalid_sample_ids = metadata[sample_id_column].isna() | (metadata[sample_id_column] == "")
+    if bool(invalid_sample_ids.any()):
+        raise ValueError("Metadata contains empty sample IDs")
+    included = pd.Series(True, index=metadata.index)
+    if "included" in metadata.columns:
+        included_values = metadata["included"].astype("string").str.strip().str.lower()
+        included = ~included_values.isin({"0", "false", "no", "n", "off"})
+    invalid_unit_ids = metadata[analysis_unit_column].isna() | (metadata[analysis_unit_column] == "")
+    if bool((included & invalid_unit_ids).any()):
+        raise ValueError("Metadata contains empty analysis unit IDs for included samples")
     duplicates = metadata[metadata[sample_id_column].duplicated(keep=False)]
     if not duplicates.empty:
         duplicate_ids = sorted(duplicates[sample_id_column].astype(str).unique().tolist())
@@ -122,7 +124,10 @@ def build_sample_unit_mapping(
         metadata = metadata[metadata[metadata_sample_id_column].isin(samples)].copy()
     unit_column = str(definition.analysis_unit_column)
     unit_by_sample = dict(
-        zip(metadata[metadata_sample_id_column].astype(str), metadata[unit_column].astype(str))
+        zip(
+            metadata[metadata_sample_id_column].astype(str),
+            metadata[unit_column].fillna("").astype(str),
+        )
     )
     mapping = pd.DataFrame(
         {

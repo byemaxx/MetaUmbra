@@ -62,6 +62,21 @@ def test_metadata_rejects_duplicate_sample_assignments(tmp_path):
         )
 
 
+def test_metadata_rejects_empty_unit_for_included_sample(tmp_path):
+    path = tmp_path / "metadata.tsv"
+    pd.DataFrame(
+        {"sample": ["s1"], "unit": [""], "included": ["true"]}
+    ).to_csv(path, sep="\t", index=False)
+
+    with pytest.raises(ValueError, match="empty analysis unit IDs for included samples"):
+        build_sample_unit_mapping(
+            ["s1"],
+            AnalysisUnitDefinition(mode="metadata", analysis_unit_column="unit"),
+            metadata_table_path=path,
+            metadata_sample_id_column="sample",
+        )
+
+
 def test_metadata_normalizes_raw_suffix_on_both_mapping_sides(tmp_path):
     path = tmp_path / "metadata.tsv"
     pd.DataFrame({"sample": ["s1.raw"], "unit": ["u1"]}).to_csv(
@@ -173,7 +188,7 @@ def test_metadata_included_flag_excludes_samples_from_scoring(tmp_path):
     pd.DataFrame(
         {
             "sample_id": ["s1", "s2"],
-            "analysis_unit_id": ["u1", "u2"],
+            "analysis_unit_id": ["u1", ""],
             "included": ["true", "false"],
         }
     ).to_csv(metadata_path, sep="\t", index=False)
@@ -200,7 +215,7 @@ def test_metadata_included_flag_excludes_samples_from_scoring(tmp_path):
         ["sample_id", "analysis_unit_id", "included"]
     ].to_dict("records") == [
         {"sample_id": "s1", "analysis_unit_id": "u1", "included": True},
-        {"sample_id": "s2", "analysis_unit_id": "u2", "included": False},
+        {"sample_id": "s2", "analysis_unit_id": "", "included": False},
     ]
     manifest = build_genome_selection_manifest(
         mapping_df=scorer.sample_unit_mapping_df,
