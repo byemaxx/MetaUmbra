@@ -108,6 +108,46 @@ def test_scoring_output_cannot_overwrite_peptide_input(tmp_path):
     assert peptide_path.exists()
 
 
+def test_all_samples_workflow_accepts_peptide_only_input(tmp_path):
+    peptide_path = tmp_path / "peptides.tsv"
+    pd.DataFrame(
+        {
+            "Sequence": ["PEPA", "PEPB"],
+            "Evidence": [1.0, 2.0],
+            "Q.Value": [0.01, 0.01],
+        }
+    ).to_csv(peptide_path, sep="\t", index=False)
+    digest_dir = tmp_path / "digests"
+    digest_dir.mkdir()
+    pd.DataFrame({"Peptide": ["PEPA"]}).to_csv(
+        digest_dir / "g1.tsv", sep="\t", index=False
+    )
+    pd.DataFrame({"Peptide": ["PEPB"]}).to_csv(
+        digest_dir / "g2.tsv", sep="\t", index=False
+    )
+    results_dir = tmp_path / "results"
+
+    result = run_scoring_workflow(
+        ScoringConfig(
+            peptide_table_path=str(peptide_path),
+            genome_digest_dirs=[str(digest_dir)],
+            output_tsv_path=str(results_dir),
+            num_workers=1,
+            knockoff_mc_iterations=20,
+            knockoff_stage2_mc_iterations=None,
+            compute_coverage=False,
+        )
+    )
+
+    assert result["n_units"] == 1
+    assert (results_dir / "genome_selection_manifest.json").is_file()
+    assert (results_dir / "unit_genome_results.tsv").is_file()
+    mapping = pd.read_csv(results_dir / "sample_unit_mapping.tsv", sep="\t", dtype="string")
+    assert mapping[["sample_id", "analysis_unit_id"]].values.tolist() == [
+        ["__global__", "__global__"]
+    ]
+
+
 @pytest.mark.parametrize(
     ("payload", "expected_mode"),
     [

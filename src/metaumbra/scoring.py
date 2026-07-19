@@ -41,7 +41,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from .analysis_units import AnalysisUnitDefinition, build_sample_unit_mapping
+from .analysis_units import AnalysisUnitDefinition, GLOBAL_UNIT_ID, build_sample_unit_mapping
 from .genome_selection_manifest import (
     build_genome_selection_manifest,
     write_genome_selection_manifest,
@@ -887,24 +887,26 @@ class GenomePresenceScorer:
         metadata_analysis_unit_col: str = "analysis_unit_id",
         peptide_table_sep: str = "\t",
     ) -> bool:
-        """Read long-format peptide evidence and build peptide x analysis-unit presence."""
+        """Read peptide evidence and build peptide x analysis-unit presence."""
         from scipy.sparse import csr_matrix
 
         peptide_file_path = str(peptide_table_path)
         if not os.path.exists(peptide_file_path):
             raise FileNotFoundError(f"Peptide file does not exist: {peptide_file_path}")
 
+        unit_mode = str(unit_mode).strip()
+        require_long_format = unit_mode != "all-samples"
         sample_col = str(sample_id_col).strip()
         seq_col = str(peptide_seq_col).strip()
         score_col = str(peptide_score_col).strip() if peptide_score_col else None
         decoy_col = str(peptide_decoy_flag_col).strip() if peptide_decoy_flag_col else None
         intensity_col = str(intensity_col).strip()
         error_col = str(peptide_error_col).strip() if peptide_error_col else None
-        if not sample_col:
+        if not sample_col and require_long_format:
             raise ValueError("sample_id_col must not be empty.")
         if not seq_col:
             raise ValueError("peptide_seq_col must not be empty.")
-        if not intensity_col:
+        if not intensity_col and require_long_format:
             raise ValueError("intensity_col must not be empty.")
 
         suffix = Path(peptide_file_path).suffix.lower()
@@ -979,8 +981,12 @@ class GenomePresenceScorer:
                     "pyarrow is required to read parquet files. Install it with: python -m pip install pyarrow"
                 ) from exc
             schema_names = list(pq.read_schema(peptide_file_path).names)
-            sample_col = str(
-                _resolve_col(schema_names, sample_col, ["Run", "File.Name", "Raw.File", "Sample", "Sample.Name"], "sample ID")
+            resolved_sample_col = _resolve_col(
+                schema_names,
+                sample_col or None,
+                ["Run", "File.Name", "Raw.File", "Sample", "Sample.Name"],
+                "sample ID",
+                required=require_long_format,
             )
             seq_col = str(
                 _resolve_col(
@@ -1004,13 +1010,12 @@ class GenomePresenceScorer:
                 "decoy flag",
                 required=False,
             )
-            intensity_col = str(
-                _resolve_col(
-                    schema_names,
-                    intensity_col,
-                    ["Precursor.Quantity", "Precursor.Normalised", "Intensity"],
-                    "intensity",
-                )
+            resolved_intensity_col = _resolve_col(
+                schema_names,
+                intensity_col or None,
+                ["Precursor.Quantity", "Precursor.Normalised", "Intensity"],
+                "intensity",
+                required=require_long_format,
             )
             error_col = _resolve_col(
                 schema_names,
@@ -1019,7 +1024,9 @@ class GenomePresenceScorer:
                 "peptide error",
                 required=False,
             )
-            required_cols = [sample_col, seq_col, intensity_col]
+            required_cols = [
+                col for col in [resolved_sample_col, seq_col, resolved_intensity_col] if col
+            ]
             optional_cols = [score_col, decoy_col, error_col]
             columns_to_read = list(dict.fromkeys(required_cols + [col for col in optional_cols if col in schema_names]))
             df = pq.read_table(peptide_file_path, columns=columns_to_read, use_threads=True).to_pandas()
@@ -1027,8 +1034,12 @@ class GenomePresenceScorer:
             sep = "," if suffix == ".csv" else peptide_table_sep
             sample_df = pd.read_csv(peptide_file_path, sep=sep, nrows=5)
             available_columns = sample_df.columns.tolist()
-            sample_col = str(
-                _resolve_col(available_columns, sample_col, ["Run", "File.Name", "Raw.File", "Sample", "Sample.Name"], "sample ID")
+            resolved_sample_col = _resolve_col(
+                available_columns,
+                sample_col or None,
+                ["Run", "File.Name", "Raw.File", "Sample", "Sample.Name"],
+                "sample ID",
+                required=require_long_format,
             )
             seq_col = str(
                 _resolve_col(
@@ -1052,13 +1063,12 @@ class GenomePresenceScorer:
                 "decoy flag",
                 required=False,
             )
-            intensity_col = str(
-                _resolve_col(
-                    available_columns,
-                    intensity_col,
-                    ["Precursor.Quantity", "Precursor.Normalised", "Intensity"],
-                    "intensity",
-                )
+            resolved_intensity_col = _resolve_col(
+                available_columns,
+                intensity_col or None,
+                ["Precursor.Quantity", "Precursor.Normalised", "Intensity"],
+                "intensity",
+                required=require_long_format,
             )
             error_col = _resolve_col(
                 available_columns,
@@ -1067,10 +1077,42 @@ class GenomePresenceScorer:
                 "peptide error",
                 required=False,
             )
-            required_cols = [sample_col, seq_col, intensity_col]
+            required_cols = [
+                col for col in [resolved_sample_col, seq_col, resolved_intensity_col] if col
+            ]
             columns_to_read = list(dict.fromkeys(required_cols + [col for col in [score_col, decoy_col, error_col] if col]))
-            dtype = {sample_col: "string", seq_col: "string"}
+            dtype = {seq_col: "string"}
+            if resolved_sample_col:
+                dtype[str(resolved_sample_col)] = "string"
             df = pd.read_csv(peptide_file_path, sep=sep, usecols=columns_to_read, dtype=dtype, engine="c")
+
+        sample_id_synthesized = resolved_sample_col is None
+        intensity_synthesized = resolved_intensity_col is None
+        if sample_id_synthesized:
+            sample_col = GLOBAL_UNIT_ID
+            while sample_col in df.columns:
+                sample_col = f"_{sample_col}"
+            df[sample_col] = GLOBAL_UNIT_ID
+            self.logger.info(
+                "All-samples input has no sample ID column; using one synthetic global sample."
+            )
+        else:
+            sample_col = str(resolved_sample_col)
+
+        if intensity_synthesized:
+            if float(intensity_min_value) > 0.0 or float(intensity_min_quantile) > 0.0:
+                raise ValueError(
+                    "An intensity column is required when intensity filtering is enabled."
+                )
+            intensity_col = "__metaumbra_presence__"
+            while intensity_col in df.columns:
+                intensity_col = f"_{intensity_col}"
+            df[intensity_col] = 1.0
+            self.logger.info(
+                "All-samples input has no intensity column; treating each peptide row as present."
+            )
+        else:
+            intensity_col = str(resolved_intensity_col)
 
         if score_col and score_col not in df.columns:
             self.logger.warning(
@@ -1102,6 +1144,8 @@ class GenomePresenceScorer:
         self.run_stats["unit_specific_peptide_error_cutoff"] = float(peptide_error_cutoff)
         self.run_stats["unit_specific_intensity_min_value"] = float(intensity_min_value)
         self.run_stats["unit_specific_intensity_min_quantile"] = float(intensity_min_quantile)
+        self.run_stats["unit_specific_sample_id_synthesized"] = bool(sample_id_synthesized)
+        self.run_stats["unit_specific_intensity_synthesized"] = bool(intensity_synthesized)
 
         self.logger.info(f"Preparing unit-specific columns for {len(df)} loaded row(s) ...")
         df = df.copy()
@@ -2969,7 +3013,7 @@ class GenomePresenceScorer:
                     out_dir=out_dir,
                     stem=stem,
                     df_scored=unit_scored_full,
-                    export_peptide_contrib_topN=0,
+                    export_peptide_contrib_topN=int(export_peptide_contrib_topN),
                 )
                 self.timing_stats["export_temp"] = float(time.time() - t_export0)
             except Exception as e:

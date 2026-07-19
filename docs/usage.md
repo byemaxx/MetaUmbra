@@ -15,7 +15,7 @@ metaumbra score --unit-mode metadata --metadata-table metadata.tsv \
   --peptide-table report.parquet --genome-digest-dirs digests --output results
 ```
 
-The peptide table must be long-format and include a sample/run column, peptide sequence, and intensity. DIA-NN parquet columns are detected from common names; defaults are `Run`, `Stripped.Sequence`/`Sequence`, and `Precursor.Quantity`. Trailing `.raw` is removed from DIA-NN sample IDs before unit mapping.
+For `per-sample` and `metadata` modes, the peptide table must be long-format and include a sample/run column, peptide sequence, and intensity. `all-samples` also accepts peptide-only tables: when sample and intensity columns are absent, MetaUmbra creates one synthetic global sample and treats each peptide row as present. DIA-NN parquet columns are detected from common names; defaults are `Run`, `Stripped.Sequence`/`Sequence`, and `Precursor.Quantity`. Trailing `.raw` is removed from DIA-NN sample IDs before unit mapping.
 
 Metadata mode is strict: each peptide-table sample must occur exactly once in metadata, with a non-empty analysis unit ID. Duplicate or missing assignments are errors.
 

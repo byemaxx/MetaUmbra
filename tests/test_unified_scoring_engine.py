@@ -5,7 +5,7 @@ import pandas as pd
 from metaumbra.scoring import GenomePresenceScorer
 
 
-def test_analysis_unit_worker_is_the_only_qvalue_engine(tmp_path):
+def test_analysis_unit_worker_is_the_only_qvalue_engine(tmp_path, monkeypatch):
     assert not hasattr(GenomePresenceScorer, "_rank_genomes")
     assert not hasattr(GenomePresenceScorer, "_add_knockoff_existence_stats")
 
@@ -34,6 +34,12 @@ def test_analysis_unit_worker_is_the_only_qvalue_engine(tmp_path):
     )
 
     output = tmp_path / "unit_genome_results.tsv"
+    diagnostic_export = {}
+
+    def capture_diagnostic_export(*, export_peptide_contrib_topN, **_kwargs):
+        diagnostic_export["top_n"] = export_peptide_contrib_topN
+
+    monkeypatch.setattr(scorer, "_export_temp_artifacts", capture_diagnostic_export)
     result = scorer.analyze_genomes(
         genome_digest_dirs=[str(tmp_path)],
         output_tsv_path=str(output),
@@ -42,6 +48,8 @@ def test_analysis_unit_worker_is_the_only_qvalue_engine(tmp_path):
             ("g2", {"PEPB"}, 1),
         ],
         compute_coverage=False,
+        export_diagnostics=True,
+        export_peptide_contrib_topN=3,
     )
 
     assert set(result["analysis_unit_id"]) == {"s1", "s2"}
@@ -50,6 +58,7 @@ def test_analysis_unit_worker_is_the_only_qvalue_engine(tmp_path):
         ["g1", "g2"],
         ["g1", "g2"],
     ]
+    assert diagnostic_export == {"top_n": 3}
     summary = json.loads((tmp_path / "artifacts" / "run_summary.json").read_text(encoding="utf-8"))
     assert summary["scoring_engine"] == "per-analysis-unit"
     assert summary["pooled_scoring_performed"] is False

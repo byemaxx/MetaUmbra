@@ -88,6 +88,53 @@ def test_diann_parquet_builds_global_analysis_unit(tmp_path):
     assert scorer.unit_presence_matrix.shape == (2, 1)
 
 
+def test_all_samples_accepts_peptide_only_table(tmp_path):
+    from metaumbra.scoring import GenomePresenceScorer
+
+    path = tmp_path / "peptides.tsv"
+    pd.DataFrame(
+        {
+            "Sequence": ["PEPTIDEA", "PEPTIDEB"],
+            "Evidence": [1.0, 2.0],
+            "Q.Value": [0.01, 0.01],
+        }
+    ).to_csv(path, sep="\t", index=False)
+
+    scorer = GenomePresenceScorer(num_workers=1)
+    scorer.read_analysis_unit_peptide_file(
+        peptide_table_path=str(path),
+        unit_mode="all-samples",
+        sample_id_col="Run",
+        peptide_seq_col="Sequence",
+        peptide_decoy_flag_col=None,
+    )
+
+    assert scorer.unit_sample_ids == [GLOBAL_UNIT_ID]
+    assert scorer.unit_analysis_unit_ids == [GLOBAL_UNIT_ID]
+    assert scorer.unit_peptides == ["PEPTIDEA", "PEPTIDEB"]
+    assert scorer.unit_presence_matrix.shape == (2, 1)
+    assert scorer.run_stats["unit_specific_sample_id_synthesized"] is True
+    assert scorer.run_stats["unit_specific_intensity_synthesized"] is True
+
+
+def test_all_samples_requires_intensity_for_configured_filter(tmp_path):
+    from metaumbra.scoring import GenomePresenceScorer
+
+    path = tmp_path / "peptides.tsv"
+    pd.DataFrame({"Sequence": ["PEPTIDEA"]}).to_csv(path, sep="\t", index=False)
+
+    scorer = GenomePresenceScorer(num_workers=1)
+    with pytest.raises(ValueError, match="intensity column is required"):
+        scorer.read_analysis_unit_peptide_file(
+            peptide_table_path=str(path),
+            unit_mode="all-samples",
+            sample_id_col="Run",
+            peptide_seq_col="Sequence",
+            peptide_decoy_flag_col=None,
+            intensity_min_value=1.0,
+        )
+
+
 def test_metadata_included_flag_excludes_samples_from_scoring(tmp_path):
     from metaumbra.genome_selection_manifest import build_genome_selection_manifest
     from metaumbra.scoring import GenomePresenceScorer
