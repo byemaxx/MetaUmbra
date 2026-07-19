@@ -173,3 +173,14 @@ def test_legacy_scoring_config_migrates_unit_mode(payload, expected_mode):
     migrated = migrate_legacy_scoring_config_payload(payload)
     assert migrated["unit_mode"] == expected_mode
     assert "unit_specific" not in migrated
+
+
+@pytest.mark.parametrize("suffix", [".tsv", ".TXT"])
+def test_legacy_scoring_config_migrates_output_file_to_results_directory(tmp_path, suffix):
+    legacy_output = tmp_path / f"genome_presence{suffix}"
+
+    migrated = migrate_legacy_scoring_config_payload(
+        {"unit_mode": "all-samples", "output_tsv_path": str(legacy_output)}
+    )
+
+    assert migrated["output_tsv_path"] == str(tmp_path / "genome_presence")

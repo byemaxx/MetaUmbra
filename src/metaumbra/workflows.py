@@ -126,8 +126,14 @@ class ParquetExtractionConfig:
 
 
 def migrate_legacy_scoring_config_payload(payload: dict[str, object]) -> dict[str, object]:
-    """Translate the removed unit_specific flag into the unified unit mode."""
+    """Translate legacy GUI settings into the unified scoring configuration."""
     migrated = dict(payload)
+
+    legacy_output = str(migrated.get("output_tsv_path") or "").strip()
+    legacy_output_path = Path(legacy_output)
+    if legacy_output_path.suffix.lower() in {".tsv", ".txt"}:
+        migrated["output_tsv_path"] = str(legacy_output_path.with_suffix(""))
+
     legacy_unit_specific = migrated.pop("unit_specific", None)
     if "unit_mode" in migrated or legacy_unit_specific is None:
         return migrated

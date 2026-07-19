@@ -160,4 +160,3 @@ def load_genome_selection_manifest(path: str | Path) -> dict[str, Any]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     validate_genome_selection_manifest(data)
     return data
-
