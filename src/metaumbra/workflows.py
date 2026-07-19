@@ -306,9 +306,7 @@ def _write_json_file(path: Path, payload: dict) -> None:
 
 def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConfig) -> None:
     """Remove generated diagnostics that should not carry across independent runs."""
-    known_files = {
-        "run_summary.json",
-        "run_status.json",
+    diagnostic_files = {
         "full_internal_metrics.tsv",
         "knockoff_pools.tsv",
         "degeneracy_hist.tsv",
@@ -316,6 +314,7 @@ def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConf
         "q_calling_curve.tsv",
         "shared_stratum_counts.tsv",
     }
+    known_files = {"run_summary.json", "run_status.json", *diagnostic_files}
     if (
         not bool(config.use_cache_if_exists)
         and not str(config.matched_peptides_cache_path or "").strip()
@@ -330,13 +329,28 @@ def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConf
     cleanup_paths = [artifact_dir / name for name in known_files]
     cleanup_paths.extend(artifact_dir.glob("top*_peptide_contrib.tsv"))
     diagnostics_dir = artifact_dir / "diagnostics"
-    if diagnostics_dir.exists():
-        cleanup_paths.extend(path for path in diagnostics_dir.iterdir() if path.is_file())
+    cleanup_paths.extend(diagnostics_dir / name for name in diagnostic_files)
+    cleanup_paths.extend(diagnostics_dir.glob("top*_peptide_contrib.tsv"))
+
+    protected_inputs = {
+        config.peptide_table_path,
+        config.metadata_table_path,
+        config.genome_lineage_table_path,
+        config.matched_peptides_cache_path,
+        config.theoretical_opportunity_cache_path,
+    }
+    protected_resolved = {
+        Path(path).expanduser().resolve()
+        for path in protected_inputs
+        if str(path or "").strip()
+    }
 
     artifact_root = artifact_dir.resolve()
     for path in cleanup_paths:
         try:
             resolved = path.resolve()
+            if resolved in protected_resolved:
+                continue
             if resolved.is_file() and (resolved.parent == artifact_root or resolved.parent == diagnostics_dir.resolve()):
                 resolved.unlink()
         except Exception:

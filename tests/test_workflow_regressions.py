@@ -8,6 +8,7 @@ from metaumbra.scoring import GenomePresenceScorer
 from metaumbra.workflows import (
     ParquetExtractionConfig,
     ScoringConfig,
+    _clean_scoring_artifacts_for_new_run,
     migrate_legacy_scoring_config_payload,
     run_parquet_extraction_workflow,
     run_scoring_workflow,
@@ -90,6 +91,42 @@ def test_failed_directory_run_writes_status_to_results_artifacts(tmp_path):
     assert not any((results_dir / name).exists() for name in stale_outputs)
     assert unrelated_path.read_text(encoding="utf-8") == "keep"
     assert not (tmp_path / "artifacts").exists()
+
+
+def test_artifact_cleanup_preserves_configured_inputs_and_unknown_files(tmp_path):
+    artifact_dir = tmp_path / "results" / "artifacts"
+    diagnostics_dir = artifact_dir / "diagnostics"
+    diagnostics_dir.mkdir(parents=True)
+    generated_paths = [
+        artifact_dir / "run_summary.json",
+        diagnostics_dir / "full_internal_metrics.tsv",
+        diagnostics_dir / "top5_peptide_contrib.tsv",
+    ]
+    for path in generated_paths:
+        path.write_text("stale", encoding="utf-8")
+    metadata_path = diagnostics_dir / "metadata.tsv"
+    matched_cache_path = diagnostics_dir / "custom_matched.pkl"
+    theoretical_cache_path = diagnostics_dir / "custom_theoretical.pkl"
+    unknown_path = diagnostics_dir / "notes.tsv"
+    for path in [metadata_path, matched_cache_path, theoretical_cache_path, unknown_path]:
+        path.write_text("keep", encoding="utf-8")
+
+    _clean_scoring_artifacts_for_new_run(
+        artifact_dir,
+        ScoringConfig(
+            metadata_table_path=str(metadata_path),
+            matched_peptides_cache_path=str(matched_cache_path),
+            theoretical_opportunity_cache_path=str(theoretical_cache_path),
+            use_cache_if_exists=True,
+            unique_pvalue_mode="hypergeometric-opportunity",
+        ),
+    )
+
+    assert not any(path.exists() for path in generated_paths)
+    assert all(
+        path.read_text(encoding="utf-8") == "keep"
+        for path in [metadata_path, matched_cache_path, theoretical_cache_path, unknown_path]
+    )
 
 
 def test_scoring_output_cannot_overwrite_peptide_input(tmp_path):
