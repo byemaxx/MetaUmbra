@@ -5,7 +5,7 @@ import pandas as pd
 from metaumbra.scoring import GenomePresenceScorer
 
 
-def test_analysis_unit_worker_is_the_only_qvalue_engine(tmp_path, monkeypatch):
+def test_analysis_unit_worker_is_the_only_qvalue_engine(tmp_path):
     assert not hasattr(GenomePresenceScorer, "_rank_genomes")
     assert not hasattr(GenomePresenceScorer, "_add_knockoff_existence_stats")
 
@@ -34,12 +34,6 @@ def test_analysis_unit_worker_is_the_only_qvalue_engine(tmp_path, monkeypatch):
     )
 
     output = tmp_path / "unit_genome_results.tsv"
-    diagnostic_export = {}
-
-    def capture_diagnostic_export(*, export_peptide_contrib_topN, **_kwargs):
-        diagnostic_export["top_n"] = export_peptide_contrib_topN
-
-    monkeypatch.setattr(scorer, "_export_temp_artifacts", capture_diagnostic_export)
     result = scorer.analyze_genomes(
         genome_digest_dirs=[str(tmp_path)],
         output_tsv_path=str(output),
@@ -58,7 +52,14 @@ def test_analysis_unit_worker_is_the_only_qvalue_engine(tmp_path, monkeypatch):
         ["g1", "g2"],
         ["g1", "g2"],
     ]
-    assert diagnostic_export == {"top_n": 3}
+    peptide_contrib = pd.read_csv(
+        tmp_path / "artifacts" / "diagnostics" / "top3_peptide_contrib.tsv",
+        sep="\t",
+    )
+    assert peptide_contrib[["analysis_unit_id", "genome_id", "peptide"]].values.tolist() == [
+        ["s1", "g1", "PEPA"],
+        ["s2", "g2", "PEPB"],
+    ]
     manifest = json.loads(
         (tmp_path / "genome_selection_manifest.json").read_text(encoding="utf-8")
     )

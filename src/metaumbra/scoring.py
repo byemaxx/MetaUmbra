@@ -1690,18 +1690,33 @@ class GenomePresenceScorer:
             if "evidence_rank" in target.columns:
                 target = target.sort_values("evidence_rank", ascending=True, kind="mergesort")
             target = target.head(topN)
+            observed_peptides_by_unit: Dict[str, Set[str]] = {}
+            if self.unit_presence_matrix is not None:
+                peptide_by_index = list(self.unit_peptides)
+                for unit_idx, unit_id in enumerate(self.unit_analysis_unit_ids):
+                    observed_indices = self.unit_presence_matrix[:, unit_idx].nonzero()[0]
+                    observed_peptides_by_unit[str(unit_id)] = {
+                        peptide_by_index[int(index)] for index in observed_indices
+                    }
             out_rows = []
             for _, r in target.iterrows():
                 gid = str(r["genome_id"])
-                peps = self.genome_matched_peptides.get(gid, set())
+                analysis_unit_id = (
+                    str(r["analysis_unit_id"])
+                    if "analysis_unit_id" in target.columns
+                    else None
+                )
+                peps = set(self.genome_matched_peptides.get(gid, set()))
+                if analysis_unit_id is not None:
+                    peps.intersection_update(observed_peptides_by_unit.get(analysis_unit_id, set()))
                 if not peps:
                     continue
-                for pep in peps:
+                for pep in sorted(peps):
                     d = int(self.peptide_degeneracy.get(pep, 1))
                     w = float(self._compute_weight(d=d))
                     s = float(self.peptide_score.get(pep, 1.0))
                     is_unique = (d == 1)
-                    out_rows.append({
+                    output_row = {
                         "genome_id": gid,
                         "peptide": pep,
                         "pep_len": int(len(pep)),
@@ -1711,7 +1726,10 @@ class GenomePresenceScorer:
                         "weight": float(w),
                         "contribution": float(w * s),
                         "is_unique": bool(is_unique),
-                    })
+                    }
+                    if analysis_unit_id is not None:
+                        output_row["analysis_unit_id"] = analysis_unit_id
+                    out_rows.append(output_row)
 
             if out_rows:
                 pd.DataFrame(out_rows).to_csv(
