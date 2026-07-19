@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# ruff: noqa: F401 - imports below are an explicit PyInstaller smoke test.
+
 import multiprocessing as mp
 import os
 

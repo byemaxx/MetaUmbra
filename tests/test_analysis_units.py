@@ -96,8 +96,9 @@ def test_metadata_included_flag_excludes_samples_from_scoring(tmp_path):
     pd.DataFrame(
         {
             "Run": ["s1", "s2"],
-            "Sequence": ["PEPTIDEA", "PEPTIDEB"],
+            "Sequence": ["PEPTIDEA", "PEPTIDEA"],
             "Intensity": [100.0, 200.0],
+            "Q.Value": [0.001, 0.04],
         }
     ).to_csv(peptide_path, sep="\t", index=False)
     metadata_path = tmp_path / "metadata.tsv"
@@ -118,7 +119,7 @@ def test_metadata_included_flag_excludes_samples_from_scoring(tmp_path):
         peptide_score_col=None,
         peptide_decoy_flag_col=None,
         intensity_col="Intensity",
-        peptide_error_col=None,
+        peptide_error_col="Q.Value",
         metadata_table_path=str(metadata_path),
     )
 
@@ -126,6 +127,7 @@ def test_metadata_included_flag_excludes_samples_from_scoring(tmp_path):
     assert scorer.unit_analysis_unit_ids == ["u1"]
     assert scorer.unit_peptides == ["PEPTIDEA"]
     assert scorer.unit_presence_matrix.shape == (1, 1)
+    assert scorer.peptide_error_upper_by_peptide == {"PEPTIDEA": 0.001}
     assert scorer.sample_unit_mapping_df[
         ["sample_id", "analysis_unit_id", "included"]
     ].to_dict("records") == [

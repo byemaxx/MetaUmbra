@@ -21,13 +21,7 @@ from .ranking import bh_qvalues, fisher_p_2, qvalues_to_presence_scores
 from .stats import (
     DEFAULT_UNIQUE_COUNT_POWER,
     DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE,
-    DEFAULT_UNIQUE_PVALUE_MODE,
-    MIN_PVALUE,
-    UNIQUE_PEPTIDE_ERROR_SOURCES,
-    UNIQUE_PVALUE_CANONICAL_MODES,
     _clip_pvalue,
-    _effective_unique_count,
-    _normalize_unique_peptide_error_source,
     _normalize_unique_pvalue_mode,
     _tempered_unique_error_product_pvalue,
 )

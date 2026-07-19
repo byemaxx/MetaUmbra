@@ -104,13 +104,51 @@ class ParquetExtractionConfig:
     input_parquet_path: str = ""
     output_tsv_path: str = ""
     input_columns: list[str] = field(
-        default_factory=lambda: ["Run", "Stripped.Sequence", "Evidence", "Q.Value"]
+        default_factory=lambda: [
+            "Run",
+            "Stripped.Sequence",
+            "Precursor.Quantity",
+            "Evidence",
+            "Q.Value",
+        ]
     )
     output_columns: list[str] = field(
-        default_factory=lambda: ["Run", "Sequence", "Evidence", "Q.Value"]
+        default_factory=lambda: [
+            "Run",
+            "Sequence",
+            "Precursor.Quantity",
+            "Evidence",
+            "Q.Value",
+        ]
     )
     batch_size: int = 65536
     force: bool = False
+
+
+def migrate_legacy_scoring_config_payload(payload: dict[str, object]) -> dict[str, object]:
+    """Translate the removed unit_specific flag into the unified unit mode."""
+    migrated = dict(payload)
+    legacy_unit_specific = migrated.pop("unit_specific", None)
+    if "unit_mode" in migrated or legacy_unit_specific is None:
+        return migrated
+
+    if isinstance(legacy_unit_specific, bool):
+        enabled = legacy_unit_specific
+    else:
+        enabled = str(legacy_unit_specific).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+        }
+    if not enabled:
+        migrated["unit_mode"] = "all-samples"
+    elif str(migrated.get("metadata_table_path") or "").strip():
+        migrated["unit_mode"] = "metadata"
+    else:
+        migrated["unit_mode"] = "per-sample"
+    return migrated
 
 
 class CallbackLogHandler(logging.Handler):
@@ -428,187 +466,6 @@ def _write_scoring_status(
     _write_json_file(artifact_dir / "run_status.json", payload)
 
 
-PARQUET_EXTENSIONS = {".parquet", ".pq"}
-
-
-def _is_parquet_path(path_str: str) -> bool:
-    return Path(path_str).suffix.lower() in PARQUET_EXTENSIONS
-
-
-def _normalize_parquet_column_key(name: str) -> str:
-    return "".join(char.lower() for char in str(name) if char.isalnum())
-
-
-def _resolve_parquet_column(
-    schema_names: list[str],
-    normalized_lookup: dict[str, str],
-    preferred: Optional[str],
-    candidates: list[str],
-    used: set[str],
-) -> tuple[Optional[str], bool]:
-    if preferred:
-        if preferred in schema_names and preferred not in used:
-            used.add(preferred)
-            return preferred, False
-        key = _normalize_parquet_column_key(preferred)
-        match = normalized_lookup.get(key)
-        if match and match not in used:
-            used.add(match)
-            return match, True
-
-    for candidate in candidates:
-        key = _normalize_parquet_column_key(candidate)
-        match = normalized_lookup.get(key)
-        if match and match not in used:
-            used.add(match)
-            return match, True
-
-    return None, False
-
-
-def _load_parquet_peptide_table(
-    parquet_path: str,
-    peptide_seq_col: str,
-    peptide_score_col: Optional[str],
-    peptide_error_col: Optional[str],
-    peptide_decoy_flag_col: Optional[str],
-    log_callback: Optional[LogCallback] = None,
-) -> tuple["pd.DataFrame", dict[str, Optional[str]]]:
-    try:
-        import pyarrow.parquet as pq
-    except ImportError as exc:
-        raise RuntimeError(
-            "pyarrow is required to read parquet files. Install it with: python -m pip install pyarrow"
-        ) from exc
-
-    import pandas as pd
-
-    parquet_path = str(Path(parquet_path).expanduser())
-    schema = pq.read_schema(parquet_path)
-    schema_names = list(schema.names)
-    normalized_lookup: dict[str, str] = {}
-    for name in schema_names:
-        key = _normalize_parquet_column_key(name)
-        if key and key not in normalized_lookup:
-            normalized_lookup[key] = name
-
-    used: set[str] = set()
-    seq_col, seq_auto = _resolve_parquet_column(
-        schema_names,
-        normalized_lookup,
-        peptide_seq_col,
-        ["Stripped.Sequence", "StrippedSequence", "Sequence", "Peptide.Sequence", "PeptideSequence"],
-        used,
-    )
-    if not seq_col:
-        expected = "Stripped.Sequence or Sequence"
-        available = ", ".join(schema_names)
-        raise ValueError(
-            "Unable to locate a peptide sequence column in the parquet file. "
-            f"Expected {expected}. Available columns: {available}"
-        )
-
-    score_col, score_auto = _resolve_parquet_column(
-        schema_names,
-        normalized_lookup,
-        peptide_score_col,
-        ["Evidence", "Score", "CScore"] if peptide_score_col is not None else [],
-        used,
-    )
-    error_col, error_auto = _resolve_parquet_column(
-        schema_names,
-        normalized_lookup,
-        peptide_error_col,
-        ["Q.Value", "QValue", "Qval", "QVal", "PEP", "FDR"],
-        used,
-    )
-    decoy_col, _ = _resolve_parquet_column(
-        schema_names,
-        normalized_lookup,
-        peptide_decoy_flag_col,
-        ["Reverse", "Target/Decoy", "TargetDecoy", "Decoy"] if peptide_decoy_flag_col is not None else [],
-        used,
-    )
-
-    columns_to_read = [seq_col]
-    for candidate in (score_col, error_col, decoy_col):
-        if candidate and candidate not in columns_to_read:
-            columns_to_read.append(candidate)
-
-    if log_callback:
-        log_callback("Detected parquet peptide table; loading required columns.")
-        log_callback(
-            "Parquet columns: "
-            f"sequence={seq_col} ({'auto' if seq_auto else 'config'}), "
-            f"score={score_col or 'none'} ({'auto' if score_auto else 'config'}), "
-            f"error={error_col or 'none'} ({'auto' if error_auto else 'config'}), "
-            f"decoy={decoy_col or 'none'}"
-        )
-
-    table = pq.read_table(parquet_path, columns=columns_to_read)
-    df = table.to_pandas()
-
-    resolved = {
-        "peptide_seq_col": seq_col,
-        "peptide_score_col": score_col,
-        "peptide_error_col": error_col,
-        "peptide_decoy_flag_col": decoy_col,
-    }
-    return df, resolved
-
-
-def _clean_parquet_peptide_table(
-    peptide_table_df: "pd.DataFrame",
-    resolved_columns: dict[str, Optional[str]],
-    log_callback: Optional[LogCallback] = None,
-) -> "pd.DataFrame":
-    seq_col = resolved_columns.get("peptide_seq_col")
-    if not seq_col or seq_col not in peptide_table_df.columns:
-        return peptide_table_df.copy()
-
-    df = peptide_table_df.copy()
-    before = int(len(df))
-    df[seq_col] = df[seq_col].astype("string").str.strip()
-    df = df[df[seq_col].notna() & (df[seq_col] != "")].copy()
-    dropped = before - int(len(df))
-    if dropped and log_callback:
-        log_callback(f"Dropped {dropped} parquet row(s) with missing or empty peptide sequences.")
-    return df
-
-
-def _infer_decoy_flag_value(
-    peptide_table_df: "pd.DataFrame",
-    resolved_columns: dict[str, Optional[str]],
-    configured_value: str,
-    log_callback: Optional[LogCallback] = None,
-) -> str:
-    decoy_col = resolved_columns.get("peptide_decoy_flag_col")
-    configured = str(configured_value)
-    if not decoy_col or decoy_col not in peptide_table_df.columns or configured == "":
-        return configured
-
-    values = [str(value).strip() for value in peptide_table_df[decoy_col].dropna().unique()[:50]]
-    value_set = set(values)
-    if configured in value_set:
-        return configured
-
-    # Common parquet encodings for decoys include boolean True, integer 1, and string labels.
-    # Only auto-adjust from the historical '+' default; explicit user choices are preserved.
-    if configured != "+":
-        return configured
-
-    for candidate in ("True", "true", "1", "decoy", "Decoy", "DECOY", "T", "t"):
-        if candidate in value_set:
-            if log_callback:
-                log_callback(
-                    f"Auto-detected parquet decoy marker for column '{decoy_col}': "
-                    f"using '{candidate}' instead of '+'."
-                )
-            return candidate
-
-    return configured
-
-
 def run_digest_workflow(config: DigestConfig, log_callback: Optional[LogCallback] = None) -> dict:
     import importlib
 
@@ -791,7 +648,7 @@ def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallba
     try:
         return _run_scoring_workflow_uncaught(config, log_callback)
     except Exception as exc:
-        artifact_dir = _scoring_artifact_dir(config.output_tsv_path)
+        artifact_dir = _scoring_artifact_dir(_resolve_scoring_output_path(config.output_tsv_path))
         started_at_utc = _utc_timestamp()
         if artifact_dir is not None:
             try:

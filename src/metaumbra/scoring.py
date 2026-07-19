@@ -41,7 +41,6 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from . import __version__ as METAUMBRA_VERSION
 from .analysis_units import AnalysisUnitDefinition, build_sample_unit_mapping
 from .genome_selection_manifest import (
     build_genome_selection_manifest,
@@ -54,8 +53,6 @@ from ._scoring.stats import (
     DEFAULT_UNIQUE_COUNT_POWER,
     DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE,
     DEFAULT_UNIQUE_PVALUE_MODE,
-    UNIQUE_PEPTIDE_ERROR_SOURCES,
-    UNIQUE_PVALUE_CANONICAL_MODES,
     _normalize_unique_peptide_error_source,
     _normalize_unique_pvalue_mode,
 )
@@ -65,6 +62,15 @@ from ._scoring.theoretical import (
     _process_genome_batch_worker,
     _process_theoretical_opportunity_shard_worker,
     _read_unique_peptides_from_digest,
+)
+from ._scoring.unit_specific import (
+    UNIT_EMPIRICAL_BACKGROUND_CANDIDATE_Q,
+    UNIT_EMPIRICAL_BACKGROUND_INITIAL_EXCLUDE_FRACTION,
+    UNIT_EMPIRICAL_BACKGROUND_MAX_EXCLUDE_FRACTION,
+    UNIT_EMPIRICAL_BACKGROUND_MAX_ITERATIONS,
+    UNIT_EMPIRICAL_BACKGROUND_MIN_EXCLUDE_FRACTION,
+    _compute_unit_specific_single_unit_worker,
+    _init_unit_specific_worker,
 )
 
 
@@ -142,17 +148,6 @@ def _resolve_worker_count(num_workers: Optional[int], logger: Optional[logging.L
         resolved = cpu_count
 
     return resolved
-
-
-from ._scoring.unit_specific import (
-    UNIT_EMPIRICAL_BACKGROUND_CANDIDATE_Q,
-    UNIT_EMPIRICAL_BACKGROUND_INITIAL_EXCLUDE_FRACTION,
-    UNIT_EMPIRICAL_BACKGROUND_MAX_EXCLUDE_FRACTION,
-    UNIT_EMPIRICAL_BACKGROUND_MAX_ITERATIONS,
-    UNIT_EMPIRICAL_BACKGROUND_MIN_EXCLUDE_FRACTION,
-    _compute_unit_specific_single_unit_worker,
-    _init_unit_specific_worker,
-)
 
 
 # =========================
@@ -1369,7 +1364,8 @@ class GenomePresenceScorer:
         self.peptide_error_upper_by_peptide = {}
         if error_col and error_col in valid.columns:
             self.logger.info("Computing unit-specific per-peptide error upper bounds ...")
-            pep_err = valid.groupby(seq_col)[error_col].max().reset_index()
+            error_source = valid[valid[sample_col].isin(valid_sample_ids)]
+            pep_err = error_source.groupby(seq_col)[error_col].max().reset_index()
             pep_err.columns = ["Peptide", "Error"]
             pep_err["Error"] = pd.to_numeric(pep_err["Error"], errors="coerce").clip(lower=1e-12, upper=1.0)
             pep_err = pep_err.dropna(subset=["Error"])
@@ -2382,8 +2378,6 @@ class GenomePresenceScorer:
         unit_level_out = tables["unit_genome_presence"]
         cohort_summary_out = tables["cohort_genome_summary"]
         unit_call_counts = tables["unit_call_counts"]
-        unit_specific_q001 = tables["unit_specific_genome_list_q001"]
-        unit_specific_q005 = tables["unit_specific_genome_list_q005"]
         self.unit_specific_cohort_summary_df = cohort_summary_out.copy()
         self.unit_specific_unit_threshold_summary_df = unit_call_counts.copy()
         self._last_unit_genome_presence_df = unit_level_out.copy()

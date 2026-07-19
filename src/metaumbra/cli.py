@@ -34,8 +34,20 @@ def _print_result(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
 
-DEFAULT_PARQUET_INPUT_COLUMNS = ["Run", "Stripped.Sequence", "Evidence", "Q.Value"]
-DEFAULT_PARQUET_OUTPUT_COLUMNS = ["Run", "Sequence", "Evidence", "Q.Value"]
+DEFAULT_PARQUET_INPUT_COLUMNS = [
+    "Run",
+    "Stripped.Sequence",
+    "Precursor.Quantity",
+    "Evidence",
+    "Q.Value",
+]
+DEFAULT_PARQUET_OUTPUT_COLUMNS = [
+    "Run",
+    "Sequence",
+    "Precursor.Quantity",
+    "Evidence",
+    "Q.Value",
+]
 LIST_VALUE_SEPARATOR_RE = re.compile(r"[,;，；]")
 
 

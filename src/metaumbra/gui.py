@@ -19,6 +19,7 @@ if __package__ in {None, ""}:
         ParquetExtractionConfig,
         ScoringConfig,
         format_elapsed_seconds,
+        migrate_legacy_scoring_config_payload,
         run_digest_workflow,
         run_parquet_extraction_workflow,
         run_scoring_workflow,
@@ -30,6 +31,7 @@ else:
         ParquetExtractionConfig,
         ScoringConfig,
         format_elapsed_seconds,
+        migrate_legacy_scoring_config_payload,
         run_digest_workflow,
         run_parquet_extraction_workflow,
         run_scoring_workflow,
@@ -1101,6 +1103,20 @@ def _require_directory_parent(path_value: str, field_name: str) -> None:
         raise ValueError(f"Parent directory for {field_name} does not exist: {parent}")
 
 
+def _require_results_directory(path_value: str, field_name: str) -> None:
+    if not path_value.strip():
+        return
+    path = Path(path_value).expanduser()
+    if path.suffix.lower() in {".tsv", ".txt"}:
+        raise ValueError(
+            f"{field_name} must be a directory, not a TSV file. "
+            "Choose or create a dedicated results folder."
+        )
+    if path.exists() and not path.is_dir():
+        raise ValueError(f"{field_name} exists and is not a directory: {path}")
+    _require_directory_parent(path_value, field_name)
+
+
 def _choose_directory(parent: QWidget, title: str, initial_path: str = "") -> str:
     return QFileDialog.getExistingDirectory(parent, title, initial_path or "")
 
@@ -1368,8 +1384,12 @@ class ParquetExtractionDialog(QDialog):
 
         self.more_options = CollapsibleOptions()
         options_layout = QVBoxLayout(self.more_options.body)
-        self.input_columns_edit = QLineEdit("Run, Stripped.Sequence, Evidence, Q.Value")
-        self.output_columns_edit = QLineEdit("Run, Sequence, Evidence, Q.Value")
+        self.input_columns_edit = QLineEdit(
+            "Run, Stripped.Sequence, Precursor.Quantity, Evidence, Q.Value"
+        )
+        self.output_columns_edit = QLineEdit(
+            "Run, Sequence, Precursor.Quantity, Evidence, Q.Value"
+        )
         self.batch_size_edit = QLineEdit("65536")
         self.force_checkbox = QCheckBox("Overwrite output TSV if it already exists")
         batch_grid = _create_compact_grid()
@@ -1383,7 +1403,8 @@ class ParquetExtractionDialog(QDialog):
         options_layout.addLayout(options_form)
         options_layout.addWidget(
             _make_wrapped_label(
-                "Default mapping converts DIA-NN Stripped.Sequence to MetaUmbra Sequence."
+                "Default mapping preserves Precursor.Quantity and converts DIA-NN "
+                "Stripped.Sequence to MetaUmbra Sequence."
             )
         )
         layout.addWidget(self.more_options)
@@ -1912,8 +1933,10 @@ class ScoringTab(QWidget):
         required_form.addRow("Observed peptide table", peptide_row)
         lineage_row, self.genome_lineage_table_edit = _make_path_row("Browse", self._browse_genome_lineage_table, accept_mode="file")
         required_form.addRow("Genome-Lineage table (optional)", lineage_row)
-        output_row, self.output_tsv_edit = _make_path_row("Browse", self._browse_output_tsv, accept_mode="file")
-        required_form.addRow("Output result TSV", output_row)
+        output_row, self.output_tsv_edit = _make_path_row(
+            "Browse", self._browse_output_dir, accept_mode="dir"
+        )
+        required_form.addRow("Output results directory", output_row)
 
         genome_box = QGroupBox("Genome Digest Directories")
         genome_layout = QVBoxLayout(genome_box)
@@ -2515,26 +2538,21 @@ class ScoringTab(QWidget):
             self.peptide_table_edit.setText(path)
             self._last_browse_dir = _remember_dialog_directory(path)
 
-    def _browse_output_tsv(self) -> None:
+    def _browse_output_dir(self) -> None:
         current_value = self.output_tsv_edit.text().strip()
-        initial_path = _initial_dialog_path(current_value, self._last_browse_dir, "genome_presence.tsv")
-        path, _ = QFileDialog.getSaveFileName(
+        initial_path = (
+            current_value
+            if current_value and Path(current_value).expanduser().is_dir()
+            else self._last_browse_dir
+        )
+        path = _choose_directory(
             self,
-            "Select output result TSV",
+            "Select output results directory",
             initial_path,
-            "TSV files (*.tsv);;All files (*.*)",
         )
         if path:
             self.output_tsv_edit.setText(path)
             self._last_browse_dir = _remember_dialog_directory(path)
-            if not self.cache_path_edit.text().strip():
-                out_path = Path(path)
-                suggested = out_path.with_name(f"{out_path.stem}_artifacts") / "matched_peptides.pkl"
-                self.cache_path_edit.setText(str(suggested))
-            if not self.theoretical_opportunity_cache_edit.text().strip():
-                out_path = Path(path)
-                suggested = out_path.with_name(f"{out_path.stem}_artifacts") / "theoretical_opportunity_cache.pkl"
-                self.theoretical_opportunity_cache_edit.setText(str(suggested))
 
     def _browse_genome_lineage_table(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -2896,8 +2914,8 @@ class ScoringTab(QWidget):
                 if not config.genome_lineage_lineage_col:
                     raise ValueError("Please provide the Lineage column name for the genome-Lineage table.")
             if not config.output_tsv_path:
-                raise ValueError("Please choose an output result TSV file.")
-            _require_output_parent_directory(config.output_tsv_path, "output result TSV file")
+                raise ValueError("Please choose an output results directory.")
+            _require_results_directory(config.output_tsv_path, "Output results directory")
             if not config.peptide_seq_col:
                 raise ValueError("Please provide the sequence column name.")
             if not config.peptide_score_col:
@@ -3765,6 +3783,7 @@ class MainWindow(QMainWindow):
         scoring_payload = payload.get("scoring", {})
         if not isinstance(scoring_payload, dict):
             scoring_payload = {}
+        scoring_payload = migrate_legacy_scoring_config_payload(scoring_payload)
         scoring_fields = {field.name for field in fields(ScoringConfig)}
         scoring_values = {k: v for k, v in scoring_payload.items() if k in scoring_fields}
         scoring_values.setdefault("save_matched_peptides_cache", True)

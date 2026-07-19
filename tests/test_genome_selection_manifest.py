@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pandas as pd
 import pytest
 
@@ -57,4 +55,3 @@ def test_manifest_rejects_duplicate_cross_unit_sample(tmp_path):
     manifest["unit_definition"]["n_units"] = 2
     with pytest.raises(ValueError, match="multiple units"):
         validate_genome_selection_manifest(manifest)
-
