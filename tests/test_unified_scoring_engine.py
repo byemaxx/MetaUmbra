@@ -59,6 +59,12 @@ def test_analysis_unit_worker_is_the_only_qvalue_engine(tmp_path, monkeypatch):
         ["g1", "g2"],
     ]
     assert diagnostic_export == {"top_n": 3}
+    manifest = json.loads(
+        (tmp_path / "genome_selection_manifest.json").read_text(encoding="utf-8")
+    )
+    assert "run_parameters" not in manifest["artifacts"]
+    assert "logs" not in manifest["artifacts"]
+    assert all((tmp_path / path).exists() for path in manifest["artifacts"].values())
     summary = json.loads((tmp_path / "artifacts" / "run_summary.json").read_text(encoding="utf-8"))
     assert summary["scoring_engine"] == "per-analysis-unit"
     assert summary["pooled_scoring_performed"] is False

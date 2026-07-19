@@ -142,6 +142,12 @@ def test_all_samples_workflow_accepts_peptide_only_input(tmp_path):
     assert result["n_units"] == 1
     assert (results_dir / "genome_selection_manifest.json").is_file()
     assert (results_dir / "unit_genome_results.tsv").is_file()
+    manifest = json.loads(
+        (results_dir / "genome_selection_manifest.json").read_text(encoding="utf-8")
+    )
+    assert "run_parameters" in manifest["artifacts"]
+    assert "logs" in manifest["artifacts"]
+    assert all((results_dir / path).exists() for path in manifest["artifacts"].values())
     mapping = pd.read_csv(results_dir / "sample_unit_mapping.tsv", sep="\t", dtype="string")
     assert mapping[["sample_id", "analysis_unit_id"]].values.tolist() == [
         ["__global__", "__global__"]

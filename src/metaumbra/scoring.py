@@ -2438,6 +2438,21 @@ class GenomePresenceScorer:
         mapping_df.to_csv(mapping_path, sep="\t", index=False)
         os.makedirs(diagnostics_dir, exist_ok=True)
         unit_call_counts.to_csv(unit_call_counts_path, sep="\t", index=False)
+        manifest_artifacts = {
+            "unit_genome_results": Path(unit_level_path).name,
+            "sample_unit_mapping": Path(mapping_path).name,
+            "cohort_summary": Path(cohort_path).name,
+            "diagnostics_directory": "artifacts/diagnostics",
+        }
+        optional_artifacts = {
+            "run_summary": os.path.join(artifact_dir, "run_summary.json"),
+            "run_parameters": os.path.join(artifact_dir, "run_parameters.json"),
+            "logs": os.path.join(artifact_dir, "run.log"),
+        }
+        for key, path in optional_artifacts.items():
+            if os.path.isfile(path):
+                manifest_artifacts[key] = f"artifacts/{Path(path).name}"
+
         manifest = build_genome_selection_manifest(
             mapping_df=mapping_df,
             unit_genome_results=unit_level_out,
@@ -2447,15 +2462,7 @@ class GenomePresenceScorer:
             peptide_table_path=self.unit_peptide_table_path,
             metadata_table_path=self.unit_metadata_table_path or None,
             genome_digest_directories=list(self.analysis_genome_digest_dirs),
-            artifacts={
-                "unit_genome_results": Path(unit_level_path).name,
-                "sample_unit_mapping": Path(mapping_path).name,
-                "cohort_summary": Path(cohort_path).name,
-                "diagnostics_directory": "artifacts/diagnostics",
-                "run_summary": "artifacts/run_summary.json",
-                "run_parameters": "artifacts/run_parameters.json",
-                "logs": "artifacts/run.log",
-            },
+            artifacts=manifest_artifacts,
             scoring_method=f"per-analysis-unit/{self.unique_pvalue_mode}",
         )
         write_genome_selection_manifest(manifest_path, manifest)
