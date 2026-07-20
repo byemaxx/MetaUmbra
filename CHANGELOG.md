@@ -12,6 +12,7 @@
 
 - Unified global and grouped genome selection around one analysis-unit scoring engine.
 - Applied a moderately more permissive empirical-background calibration to `all-samples` while retaining the conservative grouped-unit profile.
+- Set grouped-unit empirical-background calibration to 5% initial exclusion with adaptive 2--20% bounds.
 - Updated the CLI, GUI, and Python workflow to use the same unit-definition and scoring backend.
 - Made genome processing order deterministic so repeated Monte Carlo runs produce stable results.
 - Placed Sample / Unit Mapping directly below Analysis Unit Definition in the GUI.

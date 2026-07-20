@@ -22,9 +22,9 @@ def test_all_samples_uses_moderately_permissive_empirical_background_profile():
     }
     assert grouped == {
         "profile": "grouped-unit-conservative",
-        "initial_exclude_fraction": 0.03,
-        "min_exclude_fraction": 0.00,
-        "max_exclude_fraction": 0.15,
+        "initial_exclude_fraction": 0.05,
+        "min_exclude_fraction": 0.02,
+        "max_exclude_fraction": 0.20,
         "candidate_q": 0.20,
         "max_iterations": 3,
     }

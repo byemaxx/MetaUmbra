@@ -21,7 +21,7 @@ Metadata mode is strict: each peptide-table sample must occur exactly once in me
 
 ## Scoring
 
-Sample-level peptide presence is aggregated by union within each analysis unit. Every unit independently receives the same shared-peptide knockoff, unique-evidence model, presence score, p-value, and BH q-value calculation. `all-samples` does not call a separate pooled scoring backend, but its empirical unique-evidence background uses a moderately more permissive calibration profile (10% initial exclusion, adaptively bounded to 5--20%) than grouped/per-sample units (3% initial exclusion, bounded to 0--15%). This prevents strong cohort-wide signals from inflating their own pooled background while retaining the same scoring formulas and output contract. The selected profile and parameters are recorded in `artifacts/run_summary.json`.
+Sample-level peptide presence is aggregated by union within each analysis unit. Every unit independently receives the same shared-peptide knockoff, unique-evidence model, presence score, p-value, and BH q-value calculation. `all-samples` does not call a separate pooled scoring backend, but its empirical unique-evidence background uses a moderately more permissive calibration profile (10% initial exclusion, adaptively bounded to 5--20%) than grouped/per-sample units (5% initial exclusion, bounded to 2--20%). This prevents strong cohort-wide signals from inflating their own pooled background while retaining the same scoring formulas and output contract. The selected profile and parameters are recorded in `artifacts/run_summary.json`.
 
 ## Results
 
