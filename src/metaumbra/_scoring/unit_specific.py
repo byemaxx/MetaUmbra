@@ -382,6 +382,40 @@ def _unit_shared_metrics_for_genome(
     }
 
 
+def _unit_knockoff_target_indices(
+    genome_ids: List[str],
+    metrics_by_genome: Dict[str, dict],
+    matched_counts: np.ndarray,
+    top_n_targets: int | None,
+) -> np.ndarray:
+    """Select per-unit knockoff targets using the legacy evidence ordering."""
+    active_indices = [
+        int(index)
+        for index, count in enumerate(np.asarray(matched_counts, dtype=int).ravel())
+        if int(count) >= 1
+    ]
+    if top_n_targets is None:
+        return np.asarray(active_indices, dtype=int)
+
+    limit = max(0, int(top_n_targets))
+
+    def evidence_key(index: int) -> tuple:
+        genome_id = str(genome_ids[index])
+        metrics = metrics_by_genome[genome_id]
+        return (
+            -int(metrics["num_peptides_unique"]),
+            -float(metrics["unique_weighted_evidence"]),
+            -float(metrics["weighted_evidence"]),
+            -float(metrics["effective_peptide_count"]),
+            -float(metrics["peptide_match_ratio"]),
+            -int(metrics["num_peptides_matched"]),
+            genome_id,
+        )
+
+    ranked_indices = sorted(active_indices, key=evidence_key)
+    return np.asarray(ranked_indices[:limit], dtype=int)
+
+
 def _unit_in_any_stage2_range(value: float, ranges: List[Tuple[float, float]]) -> bool:
     if value is None or (isinstance(value, float) and np.isnan(value)):
         return False
@@ -451,6 +485,8 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
     unit_empirical_threshold_quantile = float(
         context.get("unit_empirical_background_threshold_quantile", UNIT_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE)
     )
+    knockoff_top_n_raw = context.get("knockoff_top_n_targets")
+    knockoff_top_n_targets = int(knockoff_top_n_raw) if knockoff_top_n_raw is not None else None
     total_theoretical_unique_peptides_all_genomes = int(context["total_theoretical_unique_peptides_all_genomes"])
     n_samples = int(args["n_samples_in_unit"])
     use_length_strata = bool(context["use_length_strata"])
@@ -498,6 +534,15 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
         unit_shared_strata_by_genome[genome_id] = metrics["shared_stratum_counts"]
         unique_counts[genome_idx] = int(metrics["num_peptides_unique"])
 
+    knockoff_target_indices = _unit_knockoff_target_indices(
+        genome_ids=genome_ids,
+        metrics_by_genome=unit_metrics_by_genome,
+        matched_counts=matched_counts,
+        top_n_targets=knockoff_top_n_targets,
+    )
+    knockoff_target_mask = np.zeros(n_genomes, dtype=bool)
+    knockoff_target_mask[knockoff_target_indices] = True
+
     observed_unique_pool_size = int(unique_counts.sum())
     seed_seq = np.random.SeedSequence([int(knockoff_random_seed), int(unit_idx)])
     stage_children = seed_seq.spawn(2)
@@ -532,10 +577,11 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
             )
         unit_unique_stats_by_genome[genome_id] = unique_stats
 
-        p_unique = float(unique_stats["p_unique"])
+        is_knockoff_target = bool(knockoff_target_mask[genome_idx])
+        p_unique = float(unique_stats["p_unique"]) if is_knockoff_target else 1.0
         p_shared = 1.0
         mu = sd = p95 = p99 = 0.0
-        if int(metrics["num_peptides_matched"]) > 0:
+        if is_knockoff_target:
             p_shared, mu, sd, p95, p99 = shared_knockoff_mc(
                 gid=genome_id,
                 obs_shared_score=float(metrics["weighted_evidence_shared"]),
@@ -548,8 +594,12 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
 
         p_shared_values[genome_idx] = _clip_pvalue(float(p_shared))
         p_unique_values[genome_idx] = _clip_pvalue(float(p_unique))
-        p_combined_values[genome_idx] = _clip_pvalue(
-            _unit_fisher_p_2(p1=p_shared_values[genome_idx], p2=p_unique_values[genome_idx])
+        p_combined_values[genome_idx] = (
+            _clip_pvalue(
+                _unit_fisher_p_2(p1=p_shared_values[genome_idx], p2=p_unique_values[genome_idx])
+            )
+            if is_knockoff_target
+            else 1.0
         )
         null_mean_values[genome_idx] = float(mu)
         null_sd_values[genome_idx] = float(sd)
@@ -601,8 +651,13 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
                 genome_id = genome_ids[int(genome_idx)]
                 unique_stats = _unit_empirical_unique_stats_from_row(row, mode=mode)
                 unit_unique_stats_by_genome[genome_id] = unique_stats
-                p_unique_values[int(genome_idx)] = _clip_pvalue(float(unique_stats["p_unique"]))
-                if bool(target_mask_empirical[int(genome_idx)]):
+                is_knockoff_target = bool(knockoff_target_mask[int(genome_idx)])
+                p_unique_values[int(genome_idx)] = (
+                    _clip_pvalue(float(unique_stats["p_unique"]))
+                    if is_knockoff_target
+                    else 1.0
+                )
+                if is_knockoff_target:
                     p_combined_values[int(genome_idx)] = _clip_pvalue(
                         _unit_fisher_p_2(
                             p1=float(p_shared_values[int(genome_idx)]),
@@ -675,12 +730,14 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
         }
 
     if K2 is not None and ranges:
-        target_mask = matched_counts >= 1
-        candidate_mask = target_mask & np.asarray(
+        candidate_mask = knockoff_target_mask & np.asarray(
             [_unit_in_any_stage2_range(value, ranges) for value in p_combined_values],
             dtype=bool,
         )
-        candidate_indices = np.where(candidate_mask)[0]
+        candidate_indices = np.asarray(
+            [index for index in knockoff_target_indices if bool(candidate_mask[int(index)])],
+            dtype=int,
+        )
         for genome_idx in candidate_indices:
             genome_id = genome_ids[int(genome_idx)]
             metrics = unit_metrics_by_genome[genome_id]
@@ -752,6 +809,7 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
                 "unique_empirical_excess_count": float(unique_stats.get("unique_empirical_excess_count", 0.0)),
                 "p_unique_empirical_tail": float(unique_stats.get("p_unique_empirical_tail", 1.0)),
                 "pvalue_shared": float(p_shared_values[genome_idx]),
+                "knockoff_target": bool(knockoff_target_mask[genome_idx]),
                 "pvalue": float(p_combined_values[genome_idx]),
                 "qvalue": float(qvals[genome_idx]),
                 "presence_score": float(presence_scores[genome_idx]),
@@ -773,5 +831,6 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
         "unit_idx": int(unit_idx),
         "analysis_unit_id": unit_id,
         "rows": rows,
+        "knockoff_target_genomes": int(np.sum(knockoff_target_mask)),
         "unit_empirical_background_calibration": unit_empirical_calibration,
     }

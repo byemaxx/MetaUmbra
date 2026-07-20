@@ -1,6 +1,7 @@
 import json
 
 import pandas as pd
+import pytest
 
 from metaumbra.scoring import GenomePresenceScorer
 from metaumbra._scoring.unit_specific import (
@@ -137,3 +138,54 @@ def test_public_peptide_reader_adapts_to_all_samples_scoring(tmp_path):
         scorer.run_stats["empirical_background_calibration_profile"]
         == "all-samples-moderately-permissive"
     )
+
+
+def test_knockoff_top_n_targets_limits_unit_worker_inference(tmp_path, monkeypatch):
+    peptide_table = tmp_path / "peptides.tsv"
+    pd.DataFrame({"Sequence": ["UNIQUEA", "UNIQUEB", "UNIQUEC", "SHARED"]}).to_csv(
+        peptide_table,
+        sep="\t",
+        index=False,
+    )
+
+    called_genomes = []
+
+    def fake_shared_knockoff_mc(**kwargs):
+        called_genomes.append(str(kwargs["gid"]))
+        return 0.5, 0.0, 0.0, 0.0, 0.0
+
+    monkeypatch.setattr(
+        "metaumbra._scoring.unit_specific.shared_knockoff_mc",
+        fake_shared_knockoff_mc,
+    )
+    scorer = GenomePresenceScorer(num_workers=1)
+    scorer.knockoff_mc_iterations = 50
+    scorer.knockoff_stage2_mc_iterations = None
+    scorer.knockoff_top_n_targets = 1
+    scorer.read_peptide_file(
+        peptide_table_path=str(peptide_table),
+        peptide_seq_col="Sequence",
+        peptide_score_col=None,
+        peptide_decoy_flag_col=None,
+    )
+
+    result = scorer.analyze_genomes(
+        genome_digest_dirs=[str(tmp_path)],
+        output_tsv_path=str(tmp_path / "unit_genome_results.tsv"),
+        all_matched_peptides=[
+            ("g1", {"UNIQUEA", "UNIQUEB", "SHARED"}, 3),
+            ("g2", {"UNIQUEC", "SHARED"}, 2),
+        ],
+        compute_coverage=False,
+        return_full_table=True,
+    )
+
+    assert called_genomes == ["g1"]
+    assert scorer.run_stats["unit_specific_total_knockoff_target_genomes"] == 1
+    by_genome = result.set_index("genome_id")
+    assert bool(by_genome.at["g1", "knockoff_target"]) is True
+    assert bool(by_genome.at["g2", "knockoff_target"]) is False
+    assert by_genome.at["g2", "pvalue_shared"] == pytest.approx(1.0)
+    assert by_genome.at["g2", "pvalue_unique"] == pytest.approx(1.0)
+    assert by_genome.at["g2", "pvalue"] == pytest.approx(1.0)
+    assert by_genome.at["g2", "qvalue"] == pytest.approx(1.0)

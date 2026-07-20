@@ -1929,6 +1929,11 @@ class GenomePresenceScorer:
             "knockoff_mc_iterations": int(K1),
             "knockoff_stage2_mc_iterations": K2,
             "knockoff_stage2_p_exist_ranges": ranges,
+            "knockoff_top_n_targets": (
+                int(self.knockoff_top_n_targets)
+                if self.knockoff_top_n_targets is not None
+                else None
+            ),
             "unit_empirical_background_initial_exclude_fraction": empirical_calibration["initial_exclude_fraction"],
             "unit_empirical_background_min_exclude_fraction": empirical_calibration["min_exclude_fraction"],
             "unit_empirical_background_max_exclude_fraction": empirical_calibration["max_exclude_fraction"],
@@ -2108,6 +2113,9 @@ class GenomePresenceScorer:
         )
         self.run_stats["unit_specific_total_unit_genome_calls_q_le_0p05"] = int(
             unit_level_df.get("pass_q_0_05", pd.Series(dtype=bool)).fillna(False).astype(bool).sum()
+        )
+        self.run_stats["unit_specific_total_knockoff_target_genomes"] = int(
+            sum(int(result.get("knockoff_target_genomes", 0)) for result in unit_results)
         )
         if mode == "empirical-background":
             self.run_stats["empirical_background_calibration_profile"] = str(

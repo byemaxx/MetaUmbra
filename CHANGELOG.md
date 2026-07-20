@@ -24,5 +24,6 @@
 
 ### Fixed
 
+- Restored `knockoff_top_n_targets` enforcement in the unified per-analysis-unit scoring worker.
 - Fixed run summaries and diagnostics mixing pooled and per-unit statistics.
 - Fixed coverage diagnostics so they are calculated from evidence within each analysis unit.
