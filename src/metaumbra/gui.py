@@ -19,6 +19,7 @@ if __package__ in {None, ""}:
         ParquetExtractionConfig,
         ScoringConfig,
         format_elapsed_seconds,
+        migrate_legacy_scoring_config_payload,
         run_digest_workflow,
         run_parquet_extraction_workflow,
         run_scoring_workflow,
@@ -30,6 +31,7 @@ else:
         ParquetExtractionConfig,
         ScoringConfig,
         format_elapsed_seconds,
+        migrate_legacy_scoring_config_payload,
         run_digest_workflow,
         run_parquet_extraction_workflow,
         run_scoring_workflow,
@@ -957,9 +959,7 @@ def _read_sample_unit_preview_rows(
         df = _read_delimited_table_for_columns(path, read_cols)
 
     df = df.copy()
-    df[sample_col] = df[sample_col].astype("string").str.strip()
-    if is_parquet_input:
-        df[sample_col] = _strip_raw_suffix_from_sample_ids(df[sample_col])
+    df[sample_col] = _strip_raw_suffix_from_sample_ids(df[sample_col])
     df[seq_col] = df[seq_col].astype("string").str.strip()
     if decoy_col and decoy_col in df.columns:
         df[decoy_col] = df[decoy_col].astype("string").str.strip()
@@ -1099,6 +1099,20 @@ def _require_directory_parent(path_value: str, field_name: str) -> None:
         parent = Path.cwd()
     if not parent.exists() or not parent.is_dir():
         raise ValueError(f"Parent directory for {field_name} does not exist: {parent}")
+
+
+def _require_results_directory(path_value: str, field_name: str) -> None:
+    if not path_value.strip():
+        return
+    path = Path(path_value).expanduser()
+    if path.suffix.lower() in {".tsv", ".txt"}:
+        raise ValueError(
+            f"{field_name} must be a directory, not a TSV file. "
+            "Choose or create a dedicated results folder."
+        )
+    if path.exists() and not path.is_dir():
+        raise ValueError(f"{field_name} exists and is not a directory: {path}")
+    _require_directory_parent(path_value, field_name)
 
 
 def _choose_directory(parent: QWidget, title: str, initial_path: str = "") -> str:
@@ -1368,8 +1382,12 @@ class ParquetExtractionDialog(QDialog):
 
         self.more_options = CollapsibleOptions()
         options_layout = QVBoxLayout(self.more_options.body)
-        self.input_columns_edit = QLineEdit("Run, Stripped.Sequence, Evidence, Q.Value")
-        self.output_columns_edit = QLineEdit("Run, Sequence, Evidence, Q.Value")
+        self.input_columns_edit = QLineEdit(
+            "Run, Stripped.Sequence, Precursor.Quantity, Evidence, Q.Value"
+        )
+        self.output_columns_edit = QLineEdit(
+            "Run, Sequence, Precursor.Quantity, Evidence, Q.Value"
+        )
         self.batch_size_edit = QLineEdit("65536")
         self.force_checkbox = QCheckBox("Overwrite output TSV if it already exists")
         batch_grid = _create_compact_grid()
@@ -1383,7 +1401,8 @@ class ParquetExtractionDialog(QDialog):
         options_layout.addLayout(options_form)
         options_layout.addWidget(
             _make_wrapped_label(
-                "Default mapping converts DIA-NN Stripped.Sequence to MetaUmbra Sequence."
+                "Default mapping preserves Precursor.Quantity and converts DIA-NN "
+                "Stripped.Sequence to MetaUmbra Sequence."
             )
         )
         layout.addWidget(self.more_options)
@@ -1912,8 +1931,10 @@ class ScoringTab(QWidget):
         required_form.addRow("Observed peptide table", peptide_row)
         lineage_row, self.genome_lineage_table_edit = _make_path_row("Browse", self._browse_genome_lineage_table, accept_mode="file")
         required_form.addRow("Genome-Lineage table (optional)", lineage_row)
-        output_row, self.output_tsv_edit = _make_path_row("Browse", self._browse_output_tsv, accept_mode="file")
-        required_form.addRow("Output result TSV", output_row)
+        output_row, self.output_tsv_edit = _make_path_row(
+            "Browse", self._browse_output_dir, accept_mode="dir"
+        )
+        required_form.addRow("Output results directory", output_row)
 
         genome_box = QGroupBox("Genome Digest Directories")
         genome_layout = QVBoxLayout(genome_box)
@@ -2002,19 +2023,21 @@ class ScoringTab(QWidget):
         columns_layout.addLayout(columns_grid)
         layout.addWidget(columns_box)
 
-        self.unit_specific_checkbox = QCheckBox("Enable unit-specific multi-sample scoring")
-        self.unit_specific_checkbox.setToolTip(
-            "Interpret the observed peptide table as long-format sample evidence and score genome presence per analysis unit."
-        )
+        self.unit_mode_combo = QComboBox()
+        self.unit_mode_combo.addItem("All samples as one unit", "all-samples")
+        self.unit_mode_combo.addItem("Each sample as one unit", "per-sample")
+        self.unit_mode_combo.addItem("Group samples using metadata", "metadata")
+        self.unit_mode_combo.setToolTip("Defines analysis units; every option uses the same scoring backend.")
         unit_specific_row = QWidget()
         unit_specific_row.setObjectName("InlineOptionRow")
         unit_specific_row_layout = QHBoxLayout(unit_specific_row)
         unit_specific_row_layout.setContentsMargins(10, 6, 10, 6)
-        unit_specific_row_layout.addWidget(self.unit_specific_checkbox)
+        unit_specific_row_layout.addWidget(QLabel("Analysis unit definition"))
+        unit_specific_row_layout.addWidget(self.unit_mode_combo)
         unit_specific_row_layout.addStretch(1)
         layout.addWidget(unit_specific_row)
 
-        self.unit_box = QGroupBox("Unit-specific Sample Definition")
+        self.unit_box = QGroupBox("Analysis Unit Definition")
         self.unit_box.setProperty("subtle", True)
         unit_layout = QVBoxLayout(self.unit_box)
         self.export_unit_derived_tables_checkbox = QCheckBox("Export unit-specific diagnostic tables")
@@ -2062,7 +2085,6 @@ class ScoringTab(QWidget):
         _add_compact_field(sample_filter_grid, 1, 1, "Drop lowest percent (%)", self.intensity_min_quantile_spin, None)
         sample_filter_layout = QVBoxLayout(self.sample_filter_box)
         sample_filter_layout.addLayout(sample_filter_grid)
-        unit_layout.addWidget(self.sample_filter_box)
 
         self.metadata_box = QGroupBox("Sample / Unit Mapping")
         self.metadata_box.setProperty("subtle", True)
@@ -2082,12 +2104,13 @@ class ScoringTab(QWidget):
             None,
         )
         metadata_layout.addLayout(metadata_grid)
-        unit_layout.addWidget(self.metadata_box)
 
         unit_output_grid = _create_compact_grid()
         unit_output_grid.addWidget(self.configure_sample_mapping_button, 0, 0, 1, 2)
         unit_output_grid.addWidget(self.sample_mapping_status_label, 0, 2, 1, 2)
-        unit_layout.addLayout(unit_output_grid)
+        metadata_layout.addLayout(unit_output_grid)
+        unit_layout.addWidget(self.metadata_box)
+        unit_layout.addWidget(self.sample_filter_box)
         layout.addWidget(self.unit_box)
 
         unique_box = QGroupBox("Unique Evidence Settings")
@@ -2313,7 +2336,7 @@ class ScoringTab(QWidget):
         self.genome_lineage_table_edit.textChanged.connect(self._update_genome_lineage_column_options)
         self.genome_lineage_table_edit.textChanged.connect(self._sync_genome_lineage_column_visibility)
         self.metadata_table_edit.textChanged.connect(self._update_metadata_table_column_options)
-        self.unit_specific_checkbox.toggled.connect(self._sync_unit_specific_visibility)
+        self.unit_mode_combo.currentIndexChanged.connect(self._sync_unit_specific_visibility)
         self.load_last_excluded_genomes_button.clicked.connect(self._load_last_excluded_genomes)
         self.clear_excluded_genomes_button.clicked.connect(self.exclude_text.clear)
         self.load_last_selected_genomes_button.clicked.connect(self._load_last_selected_genomes)
@@ -2324,7 +2347,7 @@ class ScoringTab(QWidget):
         peptide_path = Path(peptide_table_path.strip())
         if not peptide_path.name:
             return ""
-        return str(peptide_path.with_name(f"{peptide_path.stem}_MetaUmbra_Genome_Presence.tsv"))
+        return str(peptide_path.with_name(f"{peptide_path.stem}_MetaUmbra_results"))
 
     def _update_auto_output_tsv_from_peptide_table(self) -> None:
         peptide_table_path = self.peptide_table_edit.text().strip()
@@ -2513,26 +2536,21 @@ class ScoringTab(QWidget):
             self.peptide_table_edit.setText(path)
             self._last_browse_dir = _remember_dialog_directory(path)
 
-    def _browse_output_tsv(self) -> None:
+    def _browse_output_dir(self) -> None:
         current_value = self.output_tsv_edit.text().strip()
-        initial_path = _initial_dialog_path(current_value, self._last_browse_dir, "genome_presence.tsv")
-        path, _ = QFileDialog.getSaveFileName(
+        initial_path = (
+            current_value
+            if current_value and Path(current_value).expanduser().is_dir()
+            else self._last_browse_dir
+        )
+        path = _choose_directory(
             self,
-            "Select output result TSV",
+            "Select output results directory",
             initial_path,
-            "TSV files (*.tsv);;All files (*.*)",
         )
         if path:
             self.output_tsv_edit.setText(path)
             self._last_browse_dir = _remember_dialog_directory(path)
-            if not self.cache_path_edit.text().strip():
-                out_path = Path(path)
-                suggested = out_path.with_name(f"{out_path.stem}_artifacts") / "matched_peptides.pkl"
-                self.cache_path_edit.setText(str(suggested))
-            if not self.theoretical_opportunity_cache_edit.text().strip():
-                out_path = Path(path)
-                suggested = out_path.with_name(f"{out_path.stem}_artifacts") / "theoretical_opportunity_cache.pkl"
-                self.theoretical_opportunity_cache_edit.setText(str(suggested))
 
     def _browse_genome_lineage_table(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -2558,12 +2576,16 @@ class ScoringTab(QWidget):
 
     def _update_sample_mapping_status(self) -> None:
         if not self._sample_unit_mapping_rows:
-            self.sample_mapping_status_label.setText("No custom sample mapping configured.")
+            self.sample_mapping_status_label.setText(
+                "Samples detected: 0 | Analysis units: 0 | Samples without mapping: 0"
+            )
             return
         included = [row for row in self._sample_unit_mapping_rows if bool(row.get("included", True))]
         units = {str(row.get("analysis_unit_id", "")).strip() for row in included if str(row.get("analysis_unit_id", "")).strip()}
+        missing = sum(1 for row in included if not str(row.get("analysis_unit_id", "")).strip())
         self.sample_mapping_status_label.setText(
-            f"Custom mapping: {len(included)} included sample(s), {len(units)} unit(s)."
+            f"Samples detected: {len(included)} | Analysis units: {len(units)} | "
+            f"Samples without mapping: {missing}"
         )
 
     def _configure_sample_unit_mapping(self) -> None:
@@ -2661,7 +2683,7 @@ class ScoringTab(QWidget):
             return
         self._sample_unit_mapping_rows = dialog.mapping_rows()
         self._sample_unit_mapping_source_path = peptide_table_path
-        self.unit_specific_checkbox.setChecked(True)
+        _set_combo_to_data(self.unit_mode_combo, "metadata")
         self._update_sample_mapping_status()
 
     def _materialize_sample_unit_mapping(self, config: ScoringConfig) -> None:
@@ -2673,7 +2695,8 @@ class ScoringTab(QWidget):
                 "Open Configure Sample / Unit Mapping again for the current input."
             )
         out_path = Path(config.output_tsv_path).expanduser()
-        mapping_path = out_path.with_name(f"{out_path.stem}_gui_sample_unit_mapping.tsv")
+        mapping_path = out_path / "artifacts" / "gui_sample_unit_mapping.tsv"
+        mapping_path.parent.mkdir(parents=True, exist_ok=True)
         rows = [
             {
                 "sample_id": str(row.get("sample_id", "")).strip(),
@@ -2746,13 +2769,13 @@ class ScoringTab(QWidget):
         self.theoretical_opportunity_processes_spin.setVisible(show_exact_cache)
 
     def _sync_unit_specific_visibility(self) -> None:
-        unit_specific = self.unit_specific_checkbox.isChecked()
-        self.unit_box.setVisible(unit_specific)
-        self.sample_filter_box.setVisible(unit_specific)
-        self.metadata_box.setVisible(unit_specific)
-        self.export_unit_derived_tables_checkbox.setVisible(unit_specific)
-        self.configure_sample_mapping_button.setVisible(unit_specific)
-        self.sample_mapping_status_label.setVisible(unit_specific)
+        metadata_mode = str(self.unit_mode_combo.currentData()) == "metadata"
+        self.unit_box.setVisible(True)
+        self.sample_filter_box.setVisible(True)
+        self.metadata_box.setVisible(metadata_mode)
+        self.export_unit_derived_tables_checkbox.setVisible(True)
+        self.configure_sample_mapping_button.setVisible(metadata_mode)
+        self.sample_mapping_status_label.setVisible(metadata_mode)
         self._sync_unique_mode_visibility()
 
     def _load_last_excluded_genomes(self) -> None:
@@ -2835,7 +2858,7 @@ class ScoringTab(QWidget):
             unique_empirical_background_threshold_quantile=float(
                 self.unique_empirical_background_threshold_quantile_spin.value()
             ),
-            unit_specific=self.unit_specific_checkbox.isChecked(),
+            unit_mode=str(self.unit_mode_combo.currentData() or "all-samples"),
             sample_id_col=self.sample_id_col_edit.currentText().strip(),
             intensity_col=self.intensity_col_edit.currentText().strip(),
             intensity_min_value=int(self.intensity_min_value_spin.value()),
@@ -2846,8 +2869,6 @@ class ScoringTab(QWidget):
             export_unit_derived_tables=(
                 self.export_unit_derived_tables_checkbox.isChecked()
                 or self.export_temp_checkbox.isChecked()
-                if self.unit_specific_checkbox.isChecked()
-                else None
             ),
             theoretical_opportunity_cache_path=self.theoretical_opportunity_cache_edit.text().strip(),
             rebuild_theoretical_opportunity_cache=self.rebuild_theoretical_opportunity_cache_checkbox.isChecked(),
@@ -2892,25 +2913,26 @@ class ScoringTab(QWidget):
                 if not config.genome_lineage_lineage_col:
                     raise ValueError("Please provide the Lineage column name for the genome-Lineage table.")
             if not config.output_tsv_path:
-                raise ValueError("Please choose an output result TSV file.")
-            _require_output_parent_directory(config.output_tsv_path, "output result TSV file")
+                raise ValueError("Please choose an output results directory.")
+            _require_results_directory(config.output_tsv_path, "Output results directory")
             if not config.peptide_seq_col:
                 raise ValueError("Please provide the sequence column name.")
             if not config.peptide_score_col:
                 raise ValueError("Please provide the score column name.")
-            if config.unit_specific:
-                if not config.sample_id_col:
-                    raise ValueError("Please provide the sample ID column name for unit-specific scoring.")
-                if not config.intensity_col:
-                    raise ValueError("Please provide the intensity column name for unit-specific scoring.")
-                if config.intensity_min_quantile < 0 or config.intensity_min_quantile > 1:
-                    raise ValueError("Minimum within-sample intensity quantile must be between 0 and 1.")
-                if config.metadata_table_path and not self._sample_unit_mapping_rows:
-                    _require_existing_file(config.metadata_table_path, "sample metadata table")
-                    if not config.metadata_sample_id_col:
-                        raise ValueError("Please provide the metadata sample ID column name.")
-                    if not config.metadata_analysis_unit_col:
-                        raise ValueError("Please provide the metadata analysis unit column name.")
+            if not config.sample_id_col:
+                raise ValueError("Please provide the sample ID column name.")
+            if not config.intensity_col:
+                raise ValueError("Please provide the intensity column name.")
+            if config.intensity_min_quantile < 0 or config.intensity_min_quantile > 1:
+                raise ValueError("Minimum within-sample intensity quantile must be between 0 and 1.")
+            if config.unit_mode == "metadata":
+                if self._sample_unit_mapping_rows:
+                    self._materialize_sample_unit_mapping(config)
+                _require_existing_file(config.metadata_table_path, "sample metadata table")
+                if not config.metadata_sample_id_col:
+                    raise ValueError("Please provide the metadata sample ID column name.")
+                if not config.metadata_analysis_unit_col:
+                    raise ValueError("Please provide the metadata analysis unit column name.")
             if not config.genome_digest_dirs:
                 raise ValueError("Please add at least one genome digest directory.")
             for genome_dir in config.genome_digest_dirs:
@@ -2919,8 +2941,6 @@ class ScoringTab(QWidget):
                 _require_output_parent_directory(config.matched_peptides_cache_path, "matched peptide cache")
             if config.theoretical_opportunity_cache_path:
                 _require_output_parent_directory(config.theoretical_opportunity_cache_path, "theoretical opportunity cache")
-            if config.unit_specific:
-                self._materialize_sample_unit_mapping(config)
         return config
 
     def load_config(self, config: ScoringConfig) -> None:
@@ -2945,7 +2965,7 @@ class ScoringTab(QWidget):
         self.unique_empirical_background_threshold_quantile_spin.setValue(
             float(config.unique_empirical_background_threshold_quantile)
         )
-        self.unit_specific_checkbox.setChecked(bool(config.unit_specific))
+        _set_combo_to_data(self.unit_mode_combo, str(config.unit_mode))
         self.export_unit_derived_tables_checkbox.setChecked(
             False if config.export_unit_derived_tables is None else bool(config.export_unit_derived_tables)
         )
@@ -3762,6 +3782,7 @@ class MainWindow(QMainWindow):
         scoring_payload = payload.get("scoring", {})
         if not isinstance(scoring_payload, dict):
             scoring_payload = {}
+        scoring_payload = migrate_legacy_scoring_config_payload(scoring_payload)
         scoring_fields = {field.name for field in fields(ScoringConfig)}
         scoring_values = {k: v for k, v in scoring_payload.items() if k in scoring_fields}
         scoring_values.setdefault("save_matched_peptides_cache", True)

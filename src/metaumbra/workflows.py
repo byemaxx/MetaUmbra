@@ -69,7 +69,7 @@ class ScoringConfig:
     theoretical_opportunity_cache_path: str = ""
     rebuild_theoretical_opportunity_cache: bool = False
     num_workers_for_theoretical_opportunity: Optional[int] = None
-    unit_specific: bool = False
+    unit_mode: str = "all-samples"
     sample_id_col: str = "Run"
     intensity_col: str = "Precursor.Quantity"
     intensity_min_value: float = 0.0
@@ -104,13 +104,57 @@ class ParquetExtractionConfig:
     input_parquet_path: str = ""
     output_tsv_path: str = ""
     input_columns: list[str] = field(
-        default_factory=lambda: ["Run", "Stripped.Sequence", "Evidence", "Q.Value"]
+        default_factory=lambda: [
+            "Run",
+            "Stripped.Sequence",
+            "Precursor.Quantity",
+            "Evidence",
+            "Q.Value",
+        ]
     )
     output_columns: list[str] = field(
-        default_factory=lambda: ["Run", "Sequence", "Evidence", "Q.Value"]
+        default_factory=lambda: [
+            "Run",
+            "Sequence",
+            "Precursor.Quantity",
+            "Evidence",
+            "Q.Value",
+        ]
     )
     batch_size: int = 65536
     force: bool = False
+
+
+def migrate_legacy_scoring_config_payload(payload: dict[str, object]) -> dict[str, object]:
+    """Translate legacy GUI settings into the unified scoring configuration."""
+    migrated = dict(payload)
+
+    legacy_output = str(migrated.get("output_tsv_path") or "").strip()
+    legacy_output_path = Path(legacy_output)
+    if legacy_output_path.suffix.lower() in {".tsv", ".txt"}:
+        migrated["output_tsv_path"] = str(legacy_output_path.with_suffix(""))
+
+    legacy_unit_specific = migrated.pop("unit_specific", None)
+    if "unit_mode" in migrated or legacy_unit_specific is None:
+        return migrated
+
+    if isinstance(legacy_unit_specific, bool):
+        enabled = legacy_unit_specific
+    else:
+        enabled = str(legacy_unit_specific).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+        }
+    if not enabled:
+        migrated["unit_mode"] = "all-samples"
+    elif str(migrated.get("metadata_table_path") or "").strip():
+        migrated["unit_mode"] = "metadata"
+    else:
+        migrated["unit_mode"] = "per-sample"
+    return migrated
 
 
 class CallbackLogHandler(logging.Handler):
@@ -208,6 +252,20 @@ def _normalize_output_path(path_str: str) -> str:
     return str(Path(path_str).expanduser())
 
 
+def _resolve_scoring_output_path(path_str: str) -> str:
+    """Resolve the unified results directory to its canonical unit table."""
+    normalized = _normalize_output_path(path_str)
+    if not normalized:
+        return ""
+    path = Path(normalized)
+    if path.suffix.lower() in {".tsv", ".txt"}:
+        raise ValueError(
+            "Scoring output must be a unified results directory, not a TSV or TXT file: "
+            f"{path}"
+        )
+    return str(path / "unit_genome_results.tsv")
+
+
 def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -217,7 +275,27 @@ def _scoring_artifact_dir(output_tsv_path: str) -> Optional[Path]:
     if not normalized_output:
         return None
     output_path = Path(normalized_output)
-    return output_path.parent / f"{output_path.stem}_artifacts"
+    return output_path.parent / "artifacts"
+
+
+def _validate_scoring_output_directory(
+    output_tsv_path: str,
+    config: ScoringConfig,
+) -> None:
+    if not output_tsv_path:
+        return
+
+    output_dir = Path(output_tsv_path).expanduser().resolve().parent
+    digest_dirs = {
+        Path(path).expanduser().resolve()
+        for path in config.genome_digest_dirs
+        if str(path).strip()
+    }
+    if output_dir in digest_dirs:
+        raise ValueError(
+            "Output results directory must not be the same as a genome digest directory: "
+            f"{output_dir}"
+        )
 
 
 def _write_json_file(path: Path, payload: dict) -> None:
@@ -228,16 +306,26 @@ def _write_json_file(path: Path, payload: dict) -> None:
 
 def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConfig) -> None:
     """Remove generated diagnostics that should not carry across independent runs."""
-    known_files = {
-        "run_summary.json",
+    diagnostic_files = {
         "full_internal_metrics.tsv",
         "knockoff_pools.tsv",
         "degeneracy_hist.tsv",
         "p_shared_hist.tsv",
         "q_calling_curve.tsv",
         "shared_stratum_counts.tsv",
-        "pooled_genome_presence.tsv",
+        "unit_call_counts.tsv",
+        "unit_genome_presence_full.tsv",
+        "unit_threshold_summary.tsv",
+        "unit_q001_genomes.tsv",
+        "unit_q005_genomes.tsv",
+        "genome_union_q001.tsv",
+        "genome_union_q005.tsv",
+        "genome_by_unit_q001_matrix.tsv",
+        "genome_by_unit_q005_matrix.tsv",
+        "genome_by_unit_qvalue_matrix.tsv",
+        "unit_empirical_background_calibration.tsv",
     }
+    known_files = {"run_summary.json", "run_status.json", *diagnostic_files}
     if (
         not bool(config.use_cache_if_exists)
         and not str(config.matched_peptides_cache_path or "").strip()
@@ -251,36 +339,78 @@ def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConf
 
     cleanup_paths = [artifact_dir / name for name in known_files]
     cleanup_paths.extend(artifact_dir.glob("top*_peptide_contrib.tsv"))
-    cleanup_paths.extend(artifact_dir.glob("*_sample_unit_mapping.tsv"))
-    unit_specific_dir = artifact_dir / "unit_specific"
-    if unit_specific_dir.exists():
-        for pattern in (
-            "unit_empirical_background_calibration.tsv",
-            "unit_genome_presence_full.tsv",
-            "*_sample_unit_mapping.tsv",
-            "unit_specific_manifest.json",
-            "unit_threshold_summary.tsv",
-            "unit_call_counts.tsv",
-            "unit_q001_genomes.tsv",
-            "unit_q005_genomes.tsv",
-            "unit_specific_genome_list_q001.tsv",
-            "unit_specific_genome_list_q005.tsv",
-            "genome_union_q001.tsv",
-            "genome_union_q005.tsv",
-            "genome_by_unit_q001_matrix.tsv",
-            "genome_by_unit_q005_matrix.tsv",
-            "genome_by_unit_qvalue_matrix.tsv",
-        ):
-            cleanup_paths.extend(unit_specific_dir.glob(pattern))
+    diagnostics_dir = artifact_dir / "diagnostics"
+    cleanup_paths.extend(diagnostics_dir / name for name in diagnostic_files)
+    cleanup_paths.extend(diagnostics_dir.glob("top*_peptide_contrib.tsv"))
+
+    protected_inputs = {
+        config.peptide_table_path,
+        config.metadata_table_path,
+        config.genome_lineage_table_path,
+        config.matched_peptides_cache_path,
+        config.theoretical_opportunity_cache_path,
+    }
+    protected_resolved = {
+        Path(path).expanduser().resolve()
+        for path in protected_inputs
+        if str(path or "").strip()
+    }
 
     artifact_root = artifact_dir.resolve()
     for path in cleanup_paths:
         try:
             resolved = path.resolve()
-            if resolved.is_file() and (resolved.parent == artifact_root or resolved.parent.parent == artifact_root):
+            if resolved in protected_resolved:
+                continue
+            if resolved.is_file() and (resolved.parent == artifact_root or resolved.parent == diagnostics_dir.resolve()):
                 resolved.unlink()
         except Exception:
             pass
+
+
+def _clean_scoring_primary_outputs_for_new_run(
+    output_tsv_path: str,
+    config: ScoringConfig,
+) -> None:
+    """Invalidate and remove canonical outputs before replacing a results run."""
+    output_path = Path(output_tsv_path).expanduser()
+    output_dir = output_path.parent
+    cleanup_paths = [
+        output_dir / "genome_selection_manifest.json",
+        output_path,
+        output_dir / "cohort_genome_summary.tsv",
+        output_dir / "sample_unit_mapping.tsv",
+    ]
+    protected_inputs = {
+        "observed peptide table": config.peptide_table_path,
+        "metadata table": config.metadata_table_path,
+        "genome lineage table": config.genome_lineage_table_path,
+    }
+    protected_resolved = {
+        Path(path).expanduser().resolve(): label
+        for label, path in protected_inputs.items()
+        if str(path).strip()
+    }
+    for path in cleanup_paths:
+        protected_label = protected_resolved.get(path.resolve())
+        if protected_label:
+            raise ValueError(
+                f"Scoring outputs must not overwrite an active input file ({protected_label}): {path}"
+            )
+
+    seen: set[Path] = set()
+    for path in cleanup_paths:
+        normalized = path.resolve()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if not path.exists() and not path.is_symlink():
+            continue
+        if path.is_dir() and not path.is_symlink():
+            raise IsADirectoryError(
+                f"Cannot replace scoring output because a directory exists at: {path}"
+            )
+        path.unlink()
 
 
 def _detect_cpu_model() -> Optional[str]:
@@ -395,6 +525,7 @@ def _initialize_scoring_artifacts(
     if artifact_dir is None:
         return None, None, started_at_utc
 
+    _clean_scoring_primary_outputs_for_new_run(output_tsv_path, config)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     _clean_scoring_artifacts_for_new_run(artifact_dir, config)
     parameters_payload = {
@@ -434,187 +565,6 @@ def _write_scoring_status(
             "traceback": traceback.format_exc(),
         }
     _write_json_file(artifact_dir / "run_status.json", payload)
-
-
-PARQUET_EXTENSIONS = {".parquet", ".pq"}
-
-
-def _is_parquet_path(path_str: str) -> bool:
-    return Path(path_str).suffix.lower() in PARQUET_EXTENSIONS
-
-
-def _normalize_parquet_column_key(name: str) -> str:
-    return "".join(char.lower() for char in str(name) if char.isalnum())
-
-
-def _resolve_parquet_column(
-    schema_names: list[str],
-    normalized_lookup: dict[str, str],
-    preferred: Optional[str],
-    candidates: list[str],
-    used: set[str],
-) -> tuple[Optional[str], bool]:
-    if preferred:
-        if preferred in schema_names and preferred not in used:
-            used.add(preferred)
-            return preferred, False
-        key = _normalize_parquet_column_key(preferred)
-        match = normalized_lookup.get(key)
-        if match and match not in used:
-            used.add(match)
-            return match, True
-
-    for candidate in candidates:
-        key = _normalize_parquet_column_key(candidate)
-        match = normalized_lookup.get(key)
-        if match and match not in used:
-            used.add(match)
-            return match, True
-
-    return None, False
-
-
-def _load_parquet_peptide_table(
-    parquet_path: str,
-    peptide_seq_col: str,
-    peptide_score_col: Optional[str],
-    peptide_error_col: Optional[str],
-    peptide_decoy_flag_col: Optional[str],
-    log_callback: Optional[LogCallback] = None,
-) -> tuple["pd.DataFrame", dict[str, Optional[str]]]:
-    try:
-        import pyarrow.parquet as pq
-    except ImportError as exc:
-        raise RuntimeError(
-            "pyarrow is required to read parquet files. Install it with: python -m pip install pyarrow"
-        ) from exc
-
-    import pandas as pd
-
-    parquet_path = str(Path(parquet_path).expanduser())
-    schema = pq.read_schema(parquet_path)
-    schema_names = list(schema.names)
-    normalized_lookup: dict[str, str] = {}
-    for name in schema_names:
-        key = _normalize_parquet_column_key(name)
-        if key and key not in normalized_lookup:
-            normalized_lookup[key] = name
-
-    used: set[str] = set()
-    seq_col, seq_auto = _resolve_parquet_column(
-        schema_names,
-        normalized_lookup,
-        peptide_seq_col,
-        ["Stripped.Sequence", "StrippedSequence", "Sequence", "Peptide.Sequence", "PeptideSequence"],
-        used,
-    )
-    if not seq_col:
-        expected = "Stripped.Sequence or Sequence"
-        available = ", ".join(schema_names)
-        raise ValueError(
-            "Unable to locate a peptide sequence column in the parquet file. "
-            f"Expected {expected}. Available columns: {available}"
-        )
-
-    score_col, score_auto = _resolve_parquet_column(
-        schema_names,
-        normalized_lookup,
-        peptide_score_col,
-        ["Evidence", "Score", "CScore"] if peptide_score_col is not None else [],
-        used,
-    )
-    error_col, error_auto = _resolve_parquet_column(
-        schema_names,
-        normalized_lookup,
-        peptide_error_col,
-        ["Q.Value", "QValue", "Qval", "QVal", "PEP", "FDR"],
-        used,
-    )
-    decoy_col, _ = _resolve_parquet_column(
-        schema_names,
-        normalized_lookup,
-        peptide_decoy_flag_col,
-        ["Reverse", "Target/Decoy", "TargetDecoy", "Decoy"] if peptide_decoy_flag_col is not None else [],
-        used,
-    )
-
-    columns_to_read = [seq_col]
-    for candidate in (score_col, error_col, decoy_col):
-        if candidate and candidate not in columns_to_read:
-            columns_to_read.append(candidate)
-
-    if log_callback:
-        log_callback("Detected parquet peptide table; loading required columns.")
-        log_callback(
-            "Parquet columns: "
-            f"sequence={seq_col} ({'auto' if seq_auto else 'config'}), "
-            f"score={score_col or 'none'} ({'auto' if score_auto else 'config'}), "
-            f"error={error_col or 'none'} ({'auto' if error_auto else 'config'}), "
-            f"decoy={decoy_col or 'none'}"
-        )
-
-    table = pq.read_table(parquet_path, columns=columns_to_read)
-    df = table.to_pandas()
-
-    resolved = {
-        "peptide_seq_col": seq_col,
-        "peptide_score_col": score_col,
-        "peptide_error_col": error_col,
-        "peptide_decoy_flag_col": decoy_col,
-    }
-    return df, resolved
-
-
-def _clean_parquet_peptide_table(
-    peptide_table_df: "pd.DataFrame",
-    resolved_columns: dict[str, Optional[str]],
-    log_callback: Optional[LogCallback] = None,
-) -> "pd.DataFrame":
-    seq_col = resolved_columns.get("peptide_seq_col")
-    if not seq_col or seq_col not in peptide_table_df.columns:
-        return peptide_table_df.copy()
-
-    df = peptide_table_df.copy()
-    before = int(len(df))
-    df[seq_col] = df[seq_col].astype("string").str.strip()
-    df = df[df[seq_col].notna() & (df[seq_col] != "")].copy()
-    dropped = before - int(len(df))
-    if dropped and log_callback:
-        log_callback(f"Dropped {dropped} parquet row(s) with missing or empty peptide sequences.")
-    return df
-
-
-def _infer_decoy_flag_value(
-    peptide_table_df: "pd.DataFrame",
-    resolved_columns: dict[str, Optional[str]],
-    configured_value: str,
-    log_callback: Optional[LogCallback] = None,
-) -> str:
-    decoy_col = resolved_columns.get("peptide_decoy_flag_col")
-    configured = str(configured_value)
-    if not decoy_col or decoy_col not in peptide_table_df.columns or configured == "":
-        return configured
-
-    values = [str(value).strip() for value in peptide_table_df[decoy_col].dropna().unique()[:50]]
-    value_set = set(values)
-    if configured in value_set:
-        return configured
-
-    # Common parquet encodings for decoys include boolean True, integer 1, and string labels.
-    # Only auto-adjust from the historical '+' default; explicit user choices are preserved.
-    if configured != "+":
-        return configured
-
-    for candidate in ("True", "true", "1", "decoy", "Decoy", "DECOY", "T", "t"):
-        if candidate in value_set:
-            if log_callback:
-                log_callback(
-                    f"Auto-detected parquet decoy marker for column '{decoy_col}': "
-                    f"using '{candidate}' instead of '+'."
-                )
-            return candidate
-
-    return configured
 
 
 def run_digest_workflow(config: DigestConfig, log_callback: Optional[LogCallback] = None) -> dict:
@@ -678,7 +628,7 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
     scoring_module = importlib.import_module("metaumbra.scoring")
 
     start = time.time()
-    output_tsv_path = _normalize_output_path(config.output_tsv_path)
+    output_tsv_path = _resolve_scoring_output_path(config.output_tsv_path)
     artifact_dir, artifact_log_callback, started_at_utc = _initialize_scoring_artifacts(
         config=config,
         output_tsv_path=output_tsv_path,
@@ -689,32 +639,6 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
         active_log_callback(f"Starting genome presence scoring for: {config.peptide_table_path}")
 
     peptide_table_path = str(Path(config.peptide_table_path).expanduser())
-    peptide_table_df = None
-    resolved_columns: dict[str, Optional[str]] | None = None
-    effective_decoy_flag_value = config.decoy_flag_value
-    if (not config.unit_specific) and _is_parquet_path(peptide_table_path):
-        if not os.path.isfile(peptide_table_path):
-            raise FileNotFoundError(f"Peptide parquet file does not exist: {peptide_table_path}")
-        peptide_table_df, resolved_columns = _load_parquet_peptide_table(
-            parquet_path=peptide_table_path,
-            peptide_seq_col=config.peptide_seq_col,
-            peptide_score_col=_none_if_blank(config.peptide_score_col),
-            peptide_error_col=_none_if_blank(config.peptide_error_col),
-            peptide_decoy_flag_col=_none_if_blank(config.peptide_decoy_flag_col),
-            log_callback=active_log_callback,
-        )
-        peptide_table_df = _clean_parquet_peptide_table(
-            peptide_table_df=peptide_table_df,
-            resolved_columns=resolved_columns,
-            log_callback=active_log_callback,
-        )
-        effective_decoy_flag_value = _infer_decoy_flag_value(
-            peptide_table_df=peptide_table_df,
-            resolved_columns=resolved_columns,
-            configured_value=config.decoy_flag_value,
-            log_callback=active_log_callback,
-        )
-
     normalized_ranges = [
         (float(bounds[0]), float(bounds[1]))
         for bounds in config.knockoff_stage2_p_exist_ranges
@@ -738,53 +662,29 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
         calc.knockoff_random_seed = int(config.knockoff_random_seed)
         calc.knockoff_top_n_targets = config.knockoff_top_n_targets
 
-        if config.unit_specific:
-            calc.read_unit_specific_peptide_file(
-                peptide_table_path=peptide_table_path,
-                sample_id_col=config.sample_id_col,
-                peptide_seq_col=config.peptide_seq_col,
-                peptide_score_col=_none_if_blank(config.peptide_score_col),
-                peptide_decoy_flag_col=_none_if_blank(config.peptide_decoy_flag_col),
-                decoy_flag_value=config.decoy_flag_value,
-                intensity_col=config.intensity_col,
-                peptide_error_col=_none_if_blank(config.peptide_error_col),
-                peptide_error_cutoff=float(config.peptide_error_cutoff),
-                single_peptide_error_rate_upper_bound=float(config.single_peptide_error_rate_upper_bound),
-                intensity_min_value=float(config.intensity_min_value),
-                intensity_min_quantile=float(config.intensity_min_quantile),
-                metadata_table_path=_normalize_output_path(config.metadata_table_path) or None,
-                metadata_sample_id_col=config.metadata_sample_id_col,
-                metadata_analysis_unit_col=config.metadata_analysis_unit_col,
-                peptide_table_sep="\t",
-            )
-        elif peptide_table_df is None:
-            calc.read_peptide_file(
-                peptide_table_path=peptide_table_path,
-                peptide_seq_col=config.peptide_seq_col,
-                peptide_score_col=_none_if_blank(config.peptide_score_col),
-                peptide_decoy_flag_col=_none_if_blank(config.peptide_decoy_flag_col),
-                decoy_flag_value=config.decoy_flag_value,
-                peptide_table_sep="\t",
-                peptide_error_col=_none_if_blank(config.peptide_error_col),
-                peptide_error_cutoff=float(config.peptide_error_cutoff),
-                single_peptide_error_rate_upper_bound=float(config.single_peptide_error_rate_upper_bound),
-            )
-        else:
-            effective_seq_col = resolved_columns.get("peptide_seq_col") if resolved_columns else None
-            if not effective_seq_col:
-                raise RuntimeError("Unable to resolve a peptide sequence column for parquet scoring.")
-            calc.read_peptide_file(
-                peptide_table_df=peptide_table_df,
-                peptide_seq_col=effective_seq_col,
-                peptide_score_col=resolved_columns.get("peptide_score_col") if resolved_columns else None,
-                peptide_decoy_flag_col=resolved_columns.get("peptide_decoy_flag_col") if resolved_columns else None,
-                decoy_flag_value=effective_decoy_flag_value,
-                peptide_table_sep="\t",
-                peptide_error_col=resolved_columns.get("peptide_error_col") if resolved_columns else None,
-                peptide_error_cutoff=float(config.peptide_error_cutoff),
-                single_peptide_error_rate_upper_bound=float(config.single_peptide_error_rate_upper_bound),
-            )
-            calc.peptide_table_dir = os.path.dirname(peptide_table_path)
+        calc.read_analysis_unit_peptide_file(
+            peptide_table_path=peptide_table_path,
+            unit_mode=config.unit_mode,
+            sample_id_col=config.sample_id_col,
+            peptide_seq_col=config.peptide_seq_col,
+            peptide_score_col=_none_if_blank(config.peptide_score_col),
+            peptide_decoy_flag_col=_none_if_blank(config.peptide_decoy_flag_col),
+            decoy_flag_value=config.decoy_flag_value,
+            intensity_col=config.intensity_col,
+            peptide_error_col=_none_if_blank(config.peptide_error_col),
+            peptide_error_cutoff=float(config.peptide_error_cutoff),
+            single_peptide_error_rate_upper_bound=float(config.single_peptide_error_rate_upper_bound),
+            intensity_min_value=float(config.intensity_min_value),
+            intensity_min_quantile=float(config.intensity_min_quantile),
+            metadata_table_path=(
+                _normalize_output_path(config.metadata_table_path) or None
+                if config.unit_mode == "metadata"
+                else None
+            ),
+            metadata_sample_id_col=config.metadata_sample_id_col,
+            metadata_analysis_unit_col=config.metadata_analysis_unit_col,
+            peptide_table_sep="\t",
+        )
 
         unique_empirical_background_threshold_quantile = float(
             config.unique_empirical_background_threshold_quantile
@@ -820,7 +720,6 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
             rebuild_theoretical_opportunity_cache=bool(config.rebuild_theoretical_opportunity_cache),
             num_workers_for_theoretical_opportunity=config.num_workers_for_theoretical_opportunity,
             return_full_table=bool(config.return_full_table),
-            unit_specific=bool(config.unit_specific),
             export_unit_derived_tables=config.export_unit_derived_tables,
         )
 
@@ -836,6 +735,8 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
         "rows": int(len(result_df)),
         "elapsed_seconds": round(time.time() - start, 2),
     }
+    result["manifest"] = str(Path(saved_output).parent / "genome_selection_manifest.json")
+    result["n_units"] = int(len(getattr(calc, "unit_analysis_unit_ids", [])))
     _write_scoring_status(artifact_dir, "success", started_at_utc, result=result)
     if active_log_callback:
         active_log_callback(
@@ -845,10 +746,12 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
 
 
 def run_scoring_workflow(config: ScoringConfig, log_callback: Optional[LogCallback] = None) -> dict:
+    output_tsv_path = _resolve_scoring_output_path(config.output_tsv_path)
+    _validate_scoring_output_directory(output_tsv_path, config)
     try:
         return _run_scoring_workflow_uncaught(config, log_callback)
     except Exception as exc:
-        artifact_dir = _scoring_artifact_dir(config.output_tsv_path)
+        artifact_dir = _scoring_artifact_dir(_resolve_scoring_output_path(config.output_tsv_path))
         started_at_utc = _utc_timestamp()
         if artifact_dir is not None:
             try:

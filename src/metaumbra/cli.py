@@ -34,8 +34,20 @@ def _print_result(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
 
-DEFAULT_PARQUET_INPUT_COLUMNS = ["Run", "Stripped.Sequence", "Evidence", "Q.Value"]
-DEFAULT_PARQUET_OUTPUT_COLUMNS = ["Run", "Sequence", "Evidence", "Q.Value"]
+DEFAULT_PARQUET_INPUT_COLUMNS = [
+    "Run",
+    "Stripped.Sequence",
+    "Precursor.Quantity",
+    "Evidence",
+    "Q.Value",
+]
+DEFAULT_PARQUET_OUTPUT_COLUMNS = [
+    "Run",
+    "Sequence",
+    "Precursor.Quantity",
+    "Evidence",
+    "Q.Value",
+]
 LIST_VALUE_SEPARATOR_RE = re.compile(r"[,;，；]")
 
 
@@ -212,7 +224,7 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Directory or comma/semicolon-separated directories containing digested genome TSV files.",
     )
-    _add_argument(score_required, "--output", required=True, help="Output TSV path.")
+    _add_argument(score_required, "--output", required=True, help="Unified results directory.")
     _add_argument(score_optional, "--peptide-seq-col", default="Sequence", help="Peptide sequence column name.")
     _add_argument(score_optional, "--peptide-score-col", default="Evidence", help="Peptide score column name.")
     _add_argument(score_optional, "--peptide-error-col", default="Q.Value", help="Peptide error or FDR column name.")
@@ -273,17 +285,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.95,
         help=(
-            "Weak-background unique-count quantile used by empirical-background mode. "
-            "Applies to pooled scoring and unit-specific empirical-background scoring."
+            "Weak-background unique-count quantile used by the analysis-unit scoring engine."
         ),
     )
     _add_argument(
         score_optional,
-        "--unit-specific",
-        action="store_true",
-        help="Enable per-analysis-unit scoring for long-format multi-sample peptide tables.",
+        "--unit-mode",
+        choices=("all-samples", "per-sample", "metadata"),
+        default="all-samples",
+        help="Define analysis units: one cohort unit, one unit per sample, or metadata groups.",
     )
-    _add_argument(score_optional, "--sample-id-col", default="Run", help="Sample/run ID column for --unit-specific input.")
+    _add_argument(score_optional, "--sample-id-col", default="Run", help="Sample/run ID column in the peptide table.")
     _add_argument(
         score_optional,
         "--intensity-col",
@@ -309,7 +321,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--metadata-table",
         default="",
         display_default="none",
-        help="Optional sample-to-analysis-unit metadata TSV/CSV for --unit-specific scoring.",
+        help="Sample-to-analysis-unit metadata TSV/CSV required by --unit-mode metadata.",
     )
     _add_argument(
         score_optional,
@@ -322,27 +334,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--metadata-analysis-unit-col",
         default="analysis_unit_id",
         help="Analysis unit column in --metadata-table.",
-    )
-    _add_argument(
-        score_optional,
-        "--export-unit-derived-tables",
-        dest="export_unit_derived_tables",
-        action="store_const",
-        const=True,
-        default=None,
-        help=argparse.SUPPRESS,
-    )
-    _add_argument(
-        score_optional,
-        "--no-export-unit-derived-tables",
-        dest="export_unit_derived_tables",
-        action="store_const",
-        const=False,
-        display_default="diagnostics only",
-        help=(
-            "Deprecated compatibility option. Derived unit-specific diagnostic tables are now written only with "
-            "--export-diagnostics."
-        ),
     )
     _add_argument(
         score_optional,
@@ -545,6 +536,10 @@ def _run_score(args: argparse.Namespace) -> int:
         raise SystemExit("--genome-digest-dirs requires at least one directory.")
     selected_genome_ids = _parse_id_list_argument(args.selected_genome_ids, "--selected-genome-ids")
     exclude_genome_ids = _parse_id_list_argument(args.exclude_genome_ids, "--exclude-genome-ids")
+    if args.unit_mode == "metadata" and not str(args.metadata_table or "").strip():
+        raise SystemExit("--metadata-table is required when --unit-mode metadata is selected.")
+    if args.unit_mode != "metadata" and str(args.metadata_table or "").strip():
+        raise SystemExit("--metadata-table is only valid with --unit-mode metadata.")
 
     config = ScoringConfig(
         peptide_table_path=args.peptide_table,
@@ -563,7 +558,7 @@ def _run_score(args: argparse.Namespace) -> int:
         unique_peptide_error_source=args.unique_peptide_error_source,
         unique_count_power=args.unique_count_power,
         unique_empirical_background_threshold_quantile=args.unique_empirical_background_threshold_quantile,
-        unit_specific=args.unit_specific,
+        unit_mode=args.unit_mode,
         sample_id_col=args.sample_id_col,
         intensity_col=args.intensity_col,
         intensity_min_value=args.intensity_min_value,
@@ -571,7 +566,7 @@ def _run_score(args: argparse.Namespace) -> int:
         metadata_table_path=args.metadata_table,
         metadata_sample_id_col=args.metadata_sample_id_col,
         metadata_analysis_unit_col=args.metadata_analysis_unit_col,
-        export_unit_derived_tables=args.export_unit_derived_tables,
+        export_unit_derived_tables=None,
         theoretical_opportunity_cache_path=args.theoretical_opportunity_cache,
         rebuild_theoretical_opportunity_cache=args.rebuild_theoretical_opportunity_cache,
         num_workers_for_theoretical_opportunity=args.num_workers_for_theoretical_opportunity,
