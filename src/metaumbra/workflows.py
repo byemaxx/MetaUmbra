@@ -61,6 +61,7 @@ class ScoringConfig:
     peptide_score_col: str = "Evidence"
     peptide_error_col: str = "Q.Value"
     peptide_error_cutoff: float = 0.05
+    peptide_normalization_policy: str = "il-equivalent"
     single_peptide_error_rate_upper_bound: float = 0.05
     unique_pvalue_mode: str = "empirical-background"
     unique_peptide_error_source: str = "global-alpha"
@@ -87,6 +88,7 @@ class ScoringConfig:
     knockoff_stage2_p_exist_ranges: list[list[float]] = field(
         default_factory=lambda: [[0.01, 0.05]]
     )
+    degeneracy_bin_edges: list[int] = field(default_factory=lambda: [1, 5, 20, 100, 500])
     knockoff_random_seed: int = 1
     knockoff_top_n_targets: Optional[int] = None
     matched_peptides_cache_path: str = ""
@@ -644,6 +646,15 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
         for bounds in config.knockoff_stage2_p_exist_ranges
         if isinstance(bounds, (list, tuple)) and len(bounds) == 2
     ]
+    degeneracy_bin_edges = [int(edge) for edge in config.degeneracy_bin_edges]
+    if (
+        not degeneracy_bin_edges
+        or any(edge < 1 for edge in degeneracy_bin_edges)
+        or degeneracy_bin_edges != sorted(set(degeneracy_bin_edges))
+    ):
+        raise ValueError(
+            "Degeneracy bin edges must be a strictly increasing list of positive integers."
+        )
 
     cache_path = _normalize_output_path(config.matched_peptides_cache_path)
     theoretical_cache_path = _normalize_output_path(config.theoretical_opportunity_cache_path)
@@ -659,6 +670,7 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
         calc.knockoff_mc_iterations = int(config.knockoff_mc_iterations)
         calc.knockoff_stage2_mc_iterations = config.knockoff_stage2_mc_iterations
         calc.knockoff_stage2_p_exist_ranges = normalized_ranges
+        calc.degeneracy_bin_edges = degeneracy_bin_edges
         calc.knockoff_random_seed = int(config.knockoff_random_seed)
         calc.knockoff_top_n_targets = config.knockoff_top_n_targets
 
@@ -684,13 +696,15 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
             metadata_sample_id_col=config.metadata_sample_id_col,
             metadata_analysis_unit_col=config.metadata_analysis_unit_col,
             peptide_table_sep="\t",
+            peptide_normalization_policy=config.peptide_normalization_policy,
         )
 
         unique_empirical_background_threshold_quantile = float(
             config.unique_empirical_background_threshold_quantile
         )
         if (
-            str(config.unique_pvalue_mode).strip().lower() == "empirical-background"
+            str(config.unique_pvalue_mode).strip().lower()
+            in {"empirical-background", "auto"}
             and not (0.90 <= unique_empirical_background_threshold_quantile <= 0.99)
         ):
             raise ValueError(
@@ -886,4 +900,3 @@ if __name__ == "__main__":
     else:
         from .cli import main as cli_main
     raise SystemExit(cli_main(sys.argv[1:]))
-

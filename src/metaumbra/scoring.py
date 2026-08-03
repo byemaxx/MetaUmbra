@@ -27,6 +27,7 @@ import time
 import pickle
 import random
 import logging
+import hashlib
 import tempfile
 import multiprocessing as mp
 import concurrent.futures
@@ -42,6 +43,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from .analysis_units import AnalysisUnitDefinition, GLOBAL_UNIT_ID, build_sample_unit_mapping
+from .__version__ import __version__
 from .genome_selection_manifest import (
     build_genome_selection_manifest,
     load_genome_selection_manifest,
@@ -56,6 +58,11 @@ from ._scoring.stats import (
     DEFAULT_UNIQUE_PVALUE_MODE,
     _normalize_unique_peptide_error_source,
     _normalize_unique_pvalue_mode,
+)
+from ._scoring.normalization import (
+    DEFAULT_PEPTIDE_NORMALIZATION_POLICY,
+    normalize_peptide_policy,
+    normalize_peptide_sequence,
 )
 from ._scoring.theoretical import (
     _build_theoretical_opportunity_batch_worker,
@@ -72,9 +79,68 @@ from ._scoring.unit_specific import (
 
 
 WINDOWS_MAX_PROCESS_POOL_WORKERS = 60
-THEORETICAL_OPPORTUNITY_CACHE_VERSION = 2
+THEORETICAL_OPPORTUNITY_CACHE_VERSION = 3
+MATCHED_PEPTIDES_CACHE_VERSION = 3
 THEORETICAL_OPPORTUNITY_MAX_SHARDS = 256
 COUNT_DTYPE = np.int32
+
+
+def _sha256_text_lines(values) -> str:
+    """Hash a stable, newline-delimited representation of string values."""
+    digest = hashlib.sha256()
+    for value in sorted(str(item) for item in values):
+        digest.update(value.encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _digest_bundle_manifest_sha256(paths: List[Path]) -> str:
+    """Hash digest identities and filesystem fingerprints for cache validation."""
+    rows = []
+    for raw_path in sorted((Path(path) for path in paths), key=lambda path: str(path)):
+        stat = raw_path.stat()
+        rows.append(
+            "\t".join(
+                [
+                    raw_path.stem,
+                    str(raw_path.resolve()),
+                    str(int(stat.st_size)),
+                    str(int(stat.st_mtime_ns)),
+                ]
+            )
+        )
+    return _sha256_text_lines(rows)
+
+
+MATCHED_PEPTIDES_CACHE_PROVENANCE_FIELDS = (
+    "cache_schema_version",
+    "software_version",
+    "peptide_normalization_policy",
+    "observed_peptide_sha256",
+    "reference_genome_list_sha256",
+    "digest_bundle_manifest_sha256",
+    "digestion_parameters",
+)
+
+
+def _validate_matched_peptides_cache_provenance(
+    cached: object, expected_provenance: dict
+) -> list:
+    """Return the cache payload only when every provenance field matches."""
+    if not isinstance(cached, dict):
+        raise TypeError("Legacy matched-peptide cache without provenance is not reusable.")
+    cached_provenance = cached.get("provenance")
+    if not isinstance(cached_provenance, dict):
+        raise TypeError("Matched-peptide cache has no provenance object.")
+    for key in MATCHED_PEPTIDES_CACHE_PROVENANCE_FIELDS:
+        if cached_provenance.get(key) != expected_provenance.get(key):
+            raise ValueError(f"Matched-peptide cache provenance mismatch: {key}.")
+    payload = cached.get("matched_peptides")
+    if not isinstance(payload, list):
+        raise TypeError(
+            f"Cache matched_peptides must be a list, got {type(payload)}"
+        )
+    return payload
 
 
 def _format_elapsed_seconds(elapsed_seconds: object) -> str:
@@ -201,6 +267,7 @@ class GenomePresenceScorer:
 
         # Core states
         self.peptide_score: Dict[str, float] = {}  # peptide -> normalized score in [0,1] (or 1.0)
+        self.peptide_normalization_policy: str = DEFAULT_PEPTIDE_NORMALIZATION_POLICY
         self.peptide_error_cutoff: float = 0.05    # input peptide error/FDR filtering threshold
         # Upper bound on per-peptide false match probability used for unique-evidence p-value bound.
         self.single_peptide_error_rate_upper_bound: float = 0.05
@@ -374,7 +441,10 @@ class GenomePresenceScorer:
         for genome_index, genome_file in enumerate(tqdm(genome_digest_files, desc="Indexing theoretical peptides")):
             genome_id = genome_file.stem
             genome_ids_by_index.append(genome_id)
-            peptides = _read_unique_peptides_from_digest(genome_file)
+            peptides = _read_unique_peptides_from_digest(
+                genome_file,
+                peptide_normalization_policy=self.peptide_normalization_policy,
+            )
             genome_total_theoretical_peptides[genome_id] = int(len(peptides))
             genome_theoretical_unique_peptides[genome_id] = 0
             for peptide in peptides:
@@ -401,6 +471,7 @@ class GenomePresenceScorer:
             "digest_file_fingerprints": digest_file_fingerprints,
             "created_by": "MetaUmbra",
             "cache_version": THEORETICAL_OPPORTUNITY_CACHE_VERSION,
+            "peptide_normalization_policy": self.peptide_normalization_policy,
         }
 
     def _build_theoretical_opportunity_parallel(
@@ -446,6 +517,7 @@ class GenomePresenceScorer:
                             [str(path) for path in batch_file_paths],
                             int(shard_count),
                             str(temp_dir),
+                            self.peptide_normalization_policy,
                         )
                     )
 
@@ -532,6 +604,7 @@ class GenomePresenceScorer:
             "digest_file_fingerprints": digest_file_fingerprints,
             "created_by": "MetaUmbra",
             "cache_version": THEORETICAL_OPPORTUNITY_CACHE_VERSION,
+            "peptide_normalization_policy": self.peptide_normalization_policy,
         }
 
     def _build_theoretical_opportunity(
@@ -573,6 +646,17 @@ class GenomePresenceScorer:
     def _theoretical_cache_matches_digest_files(self, cached: dict, genome_digest_files: List[Path]) -> bool:
         """Check whether a theoretical opportunity cache matches selected digest files."""
         cached_version = int(cached.get("cache_version", 0) or 0)
+        if cached_version != THEORETICAL_OPPORTUNITY_CACHE_VERSION:
+            self.logger.warning(
+                "Theoretical opportunity cache schema version is stale; rebuilding cache."
+            )
+            return False
+        cached_policy = str(cached.get("peptide_normalization_policy", "")).strip().lower()
+        if cached_policy != self.peptide_normalization_policy:
+            self.logger.warning(
+                "Theoretical opportunity cache peptide-normalization policy does not match; rebuilding cache."
+            )
+            return False
         current_genome_ids = sorted(p.stem for p in genome_digest_files)
         cached_genome_ids = sorted(str(x) for x in cached.get("genome_ids", []))
         if cached_genome_ids != current_genome_ids:
@@ -583,13 +667,6 @@ class GenomePresenceScorer:
 
         cached_fingerprints = dict(cached.get("digest_file_fingerprints", {}) or {})
         if not cached_fingerprints:
-            if cached_version < THEORETICAL_OPPORTUNITY_CACHE_VERSION:
-                self.logger.warning(
-                    "Loaded legacy theoretical opportunity cache without digest file fingerprints; "
-                    "validated genome IDs only. Rebuild the cache once to enable digest-change detection."
-                )
-                self.run_stats["theoretical_opportunity_cache_validation"] = "legacy_genome_ids_only"
-                return True
             self.logger.info("Theoretical opportunity cache has no digest file fingerprints; rebuilding cache.")
             return False
 
@@ -618,7 +695,9 @@ class GenomePresenceScorer:
                 )
                 return False
 
-        self.run_stats["theoretical_opportunity_cache_validation"] = "digest_file_fingerprints"
+        self.run_stats["theoretical_opportunity_cache_validation"] = (
+            "schema_policy_and_digest_file_fingerprints"
+        )
         return True
 
     def _load_or_build_theoretical_opportunity(
@@ -722,6 +801,7 @@ class GenomePresenceScorer:
         peptide_error_col: Optional[str] = None, # ["PEP", "FDR", "AUTO", None, "Q.Value", ...]
         peptide_error_cutoff: float = 0.05,
         single_peptide_error_rate_upper_bound: float = 0.05,
+        peptide_normalization_policy: str = DEFAULT_PEPTIDE_NORMALIZATION_POLICY,
     ) -> bool:
         """Read a peptide table and build peptide->score dictionary."""
         if peptide_table_path is None and peptide_table_df is None:
@@ -805,6 +885,9 @@ class GenomePresenceScorer:
                     break
 
         self.peptide_error_cutoff = float(peptide_error_cutoff)
+        self.peptide_normalization_policy = normalize_peptide_policy(
+            peptide_normalization_policy
+        )
         error_filter_applied = False
 
         # --- NEW: run-level input stats (for paper) ---
@@ -834,6 +917,23 @@ class GenomePresenceScorer:
             )
             self.run_stats["peptide_rows_after_error_filter"] = int(len(df))
             error_filter_applied = True
+
+        df = df.copy()
+        raw_unique_sequences = int(df[peptide_seq_col].astype("string").nunique(dropna=True))
+        df[peptide_seq_col] = df[peptide_seq_col].map(
+            lambda value: normalize_peptide_sequence(value, self.peptide_normalization_policy)
+            if pd.notna(value)
+            else value
+        )
+        normalized_unique_sequences = int(
+            df[peptide_seq_col].astype("string").nunique(dropna=True)
+        )
+        self.run_stats["peptide_normalization_policy"] = self.peptide_normalization_policy
+        self.run_stats["observed_peptides_before_normalization"] = raw_unique_sequences
+        self.run_stats["observed_peptides_after_normalization"] = normalized_unique_sequences
+        self.run_stats["observed_peptide_normalization_collisions"] = int(
+            raw_unique_sequences - normalized_unique_sequences
+        )
 
         # Interpret unique-evidence bound as an upper bound on single-peptide false match probability.
         # This is intentionally separate from peptide_error_cutoff, which only filters input peptide rows.
@@ -921,6 +1021,7 @@ class GenomePresenceScorer:
         metadata_sample_id_col: str = "sample_id",
         metadata_analysis_unit_col: str = "analysis_unit_id",
         peptide_table_sep: str = "\t",
+        peptide_normalization_policy: str = DEFAULT_PEPTIDE_NORMALIZATION_POLICY,
     ) -> bool:
         """Read peptide evidence and build peptide x analysis-unit presence."""
         from scipy.sparse import csr_matrix
@@ -930,6 +1031,9 @@ class GenomePresenceScorer:
             raise FileNotFoundError(f"Peptide file does not exist: {peptide_file_path}")
 
         unit_mode = str(unit_mode).strip()
+        self.peptide_normalization_policy = normalize_peptide_policy(
+            peptide_normalization_policy
+        )
         require_long_format = unit_mode != "all-samples"
         sample_col = str(sample_id_col).strip()
         seq_col = str(peptide_seq_col).strip()
@@ -1195,6 +1299,19 @@ class GenomePresenceScorer:
                 f"Normalized sample IDs by removing trailing '.raw' from {changed_rows} row(s)."
             )
         df[seq_col] = df[seq_col].astype("string").str.strip()
+        raw_unique_sequences = int(df[seq_col].nunique(dropna=True))
+        df[seq_col] = df[seq_col].map(
+            lambda value: normalize_peptide_sequence(value, self.peptide_normalization_policy)
+            if pd.notna(value)
+            else value
+        ).astype("string")
+        normalized_unique_sequences = int(df[seq_col].nunique(dropna=True))
+        self.run_stats["peptide_normalization_policy"] = self.peptide_normalization_policy
+        self.run_stats["observed_peptides_before_normalization"] = raw_unique_sequences
+        self.run_stats["observed_peptides_after_normalization"] = normalized_unique_sequences
+        self.run_stats["observed_peptide_normalization_collisions"] = int(
+            raw_unique_sequences - normalized_unique_sequences
+        )
         if score_col:
             df[score_col] = pd.to_numeric(df[score_col], errors="coerce")
         if decoy_col:
@@ -2013,6 +2130,21 @@ class GenomePresenceScorer:
                     "unit_empirical_background_iterations",
                     "unit_empirical_background_active_genomes",
                     "unit_empirical_background_warning",
+                    "unique_pvalue_mode_requested",
+                    "unique_pvalue_mode_resolved",
+                    "unit_auto_eligibility_rule",
+                    "unit_auto_eligibility_decision",
+                    "unit_auto_eligibility_reason",
+                    "unit_auto_candidate_count",
+                    "unit_auto_effective_opportunity_bins",
+                    "unit_auto_min_comparable_background",
+                    "unit_auto_min_expected_upper_tail",
+                    "unit_auto_min_adequate_fraction",
+                    "unit_auto_adequate_candidate_count",
+                    "unit_auto_adequate_candidate_fraction",
+                    "unit_auto_min_comparable_observed",
+                    "unit_auto_median_comparable_observed",
+                    "unit_auto_max_comparable_observed",
                 ]
             )
         )
@@ -2096,6 +2228,12 @@ class GenomePresenceScorer:
         self.run_stats["unit_specific_output_rows"] = int(len(unit_level_df))
         self.run_stats["unit_specific_cohort_summary_rows"] = int(len(cohort_summary_df))
         self.run_stats["unit_specific_unique_pvalue_mode"] = mode
+        self.run_stats["unit_specific_unique_pvalue_mode_requested"] = mode
+        if "unique_pvalue_mode_resolved" in unit_level_df.columns:
+            self.run_stats["unit_specific_unique_pvalue_mode_resolved_counts"] = {
+                str(key): int(value)
+                for key, value in unit_level_df["unique_pvalue_mode_resolved"].value_counts().items()
+            }
         self.run_stats["unit_specific_presence_rule"] = "union"
         self.run_stats["unit_specific_shared_mode"] = "per-unit"
         self.run_stats["unit_specific_genomes_union_q_le_0p01"] = int(
@@ -2117,7 +2255,7 @@ class GenomePresenceScorer:
         self.run_stats["unit_specific_total_knockoff_target_genomes"] = int(
             sum(int(result.get("knockoff_target_genomes", 0)) for result in unit_results)
         )
-        if mode == "empirical-background":
+        if mode in {"empirical-background", "auto"}:
             self.run_stats["empirical_background_calibration_profile"] = str(
                 empirical_calibration["profile"]
             )
@@ -2758,6 +2896,52 @@ class GenomePresenceScorer:
         self.run_stats["matched_peptides_cache_path"] = str(cache_pkl_path) if cache_pkl_path else None
         self.run_stats["matched_peptides_cache_is_default"] = bool(not matched_peptides_cache_path)
 
+        cache_digest_files: List[Path] = []
+        for folder in (
+            [genome_digest_dirs]
+            if isinstance(genome_digest_dirs, str)
+            else list(genome_digest_dirs)
+        ):
+            if folder and os.path.exists(folder):
+                cache_digest_files.extend(Path(folder).glob("*.tsv"))
+        requested_genome_set = {
+            str(genome_id).strip()
+            for genome_id in (genome_list or [])
+            if str(genome_id).strip()
+        }
+        requested_excluded_set = {
+            str(genome_id).strip()
+            for genome_id in (exclude_genome_ids or [])
+            if str(genome_id).strip()
+        }
+        if requested_genome_set:
+            cache_digest_files = [
+                path for path in cache_digest_files if path.stem in requested_genome_set
+            ]
+        if requested_excluded_set:
+            cache_digest_files = [
+                path for path in cache_digest_files if path.stem not in requested_excluded_set
+            ]
+        cache_reference_genome_ids = sorted(path.stem for path in cache_digest_files)
+        expected_cache_provenance = {
+            "cache_schema_version": MATCHED_PEPTIDES_CACHE_VERSION,
+            "software_version": str(__version__),
+            "peptide_normalization_policy": self.peptide_normalization_policy,
+            "observed_peptide_sha256": _sha256_text_lines(self.peptide_score.keys()),
+            "reference_genome_list_sha256": _sha256_text_lines(cache_reference_genome_ids),
+            "digest_bundle_manifest_sha256": _digest_bundle_manifest_sha256(cache_digest_files),
+            "digestion_parameters": {
+                "source": "precomputed_digest_tsv",
+                "enzyme": "not_recorded_in_digest_tsv",
+                "minimum_length": "not_recorded_in_digest_tsv",
+                "maximum_length": "not_recorded_in_digest_tsv",
+                "missed_cleavages": "not_recorded_in_digest_tsv",
+            },
+        }
+        self.run_stats["matched_peptides_cache_expected_provenance"] = dict(
+            expected_cache_provenance
+        )
+
         # Prefer using existing matched-peptides cache if allowed and available.
         if use_cache_if_exists and all_matched_peptides is None and cache_pkl_path and os.path.exists(cache_pkl_path):
             self.logger.info(f"Loading matched peptides cache: {cache_pkl_path}")
@@ -2765,13 +2949,12 @@ class GenomePresenceScorer:
                 with open(cache_pkl_path, "rb") as f:
                     cached = pickle.load(f)
 
-                # Minimal validation + normalization:
-                # Expect List[Tuple[str, Iterable[str], int]]
+                payload = _validate_matched_peptides_cache_provenance(
+                    cached, expected_cache_provenance
+                )
                 normalized: List[Tuple[str, Set[str], int]] = []
-                if not isinstance(cached, list):
-                    raise TypeError(f"Cache must be a list, got {type(cached)}")
 
-                for i, item in enumerate(cached):
+                for i, item in enumerate(payload):
                     if not isinstance(item, (tuple, list)) or len(item) != 3:
                         raise TypeError(f"Cache item #{i} must be a 3-tuple, got {type(item)} len={len(item) if hasattr(item, '__len__') else 'NA'}")
                     genome_id, matched_peps, total_cnt = item
@@ -2783,7 +2966,13 @@ class GenomePresenceScorer:
                         matched_set: Set[str] = set()
                     else:
                         try:
-                            matched_set = {str(x) for x in matched_peps if x is not None and str(x) != ""}
+                            matched_set = {
+                                normalize_peptide_sequence(
+                                    x, self.peptide_normalization_policy
+                                )
+                                for x in matched_peps
+                                if x is not None and str(x) != ""
+                            }
                         except TypeError as e:
                             raise TypeError(f"Cache item #{i} matched_peptides is not iterable: {type(matched_peps)}") from e
 
@@ -2797,8 +2986,11 @@ class GenomePresenceScorer:
                     normalized.append((genome_id.strip(), matched_set, total_int))
 
                 all_matched_peptides = normalized
+                self.run_stats["matched_peptides_cache_validation"] = "provenance_match"
                 self.logger.info(f"Loaded matched peptides cache OK: {len(all_matched_peptides)} genomes")
             except Exception as e:
+                self.run_stats["matched_peptides_cache_validation"] = "rejected"
+                self.run_stats["matched_peptides_cache_rejection_reason"] = str(e)
                 self.logger.warning(
                     f"Failed to load/validate matched peptides cache ({cache_pkl_path}); recomputing. Error: {e}"
                 )
@@ -2873,7 +3065,10 @@ class GenomePresenceScorer:
             executor = concurrent.futures.ProcessPoolExecutor(
                 max_workers=self.num_workers,
                 initializer=_init_genome_batch_worker,
-                initargs=(frozenset(self.peptide_score.keys()),),
+                initargs=(
+                    frozenset(self.peptide_score.keys()),
+                    self.peptide_normalization_policy,
+                ),
             )
             try:
                 for b in batches:
@@ -2920,7 +3115,14 @@ class GenomePresenceScorer:
                 pkl_path = cache_pkl_path or os.path.join(out_dir, "matched_peptides.pkl")
                 os.makedirs(os.path.dirname(pkl_path) or ".", exist_ok=True)
                 with open(pkl_path, "wb") as f:
-                    pickle.dump(all_matched_peptides, f)
+                    pickle.dump(
+                        {
+                            "provenance": expected_cache_provenance,
+                            "matched_peptides": all_matched_peptides,
+                        },
+                        f,
+                    )
+                self.run_stats["matched_peptides_cache_validation"] = "rebuilt"
                 self.logger.info(f"Saved matched peptides cache: {pkl_path}")
 
         self.timing_stats["scan_genomes"] = float(time.time() - t_scan0)
@@ -2966,7 +3168,10 @@ class GenomePresenceScorer:
         obs_set = set(self.peptide_score.keys())
 
         for genome_id, matched_peptides, total_cnt in all_matched_peptides:
-            matched_peptides = set(matched_peptides).intersection(obs_set)
+            matched_peptides = {
+                normalize_peptide_sequence(peptide, self.peptide_normalization_policy)
+                for peptide in matched_peptides
+            }.intersection(obs_set)
             self.genome_matched_peptides.setdefault(genome_id, set()).update(matched_peptides)
             prev = self.genome_total_theoretical_peptides.get(genome_id, 0)
             self.genome_total_theoretical_peptides[genome_id] = max(prev, int(total_cnt))
@@ -3031,7 +3236,7 @@ class GenomePresenceScorer:
                 if len(vals) > 0
                 else {}
             )
-        elif mode == "empirical-background":
+        elif mode in {"empirical-background", "auto"}:
             self.genome_theoretical_unique_peptides = {}
             self.total_theoretical_unique_peptides_all_genomes = 0
             self.theoretical_peptide_universe_size = 0
@@ -3180,4 +3385,3 @@ if __name__ == "__main__":
     else:
         from .cli import main as cli_main
     raise SystemExit(cli_main(["score", *sys.argv[1:]]))
-

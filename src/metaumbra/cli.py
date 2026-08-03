@@ -246,13 +246,15 @@ def build_parser() -> argparse.ArgumentParser:
         score_optional,
         "--unique-pvalue-mode",
         choices=(
+            "auto",
             "empirical-background",
             "hypergeometric-opportunity",
             "alpha-upper-bound",
         ),
         default="empirical-background",
         help=(
-            "Unique evidence p-value mode. 'empirical-background' estimates a sample-specific weak-genome unique peptide "
+            "Unique evidence p-value mode. 'auto' uses empirical background unless a small candidate set has a high "
+            "alpha-pilot candidate fraction, then falls back to alpha upper bound. 'empirical-background' estimates a sample-specific weak-genome unique peptide "
             "background threshold and accumulates only excess unique evidence. "
             "'hypergeometric-opportunity' uses the observed genome-unique peptide pool and genome-specific theoretical "
             "unique peptide opportunity. 'alpha-upper-bound' uses alpha^(U_raw^power)."
@@ -315,6 +317,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.0,
         help="Within-sample intensity quantile cutoff for unit-specific peptide presence.",
+    )
+    _add_argument(
+        score_optional,
+        "--peptide-normalization-policy",
+        choices=["il-equivalent", "exact"],
+        default="il-equivalent",
+        help=(
+            "Peptide sequence matching policy. il-equivalent maps I and L to the same "
+            "symbol; exact preserves every residue."
+        ),
     )
     _add_argument(
         score_optional,
@@ -553,6 +565,7 @@ def _run_score(args: argparse.Namespace) -> int:
         peptide_score_col=args.peptide_score_col,
         peptide_error_col=args.peptide_error_col,
         peptide_error_cutoff=args.peptide_error_cutoff,
+        peptide_normalization_policy=args.peptide_normalization_policy,
         single_peptide_error_rate_upper_bound=args.single_peptide_error_rate_upper_bound,
         unique_pvalue_mode=args.unique_pvalue_mode,
         unique_peptide_error_source=args.unique_peptide_error_source,
@@ -622,4 +635,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-

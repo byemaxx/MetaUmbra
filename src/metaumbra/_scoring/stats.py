@@ -10,6 +10,7 @@ DEFAULT_UNIQUE_PVALUE_MODE = "empirical-background"
 DEFAULT_UNIQUE_COUNT_POWER = 1.0
 DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE = "global-alpha"
 UNIQUE_PVALUE_CANONICAL_MODES = (
+    "auto",
     "empirical-background",
     "hypergeometric-opportunity",
     "alpha-upper-bound",

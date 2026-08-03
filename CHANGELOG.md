@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Replaced the outcome-dependent alpha-pilot `auto` rule with a structural empirical-background eligibility check based only on theoretical peptide opportunity, comparable-background count, expected upper-tail count, empirical-bin size, and the adequate-candidate fraction.
+- Added per-unit diagnostics recording the requested/resolved unique-evidence modes and every structural eligibility variable.
+- Added consistent `il-equivalent` peptide normalization across observed and theoretical deduplication, matching, degeneracy, and unique/shared classification, with `exact` available as a sensitivity mode.
+- Added versioned cache provenance covering software/schema version, peptide-normalization policy, observed-peptide hash, reference-genome-list hash, digest-manifest hash, and recorded digestion metadata; legacy or mismatched caches are rejected and rebuilt.
+- Distinguished the empirical tail probability from the empirical-threshold/excess/alpha-power hybrid unique-evidence component in output names and documentation.
+
 ## 1.4.0 - 2026-07-15
 
 ### Added

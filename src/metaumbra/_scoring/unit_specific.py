@@ -15,6 +15,7 @@ import pandas as pd
 from .empirical import (
     DEFAULT_UNIQUE_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE,
     _compute_empirical_background_stats_for_table,
+    _evaluate_empirical_background_eligibility,
 )
 from .knockoff import shared_knockoff_mc
 from .ranking import bh_qvalues, fisher_p_2, qvalues_to_presence_scores
@@ -450,7 +451,8 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
     genome_theoretical_unique_peptides: Dict[str, int] = context["genome_theoretical_unique_peptides"]  # type: ignore[assignment]
     peptide_error_upper_by_peptide: Dict[str, float] = context["peptide_error_upper_by_peptide"]  # type: ignore[assignment]
     lineage_map: Dict[str, object] = context["lineage_map"]  # type: ignore[assignment]
-    mode = str(context["mode"])
+    requested_mode = str(context["mode"])
+    mode = requested_mode
     K1 = int(context["knockoff_mc_iterations"])
     K2_raw = context.get("knockoff_stage2_mc_iterations")
     K2 = int(K2_raw) if K2_raw is not None else None
@@ -549,9 +551,24 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
     rng_stage1 = np.random.default_rng(stage_children[0])
     rng_stage2 = np.random.default_rng(stage_children[1])
 
+    theoretical_opportunity_counts = [
+        int(unit_metrics_by_genome[genome_id]["total_peptide_count"])
+        for genome_id in genome_ids
+    ]
+    eligibility_details, eligibility_summary = _evaluate_empirical_background_eligibility(
+        theoretical_opportunity_counts,
+        threshold_quantile=unit_empirical_threshold_quantile,
+    )
+    if requested_mode == "auto":
+        mode = (
+            "empirical-background"
+            if bool(eligibility_summary["eligible"])
+            else "alpha-upper-bound"
+        )
+    initial_unique_mode = mode
     for genome_idx, genome_id in enumerate(genome_ids):
         metrics = unit_metrics_by_genome[genome_id]
-        if mode == "empirical-background":
+        if initial_unique_mode == "empirical-background":
             unique_stats = _unit_empirical_unique_stats_from_row(
                 pd.Series(
                     {
@@ -566,7 +583,7 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
                 matched_peptides=unit_matched_peptides_by_genome[genome_id],
                 observed_unique=int(metrics["num_peptides_unique"]),
                 observed_unique_pool_size=observed_unique_pool_size,
-                mode=mode,
+                mode=initial_unique_mode,
                 peptide_deg=peptide_deg,
                 genome_theoretical_unique_peptides=genome_theoretical_unique_peptides,
                 total_theoretical_unique_peptides_all_genomes=total_theoretical_unique_peptides_all_genomes,
@@ -611,6 +628,8 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
             else 0.0
         )
 
+    target_mask_empirical = matched_counts >= 1
+    active_genomes = int(np.sum(target_mask_empirical))
     if mode == "empirical-background":
         unit_metric_df = pd.DataFrame(
             [
@@ -634,14 +653,11 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
         max_iterations = int(max(1, unit_empirical_max_iterations))
         candidate_q = float(np.clip(unit_empirical_candidate_q, 0.0, 1.0))
         threshold_quantile = float(np.clip(unit_empirical_threshold_quantile, 0.0, 1.0))
-        n_bins = 8
-        if active_genomes < UNIT_EMPIRICAL_BACKGROUND_SMALL_UNIT_MIN_ACTIVE_GENOMES:
-            exclude_fraction = 0.0
-            n_bins = 1
+        n_bins = int(max(1, eligibility_summary.get("effective_bins", 1)))
+        if n_bins == 1:
             small_unit_warning = (
-                "active matched genomes < "
-                f"{UNIT_EMPIRICAL_BACKGROUND_SMALL_UNIT_MIN_ACTIVE_GENOMES}; "
-                "using top_exclude_fraction=0.0 and n_bins=1"
+                "the structural opportunity partition has one bin; the empirical-background "
+                "calculation is not theoretical-reference-size stratified"
             )
         iteration_trace: List[dict] = []
 
@@ -675,7 +691,7 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
                 )
             return 0.0
 
-        if bool(np.any(target_mask_empirical)) and not small_unit_warning:
+        if bool(np.any(target_mask_empirical)):
             for _ in range(max_iterations):
                 empirical_df, _ = _compute_empirical_background_stats_for_table(
                     unit_metric_df,
@@ -709,16 +725,6 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
             min_bin_size=50,
         )
         _apply_unit_empirical_stats(empirical_df)
-        if small_unit_warning:
-            iteration_trace.append(
-                {
-                    "iteration": 1,
-                    "exclude_fraction": 0.0,
-                    "candidate_fraction": None,
-                    "new_exclude_fraction": 0.0,
-                    "warning": small_unit_warning,
-                }
-            )
         unit_empirical_calibration = {
             "analysis_unit_id": unit_id,
             "unit_empirical_background_iteration_trace": json.dumps(iteration_trace, separators=(",", ":")),
@@ -728,6 +734,53 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
             "unit_empirical_background_active_genomes": int(active_genomes),
             "unit_empirical_background_warning": small_unit_warning,
         }
+
+    if requested_mode == "auto":
+        if not unit_empirical_calibration:
+            unit_empirical_calibration = {
+                "analysis_unit_id": unit_id,
+                "unit_empirical_background_iteration_trace": "[]",
+                "unit_empirical_background_threshold_quantile": pd.NA,
+                "unit_empirical_background_final_exclude_fraction": pd.NA,
+                "unit_empirical_background_iterations": 0,
+                "unit_empirical_background_active_genomes": int(active_genomes),
+                "unit_empirical_background_warning": "",
+            }
+        unit_empirical_calibration.update(
+            {
+                "unique_pvalue_mode_requested": requested_mode,
+                "unique_pvalue_mode_resolved": mode,
+                "unit_auto_eligibility_rule": "structural-comparable-background-v1",
+                "unit_auto_eligibility_decision": bool(eligibility_summary["eligible"]),
+                "unit_auto_eligibility_reason": str(eligibility_summary["reason"]),
+                "unit_auto_candidate_count": int(eligibility_summary["candidate_count"]),
+                "unit_auto_effective_opportunity_bins": int(eligibility_summary["effective_bins"]),
+                "unit_auto_min_comparable_background": int(
+                    eligibility_summary["min_comparable_background"]
+                ),
+                "unit_auto_min_expected_upper_tail": float(
+                    eligibility_summary["min_expected_upper_tail"]
+                ),
+                "unit_auto_min_adequate_fraction": float(
+                    eligibility_summary["min_adequate_fraction"]
+                ),
+                "unit_auto_adequate_candidate_count": int(
+                    eligibility_summary["adequate_candidate_count"]
+                ),
+                "unit_auto_adequate_candidate_fraction": float(
+                    eligibility_summary["adequate_candidate_fraction"]
+                ),
+                "unit_auto_min_comparable_observed": int(
+                    eligibility_summary.get("min_comparable_observed", 0)
+                ),
+                "unit_auto_median_comparable_observed": float(
+                    eligibility_summary.get("median_comparable_observed", 0.0)
+                ),
+                "unit_auto_max_comparable_observed": int(
+                    eligibility_summary.get("max_comparable_observed", 0)
+                ),
+            }
+        )
 
     if K2 is not None and ranges:
         candidate_mask = knockoff_target_mask & np.asarray(
@@ -798,6 +851,17 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
                 "unique_depth_fold": float(unique_stats["unique_depth_fold"]),
                 "unique_depth_null_model": str(unique_stats["unique_depth_null_model"]),
                 "unique_pvalue_count_model": str(unique_stats["unique_pvalue_count_model"]),
+                "unique_pvalue_mode_requested": requested_mode,
+                "unique_pvalue_mode_resolved": mode,
+                "empirical_background_comparable_count": int(
+                    eligibility_details.iloc[genome_idx]["comparable_background_count"]
+                ),
+                "empirical_background_expected_upper_tail_count": float(
+                    eligibility_details.iloc[genome_idx]["expected_upper_tail_count"]
+                ),
+                "empirical_background_candidate_adequate": bool(
+                    eligibility_details.iloc[genome_idx]["empirical_background_adequate"]
+                ),
                 "has_unique_evidence": bool(unique_stats["has_unique_evidence"]),
                 "pvalue_unique": float(p_unique_values[genome_idx]),
                 "pvalue_unique_depth": float(unique_stats["p_unique_depth"]),

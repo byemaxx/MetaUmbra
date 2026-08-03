@@ -1,4 +1,10 @@
-"""Empirical-background unique-evidence calibration helpers."""
+"""Empirical-background unique-evidence calibration helpers.
+
+The empirical-background-adjusted component is a hybrid evidence statistic:
+an empirical threshold is estimated within a theoretical-opportunity stratum,
+then the excess count is converted with an alpha-power calculation.  The
+reported empirical-tail probability is kept separate from that hybrid value.
+"""
 
 from typing import Dict, Set, Tuple
 
@@ -8,6 +14,11 @@ import pandas as pd
 from .stats import _clip_pvalue
 
 DEFAULT_UNIQUE_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE = 0.95
+DEFAULT_EMPIRICAL_MIN_COMPARABLE_BACKGROUND = 100
+DEFAULT_EMPIRICAL_MIN_EXPECTED_UPPER_TAIL = 5.0
+DEFAULT_EMPIRICAL_MIN_ADEQUATE_FRACTION = 0.90
+DEFAULT_EMPIRICAL_MAX_OPPORTUNITY_BINS = 8
+DEFAULT_EMPIRICAL_MIN_BIN_SIZE = 50
 EMPIRICAL_BACKGROUND_OUTPUT_COLUMNS = (
     "p_unique_empirical_background_excess",
     "p_unique_empirical_tail",
@@ -18,6 +29,128 @@ EMPIRICAL_BACKGROUND_OUTPUT_COLUMNS = (
     "expected_unique_null",
     "unique_depth_fold",
 )
+
+
+def _evaluate_empirical_background_eligibility(
+    theoretical_opportunity_counts,
+    *,
+    min_comparable_background: int = DEFAULT_EMPIRICAL_MIN_COMPARABLE_BACKGROUND,
+    threshold_quantile: float = DEFAULT_UNIQUE_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE,
+    min_expected_upper_tail: float = DEFAULT_EMPIRICAL_MIN_EXPECTED_UPPER_TAIL,
+    min_adequate_fraction: float = DEFAULT_EMPIRICAL_MIN_ADEQUATE_FRACTION,
+    max_bins: int = DEFAULT_EMPIRICAL_MAX_OPPORTUNITY_BINS,
+    min_bin_size: int = DEFAULT_EMPIRICAL_MIN_BIN_SIZE,
+) -> Tuple[pd.DataFrame, dict]:
+    """Evaluate empirical-background adequacy from pre-scoring structure only.
+
+    Eligibility does not use observed peptide p-values, q-values, benchmark
+    labels, or recovery.  Candidates are grouped by theoretical peptide
+    opportunity.  A candidate is adequate only when its stratum contains the
+    prespecified number of *other* genomes and the expected number of genomes
+    above the requested empirical quantile is large enough.
+    """
+    min_comparable_background = int(max(1, min_comparable_background))
+    min_expected_upper_tail = float(max(0.0, min_expected_upper_tail))
+    min_adequate_fraction = float(np.clip(min_adequate_fraction, 0.0, 1.0))
+    max_bins = int(max(1, max_bins))
+    min_bin_size = int(max(1, min_bin_size))
+    threshold_quantile = float(np.clip(threshold_quantile, 0.0, 1.0))
+
+    opportunity = pd.to_numeric(
+        pd.Series(list(theoretical_opportunity_counts), dtype="float64"),
+        errors="coerce",
+    ).fillna(0.0).clip(lower=0.0)
+    n_candidates = int(len(opportunity))
+    required_for_tail = int(
+        np.ceil(min_expected_upper_tail / max(1.0 - threshold_quantile, 1e-12))
+    )
+    target_bin_size = max(
+        min_bin_size,
+        min_comparable_background + 1,
+        required_for_tail + 1,
+    )
+    effective_bins = max(1, min(max_bins, n_candidates // target_bin_size))
+
+    if n_candidates == 0:
+        details = pd.DataFrame(
+            columns=[
+                "candidate_index",
+                "theoretical_opportunity",
+                "opportunity_bin",
+                "comparable_background_count",
+                "expected_upper_tail_count",
+                "empirical_background_adequate",
+            ]
+        )
+        return details, {
+            "eligible": False,
+            "reason": "no evaluated candidate genomes",
+            "candidate_count": 0,
+            "effective_bins": 0,
+            "adequate_candidate_count": 0,
+            "adequate_candidate_fraction": 0.0,
+            "min_comparable_background": min_comparable_background,
+            "min_expected_upper_tail": min_expected_upper_tail,
+            "min_adequate_fraction": min_adequate_fraction,
+            "threshold_quantile": threshold_quantile,
+            "target_bin_size": target_bin_size,
+        }
+
+    bin_labels = pd.Series("bin_0", index=opportunity.index, dtype="string")
+    if effective_bins > 1 and int(opportunity.nunique()) > 1:
+        try:
+            binned = pd.qcut(opportunity, q=effective_bins, duplicates="drop")
+            codes = binned.cat.codes.astype(int)
+            bin_labels = codes.map(lambda value: f"bin_{int(value)}").astype("string")
+        except (ValueError, TypeError):
+            effective_bins = 1
+
+    bin_counts = bin_labels.value_counts().to_dict()
+    comparable = bin_labels.map(lambda label: max(int(bin_counts[str(label)]) - 1, 0)).astype(int)
+    expected_tail = comparable.astype(float) * float(1.0 - threshold_quantile)
+    adequate = (
+        (comparable >= min_comparable_background)
+        & (expected_tail + 1e-12 >= min_expected_upper_tail)
+        & ((comparable + 1) >= min_bin_size)
+    )
+    adequate_count = int(adequate.sum())
+    adequate_fraction = float(adequate_count) / float(max(n_candidates, 1))
+    panel_eligible = bool(adequate_fraction + 1e-12 >= min_adequate_fraction)
+    reason = (
+        "structural empirical-background adequacy criterion satisfied"
+        if panel_eligible
+        else (
+            f"only {adequate_count}/{n_candidates} candidates ({adequate_fraction:.3f}) "
+            f"had >= {min_comparable_background} comparable backgrounds and >= "
+            f"{min_expected_upper_tail:g} expected observations above q{threshold_quantile:g}"
+        )
+    )
+    details = pd.DataFrame(
+        {
+            "candidate_index": np.arange(n_candidates, dtype=int),
+            "theoretical_opportunity": opportunity.to_numpy(dtype=float),
+            "opportunity_bin": bin_labels.astype(str).to_numpy(),
+            "comparable_background_count": comparable.to_numpy(dtype=int),
+            "expected_upper_tail_count": expected_tail.to_numpy(dtype=float),
+            "empirical_background_adequate": adequate.to_numpy(dtype=bool),
+        }
+    )
+    return details, {
+        "eligible": panel_eligible,
+        "reason": reason,
+        "candidate_count": n_candidates,
+        "effective_bins": int(details["opportunity_bin"].nunique()),
+        "adequate_candidate_count": adequate_count,
+        "adequate_candidate_fraction": adequate_fraction,
+        "min_comparable_background": min_comparable_background,
+        "min_expected_upper_tail": min_expected_upper_tail,
+        "min_adequate_fraction": min_adequate_fraction,
+        "threshold_quantile": threshold_quantile,
+        "target_bin_size": target_bin_size,
+        "min_comparable_observed": int(comparable.min()),
+        "median_comparable_observed": float(comparable.median()),
+        "max_comparable_observed": int(comparable.max()),
+    }
 
 
 def _compute_empirical_background_stats_for_table(

@@ -2006,6 +2006,15 @@ class ScoringTab(QWidget):
         self.decoy_flag_value_edit = _create_editable_combo("+", "Decoy flag value")
         self.decoy_flag_value_edit.addItems(["+", "decoy", "1", "True", "FALSE", "T", "F"])
         self.decoy_flag_value_edit.setEditText("+")
+        self.peptide_normalization_policy_combo = QComboBox()
+        self.peptide_normalization_policy_combo.addItem(
+            "I/L equivalent (recommended)", "il-equivalent"
+        )
+        self.peptide_normalization_policy_combo.addItem("Exact residues", "exact")
+        self.peptide_normalization_policy_combo.setToolTip(
+            "I/L-equivalent matching treats isoleucine and leucine as indistinguishable. "
+            "Q/K and AD/W are never collapsed."
+        )
         self.peptide_error_cutoff_edit.setToolTip("Filters input peptide rows by the selected error/FDR column.")
         self.peptide_error_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
         self.peptide_decoy_flag_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
@@ -2018,6 +2027,14 @@ class ScoringTab(QWidget):
         )
         self.decoy_flag_value_label = _add_compact_field(
             columns_grid, 0, 3, "Decoy flag value", self.decoy_flag_value_edit, 90
+        )
+        _add_compact_field(
+            columns_grid,
+            1,
+            0,
+            "Peptide matching",
+            self.peptide_normalization_policy_combo,
+            220,
         )
         columns_layout = QVBoxLayout(columns_box)
         columns_layout.addLayout(columns_grid)
@@ -2116,10 +2133,11 @@ class ScoringTab(QWidget):
         unique_box = QGroupBox("Unique Evidence Settings")
         unique_box.setProperty("subtle", True)
         unique_box.setToolTip(
-            "Unique p-value strength is controlled by unique p-value mode. Alpha controls apply only to alpha-upper-bound."
+            "Unique p-value strength is controlled by unique p-value mode. Alpha controls also define the pilot and fallback behavior in Auto mode."
         )
         unique_layout = QVBoxLayout(unique_box)
         self.unique_pvalue_mode_combo = QComboBox()
+        self.unique_pvalue_mode_combo.addItem("Auto", "auto")
         self.unique_pvalue_mode_combo.addItem("Empirical background", "empirical-background")
         self.unique_pvalue_mode_combo.addItem("Alpha upper bound", "alpha-upper-bound")
         self.unique_pvalue_mode_combo.addItem("Hypergeometric opportunity", "hypergeometric-opportunity")
@@ -2147,10 +2165,10 @@ class ScoringTab(QWidget):
         )
         self.rebuild_theoretical_opportunity_cache_checkbox = QCheckBox("Rebuild theoretical opportunity cache")
         self.single_peptide_error_rate_upper_bound_edit.setToolTip(
-            "Global alpha used by alpha-upper-bound mode when unique peptide error source is Global alpha."
+            "Global alpha used by alpha-upper-bound mode and Auto mode's alpha pilot/fallback when unique peptide error source is Global alpha."
         )
         self.unique_pvalue_mode_combo.setToolTip(
-            "Empirical background estimates a sample-specific weak-genome unique peptide threshold and accumulates only excess unique evidence."
+            "Auto uses empirical background unless a small candidate set has a high alpha-pilot candidate fraction, then falls back to alpha upper bound."
         )
         self.unique_peptide_error_source_combo.setToolTip(
             "Choose epsilon_i for alpha-upper-bound mode."
@@ -2749,8 +2767,8 @@ class ScoringTab(QWidget):
     def _sync_unique_mode_visibility(self) -> None:
         mode = str(self.unique_pvalue_mode_combo.currentData() or "empirical-background")
         error_source = str(self.unique_peptide_error_source_combo.currentData() or "global-alpha")
-        show_empirical_background = mode == "empirical-background"
-        show_alpha_mode = mode == "alpha-upper-bound"
+        show_empirical_background = mode in {"empirical-background", "auto"}
+        show_alpha_mode = mode in {"alpha-upper-bound", "auto"}
         show_alpha = show_alpha_mode and error_source == "global-alpha"
         show_effective_count = show_alpha_mode
         self.unique_peptide_error_source_label.setVisible(show_alpha_mode)
@@ -2847,6 +2865,10 @@ class ScoringTab(QWidget):
             peptide_error_col=self.peptide_error_col_edit.currentText().strip(),
             peptide_error_cutoff=_parse_required_float(
                 self.peptide_error_cutoff_edit.text(), "Peptide error cutoff"
+            ),
+            peptide_normalization_policy=str(
+                self.peptide_normalization_policy_combo.currentData()
+                or "il-equivalent"
             ),
             single_peptide_error_rate_upper_bound=_parse_required_float(
                 self.single_peptide_error_rate_upper_bound_edit.text(),
@@ -2956,6 +2978,10 @@ class ScoringTab(QWidget):
         self.sample_id_col_edit.setEditText(config.sample_id_col)
         self.intensity_col_edit.setEditText(config.intensity_col)
         self.peptide_error_cutoff_edit.setText(str(config.peptide_error_cutoff))
+        _set_combo_to_data(
+            self.peptide_normalization_policy_combo,
+            str(config.peptide_normalization_policy),
+        )
         self.single_peptide_error_rate_upper_bound_edit.setText(
             str(config.single_peptide_error_rate_upper_bound)
         )
@@ -3937,4 +3963,3 @@ def main() -> None:
 if __name__ == "__main__":
     mp.freeze_support()
     main()
-

@@ -83,6 +83,10 @@ Optional inputs include peptide scores, peptide-level error values, decoy flags,
 
 All scoring uses one analysis-unit workflow. Select `--unit-mode all-samples`, `per-sample`, or `metadata`; each option builds a sample-to-unit assignment and invokes the same per-unit p/q-value engine. The cohort-wide `all-samples` mode uses a moderately more permissive empirical-background calibration profile, recorded in the run summary, so pooled strong signals do not inflate their own null background.
 
+For candidate sets that may be too small for a stable empirical upper-tail estimate, use `--unique-pvalue-mode auto`. Before observed genome significance is evaluated, it partitions candidates by theoretical peptide opportunity and checks whether at least 90% have at least 100 comparable background genomes and at least five expected observations above the configured background quantile. If the structural criterion fails, the entire panel uses the alpha upper-bound component. Model selection never uses pilot p-values, pilot q-values, benchmark labels, recovery, or additional-call counts. The decision variables and reason are recorded in `artifacts/diagnostics/unit_empirical_background_calibration.tsv`.
+
+Peptide matching uses `--peptide-normalization-policy il-equivalent` by default. Isoleucine and leucine are both mapped to `J` before observed/theoretical deduplication, matching, degeneracy counting, and unique/shared classification. Use `exact` for a residue-exact sensitivity analysis. Q/K and AD/W are not collapsed. Matched-peptide and theoretical-opportunity caches record the normalization policy and reject incompatible or legacy cache schemas.
+
 ## Output
 
 The requested `--output` is a unified results directory.
