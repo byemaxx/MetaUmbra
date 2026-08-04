@@ -2133,7 +2133,7 @@ class ScoringTab(QWidget):
         unique_box = QGroupBox("Unique Evidence Settings")
         unique_box.setProperty("subtle", True)
         unique_box.setToolTip(
-            "Unique p-value strength is controlled by unique p-value mode. Alpha controls also define the pilot and fallback behavior in Auto mode."
+            "Unique p-value strength is controlled by unique p-value mode. Auto selection uses only structural eligibility."
         )
         unique_layout = QVBoxLayout(unique_box)
         self.unique_pvalue_mode_combo = QComboBox()
@@ -2141,6 +2141,7 @@ class ScoringTab(QWidget):
         self.unique_pvalue_mode_combo.addItem("Empirical background", "empirical-background")
         self.unique_pvalue_mode_combo.addItem("Alpha upper bound", "alpha-upper-bound")
         self.unique_pvalue_mode_combo.addItem("Hypergeometric opportunity", "hypergeometric-opportunity")
+        _set_combo_to_data(self.unique_pvalue_mode_combo, ScoringConfig().unique_pvalue_mode)
         self.unique_pvalue_mode_combo.setMinimumWidth(260)
         _set_compact_control_width(self.unique_pvalue_mode_combo, 260)
         self.unique_peptide_error_source_combo = QComboBox()
@@ -2165,10 +2166,11 @@ class ScoringTab(QWidget):
         )
         self.rebuild_theoretical_opportunity_cache_checkbox = QCheckBox("Rebuild theoretical opportunity cache")
         self.single_peptide_error_rate_upper_bound_edit.setToolTip(
-            "Global alpha used by alpha-upper-bound mode and Auto mode's alpha pilot/fallback when unique peptide error source is Global alpha."
+            "Per-peptide error upper bound for alpha-upper-bound mode. Its product interpretation requires "
+            "defensible per-peptide bounds, a multiplicative dependence assumption, and no omitted homologous explanation."
         )
         self.unique_pvalue_mode_combo.setToolTip(
-            "Auto uses empirical background unless a small candidate set has a high alpha-pilot candidate fraction, then falls back to alpha upper bound."
+            "Auto uses empirical background only when the structural panel-unique-opportunity eligibility rule is met; otherwise it uses alpha upper bound."
         )
         self.unique_peptide_error_source_combo.setToolTip(
             "Choose epsilon_i for alpha-upper-bound mode."
@@ -2182,10 +2184,10 @@ class ScoringTab(QWidget):
         theoretical_cache_row, self.theoretical_opportunity_cache_edit = _make_path_row(
             "Browse", self._browse_theoretical_opportunity_cache, accept_mode="file"
         )
-        unique_grid = _create_compact_grid()
-        _add_compact_field(unique_grid, 0, 0, "Unique p-value mode", self.unique_pvalue_mode_combo, 260)
+        self.unique_grid = _create_compact_grid()
+        _add_compact_field(self.unique_grid, 0, 0, "Unique p-value mode", self.unique_pvalue_mode_combo, 260)
         self.unique_peptide_error_source_label = _add_compact_field(
-            unique_grid,
+            self.unique_grid,
             0,
             1,
             "Unique peptide error source",
@@ -2195,13 +2197,13 @@ class ScoringTab(QWidget):
         self.unique_alpha_label = QLabel("Unique evidence alpha")
         self.unique_alpha_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
         _set_compact_control_width(self.single_peptide_error_rate_upper_bound_edit, 130)
-        unique_grid.addWidget(self.unique_alpha_label, 0, 4)
-        unique_grid.addWidget(self.single_peptide_error_rate_upper_bound_edit, 0, 5)
+        self.unique_grid.addWidget(self.unique_alpha_label, 0, 4)
+        self.unique_grid.addWidget(self.single_peptide_error_rate_upper_bound_edit, 0, 5)
         self.unique_count_power_label = QLabel("Unique count power")
         self.unique_count_power_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
         _set_compact_control_width(self.unique_count_power_spin, 110)
-        unique_grid.addWidget(self.unique_count_power_label, 1, 0)
-        unique_grid.addWidget(self.unique_count_power_spin, 1, 1)
+        self.unique_grid.addWidget(self.unique_count_power_label, 1, 0)
+        self.unique_grid.addWidget(self.unique_count_power_spin, 1, 1)
         self.unique_empirical_background_threshold_quantile_label = QLabel(
             "Empirical background threshold quantile"
         )
@@ -2209,14 +2211,14 @@ class ScoringTab(QWidget):
             QT_ALIGN_LEFT | QT_ALIGN_VCENTER
         )
         _set_compact_control_width(self.unique_empirical_background_threshold_quantile_spin, 110)
-        unique_grid.addWidget(self.unique_empirical_background_threshold_quantile_label, 1, 0)
-        unique_grid.addWidget(self.unique_empirical_background_threshold_quantile_spin, 1, 1)
+        self.unique_grid.addWidget(self.unique_empirical_background_threshold_quantile_label, 1, 2)
+        self.unique_grid.addWidget(self.unique_empirical_background_threshold_quantile_spin, 1, 3)
         self.theoretical_opportunity_processes_label = QLabel("Opportunity processes")
         self.theoretical_opportunity_processes_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
         _set_compact_control_width(self.theoretical_opportunity_processes_spin, 160)
-        unique_grid.addWidget(self.theoretical_opportunity_processes_label, 0, 4)
-        unique_grid.addWidget(self.theoretical_opportunity_processes_spin, 0, 5)
-        unique_layout.addLayout(unique_grid)
+        self.unique_grid.addWidget(self.theoretical_opportunity_processes_label, 0, 4)
+        self.unique_grid.addWidget(self.theoretical_opportunity_processes_spin, 0, 5)
+        unique_layout.addLayout(self.unique_grid)
         unique_form = QFormLayout()
         self.theoretical_opportunity_cache_label = QLabel("Theoretical opportunity cache")
         unique_form.addRow(self.theoretical_opportunity_cache_label, theoretical_cache_row)

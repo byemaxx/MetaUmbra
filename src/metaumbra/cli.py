@@ -240,7 +240,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--single-peptide-error-rate-upper-bound",
         type=float,
         default=0.05,
-        help="Alpha upper bound for one unique evidence unit in alpha^(U_raw^power).",
+        help=(
+            "Per-peptide error upper bound used by alpha-upper-bound mode. Its product interpretation "
+            "requires defensible per-peptide bounds, a multiplicative dependence assumption, and no "
+            "unmodeled homologous explanation outside the reference panel."
+        ),
     )
     _add_argument(
         score_optional,
@@ -253,11 +257,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         default="empirical-background",
         help=(
-            "Unique evidence p-value mode. 'auto' uses empirical background unless a small candidate set has a high "
-            "alpha-pilot candidate fraction, then falls back to alpha upper bound. 'empirical-background' estimates a sample-specific weak-genome unique peptide "
-            "background threshold and accumulates only excess unique evidence. "
+            "Unique evidence p-value mode. 'auto' uses a theoretical panel-unique-opportunity structural "
+            "eligibility rule, otherwise it falls back to "
+            "alpha-upper-bound. 'empirical-background' forces the empirical method. "
             "'hypergeometric-opportunity' uses the observed genome-unique peptide pool and genome-specific theoretical "
             "unique peptide opportunity. 'alpha-upper-bound' uses alpha^(U_raw^power)."
+        ),
+    )
+    _add_argument(
+        score_optional,
+        "--unique-empirical-pvalue-method",
+        choices=("empirical-tail", "alpha-excess"),
+        default="alpha-excess",
+        help=(
+            "Formal empirical-background unique p-value method. The default alpha-excess preserves the "
+            "established production calculation. empirical-tail is an experimental diagnostic/sensitivity option "
+            "and is not recommended for large multiple-testing panels because finite backgrounds limit p-value resolution."
         ),
     )
     _add_argument(
@@ -568,6 +583,7 @@ def _run_score(args: argparse.Namespace) -> int:
         peptide_normalization_policy=args.peptide_normalization_policy,
         single_peptide_error_rate_upper_bound=args.single_peptide_error_rate_upper_bound,
         unique_pvalue_mode=args.unique_pvalue_mode,
+        unique_empirical_pvalue_method=args.unique_empirical_pvalue_method,
         unique_peptide_error_source=args.unique_peptide_error_source,
         unique_count_power=args.unique_count_power,
         unique_empirical_background_threshold_quantile=args.unique_empirical_background_threshold_quantile,

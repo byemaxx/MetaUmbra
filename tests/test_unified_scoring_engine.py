@@ -45,6 +45,8 @@ def test_analysis_unit_worker_is_the_only_qvalue_engine(tmp_path):
             "Q.Value": [0.01, 0.01],
         }
     ).to_csv(peptide_table, sep="\t", index=False)
+    pd.DataFrame({"Sequence": ["PEPA"]}).to_csv(tmp_path / "g1.tsv", sep="\t", index=False)
+    pd.DataFrame({"Sequence": ["PEPB"]}).to_csv(tmp_path / "g2.tsv", sep="\t", index=False)
 
     scorer = GenomePresenceScorer(num_workers=1)
     scorer.knockoff_mc_iterations = 50
@@ -108,6 +110,8 @@ def test_public_peptide_reader_adapts_to_all_samples_scoring(tmp_path):
         sep="\t",
         index=False,
     )
+    pd.DataFrame({"Sequence": ["PEPA"]}).to_csv(tmp_path / "g1.tsv", sep="\t", index=False)
+    pd.DataFrame({"Sequence": ["PEPB"]}).to_csv(tmp_path / "g2.tsv", sep="\t", index=False)
 
     scorer = GenomePresenceScorer(num_workers=1)
     scorer.knockoff_mc_iterations = 50
@@ -146,6 +150,12 @@ def test_knockoff_top_n_targets_limits_unit_worker_inference(tmp_path, monkeypat
         peptide_table,
         sep="\t",
         index=False,
+    )
+    pd.DataFrame({"Sequence": ["UNIQUEA", "UNIQUEB", "SHARED"]}).to_csv(
+        tmp_path / "g1.tsv", sep="\t", index=False
+    )
+    pd.DataFrame({"Sequence": ["UNIQUEC", "SHARED"]}).to_csv(
+        tmp_path / "g2.tsv", sep="\t", index=False
     )
 
     called_genomes = []

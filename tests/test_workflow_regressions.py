@@ -3,7 +3,11 @@ import json
 import pandas as pd
 import pytest
 
-from metaumbra.cli import DEFAULT_PARQUET_INPUT_COLUMNS, DEFAULT_PARQUET_OUTPUT_COLUMNS
+from metaumbra.cli import (
+    DEFAULT_PARQUET_INPUT_COLUMNS,
+    DEFAULT_PARQUET_OUTPUT_COLUMNS,
+    build_parser,
+)
 from metaumbra.scoring import GenomePresenceScorer
 from metaumbra.workflows import (
     ParquetExtractionConfig,
@@ -61,6 +65,19 @@ def test_default_parquet_extraction_preserves_required_scoring_columns(tmp_path)
     )
     assert scorer.unit_sample_ids == ["s1"]
     assert scorer.unit_sample_ids == direct_scorer.unit_sample_ids
+
+
+def test_production_empirical_method_defaults_to_alpha_excess():
+    assert ScoringConfig().unique_empirical_pvalue_method == "alpha-excess"
+    parser = build_parser()
+    command = next(action for action in parser._actions if action.dest == "command")
+    score_parser = command.choices["score"]
+    method = next(
+        action
+        for action in score_parser._actions
+        if action.dest == "unique_empirical_pvalue_method"
+    )
+    assert method.default == "alpha-excess"
 
 
 def test_failed_directory_run_writes_status_to_results_artifacts(tmp_path):
@@ -310,6 +327,7 @@ def test_scoring_workflow_records_custom_degeneracy_bin_edges(tmp_path):
         (results_dir / "artifacts" / "run_summary.json").read_text(encoding="utf-8")
     )
     assert parameters["config"]["degeneracy_bin_edges"] == [1, 3, 10]
+    assert parameters["config"]["unique_empirical_pvalue_method"] == "alpha-excess"
     assert summary["degeneracy_bin_edges"] == [1, 3, 10]
 
 
@@ -326,7 +344,7 @@ def test_scoring_workflow_rejects_invalid_degeneracy_bin_edges(tmp_path, edges):
         )
 
 
-def test_auto_mode_falls_back_to_alpha_for_structurally_inadequate_small_background(tmp_path):
+def test_auto_mode_falls_back_to_alpha_upper_bound_for_structurally_inadequate_background(tmp_path):
     digest_peptides = {
         f"g{index}": [f"G{index}A", f"G{index}B", f"G{index}C"]
         for index in range(5)
@@ -373,7 +391,7 @@ def test_auto_mode_does_not_use_observed_sparsity_to_override_small_panel_inelig
     assert calibration.loc[0, "unit_auto_candidate_count"] == 7
 
 
-def test_auto_mode_keeps_empirical_background_when_structurally_adequate(tmp_path):
+def test_auto_mode_keeps_structurally_eligible_empirical_mode_when_diagnostics_flag_cap_pressure(tmp_path):
     digest_peptides = {"target": ["COMMON", "T1", "T2", "T3"]}
     digest_peptides.update({f"background_{index:03d}": ["COMMON"] for index in range(100)})
     results_dir = _run_auto_mode(
@@ -392,6 +410,8 @@ def test_auto_mode_keeps_empirical_background_when_structurally_adequate(tmp_pat
     assert set(result["unique_pvalue_mode_resolved"]) == {"empirical-background"}
     assert bool(calibration.loc[0, "unit_auto_eligibility_decision"])
     assert calibration.loc[0, "unit_auto_min_comparable_observed"] == 100
+    assert bool(calibration.loc[0, "unit_auto_empirical_cap_reached"])
+    assert not bool(calibration.loc[0, "unit_auto_empirical_suitability"])
 
 
 @pytest.mark.parametrize(

@@ -64,6 +64,7 @@ class ScoringConfig:
     peptide_normalization_policy: str = "il-equivalent"
     single_peptide_error_rate_upper_bound: float = 0.05
     unique_pvalue_mode: str = "empirical-background"
+    unique_empirical_pvalue_method: str = "alpha-excess"
     unique_peptide_error_source: str = "global-alpha"
     unique_count_power: float = 1.0
     unique_empirical_background_threshold_quantile: float = 0.95
@@ -333,11 +334,9 @@ def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConf
         and not str(config.matched_peptides_cache_path or "").strip()
     ):
         known_files.add("matched_peptides.pkl")
-    if (
-        str(config.unique_pvalue_mode).strip().lower() != "hypergeometric-opportunity"
-        and not str(config.theoretical_opportunity_cache_path or "").strip()
-    ):
-        known_files.add("theoretical_opportunity_cache.pkl")
+    # The corrected theoretical opportunity cache is shared by empirical,
+    # auto, and hypergeometric modes and is removed only when explicitly
+    # rebuilt or when its provenance validation rejects it.
 
     cleanup_paths = [artifact_dir / name for name in known_files]
     cleanup_paths.extend(artifact_dir.glob("top*_peptide_contrib.tsv"))
@@ -728,6 +727,7 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
             export_peptide_contrib_topN=int(config.export_peptide_contrib_topN),
             use_cache_if_exists=bool(config.use_cache_if_exists),
             unique_pvalue_mode=str(config.unique_pvalue_mode),
+            unique_empirical_pvalue_method=str(config.unique_empirical_pvalue_method),
             unique_peptide_error_source=str(config.unique_peptide_error_source),
             unique_count_power=float(config.unique_count_power),
             theoretical_opportunity_cache_path=theoretical_cache_path or None,
