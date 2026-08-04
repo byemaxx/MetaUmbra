@@ -69,6 +69,8 @@ def test_default_parquet_extraction_preserves_required_scoring_columns(tmp_path)
 
 def test_production_empirical_method_defaults_to_alpha_excess():
     assert ScoringConfig().unique_empirical_pvalue_method == "alpha-excess"
+    assert ScoringConfig().presence_combination_method == "bonferroni-min"
+    assert ScoringConfig().hmp_require_unique_evidence is True
     parser = build_parser()
     command = next(action for action in parser._actions if action.dest == "command")
     score_parser = command.choices["score"]
@@ -78,6 +80,21 @@ def test_production_empirical_method_defaults_to_alpha_excess():
         if action.dest == "unique_empirical_pvalue_method"
     )
     assert method.default == "alpha-excess"
+    combination = next(
+        action
+        for action in score_parser._actions
+        if action.dest == "presence_combination_method"
+    )
+    assert combination.default == "bonferroni-min"
+
+
+def test_legacy_scoring_configuration_preserves_fisher_combination():
+    migrated = migrate_legacy_scoring_config_payload({"unit_specific": True})
+    assert migrated["presence_combination_method"] == "fisher"
+    explicit = migrate_legacy_scoring_config_payload(
+        {"presence_combination_method": "harmonic-mean-calibrated"}
+    )
+    assert explicit["presence_combination_method"] == "harmonic-mean-calibrated"
 
 
 def test_failed_directory_run_writes_status_to_results_artifacts(tmp_path):
@@ -282,6 +299,7 @@ def _run_auto_mode(tmp_path, digest_peptides, observed_peptides):
             genome_digest_dirs=[str(digest_dir)],
             output_tsv_path=str(results_dir),
             unique_pvalue_mode="auto",
+            presence_combination_method="fisher",
             num_workers=1,
             knockoff_mc_iterations=20,
             knockoff_stage2_mc_iterations=None,

@@ -21,7 +21,19 @@ from .empirical import (
     _normalize_unique_empirical_pvalue_method,
 )
 from .knockoff import shared_knockoff_mc
-from .ranking import bh_qvalues, fisher_p_2, qvalues_to_presence_scores
+from .ranking import (
+    _normalize_presence_combination_method,
+    bh_qvalues,
+    bonferroni_min_p_2,
+    calibrated_harmonic_mean_p_2,
+    HMP_CALIBRATION_BASIS,
+    HMP_CALIBRATION_COMPONENT_COUNT,
+    HMP_K2_EXACT_CALIBRATION,
+    combine_presence_pvalues,
+    fisher_p_2,
+    harmonic_mean_p_2,
+    qvalues_to_presence_scores,
+)
 from .stats import (
     DEFAULT_UNIQUE_COUNT_POWER,
     DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE,
@@ -176,6 +188,43 @@ def _unit_p_shared_knockoff_mc(
 
 def _unit_fisher_p_2(p1: float, p2: float) -> float:
     return fisher_p_2(p1=p1, p2=p2)
+
+
+def _unit_combination_pvalues(
+    p_unique: float,
+    p_shared: float,
+    unique_count: int,
+    *,
+    hmp_require_unique_evidence: bool,
+) -> Dict[str, float]:
+    """Return every supported component-combination p-value for one genome."""
+    return {
+        "harmonic-mean-calibrated": _clip_pvalue(
+            calibrated_harmonic_mean_p_2(
+                p_unique=p_unique,
+                p_shared=p_shared,
+                num_peptides_unique=unique_count,
+            )
+        ),
+        "fisher": _clip_pvalue(_unit_fisher_p_2(p1=p_unique, p2=p_shared)),
+        "harmonic-mean": _clip_pvalue(
+            harmonic_mean_p_2(
+                p_unique=p_unique,
+                p_shared=p_shared,
+                require_unique_evidence=hmp_require_unique_evidence,
+                unique_count=unique_count,
+            )
+        ),
+        "unique-only": _clip_pvalue(p_unique),
+        "bonferroni-min": _clip_pvalue(
+            bonferroni_min_p_2(
+                p_unique,
+                p_shared,
+                require_unique_evidence=True,
+                unique_count=unique_count,
+            )
+        ),
+    }
 
 
 def _unit_bh_qvalues(pvals: np.ndarray) -> np.ndarray:
@@ -498,6 +547,10 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
     lineage_map: Dict[str, object] = context["lineage_map"]  # type: ignore[assignment]
     requested_mode = str(context["mode"])
     mode = requested_mode
+    presence_combination_method = _normalize_presence_combination_method(
+        str(context.get("presence_combination_method", "bonferroni-min"))
+    )
+    hmp_require_unique_evidence = bool(context.get("hmp_require_unique_evidence", True))
     K1 = int(context["knockoff_mc_iterations"])
     K2_raw = context.get("knockoff_stage2_mc_iterations")
     K2 = int(K2_raw) if K2_raw is not None else None
@@ -560,6 +613,10 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
     p_shared_values = np.ones(n_genomes, dtype=float)
     p_unique_values = np.ones(n_genomes, dtype=float)
     p_combined_values = np.ones(n_genomes, dtype=float)
+    p_combined_fisher_values = np.ones(n_genomes, dtype=float)
+    p_combined_harmonic_calibrated_values = np.ones(n_genomes, dtype=float)
+    p_combined_harmonic_values = np.ones(n_genomes, dtype=float)
+    p_combined_bonferroni_values = np.ones(n_genomes, dtype=float)
     unique_counts = np.zeros(n_genomes, dtype=int)
     null_mean_values = np.zeros(n_genomes, dtype=float)
     null_sd_values = np.zeros(n_genomes, dtype=float)
@@ -567,6 +624,34 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
     null_p99_values = np.zeros(n_genomes, dtype=float)
     z_shared_values = np.zeros(n_genomes, dtype=float)
     unit_empirical_calibration: Dict[str, object] = {}
+
+    def _refresh_combined_pvalues(genome_idx: int, is_knockoff_target: bool) -> None:
+        if not is_knockoff_target:
+            p_combined_values[genome_idx] = 1.0
+            p_combined_fisher_values[genome_idx] = 1.0
+            p_combined_harmonic_calibrated_values[genome_idx] = 1.0
+            p_combined_harmonic_values[genome_idx] = 1.0
+            p_combined_bonferroni_values[genome_idx] = 1.0
+            return
+        components = _unit_combination_pvalues(
+            p_unique=float(p_unique_values[genome_idx]),
+            p_shared=float(p_shared_values[genome_idx]),
+            unique_count=int(unique_counts[genome_idx]),
+            hmp_require_unique_evidence=hmp_require_unique_evidence,
+        )
+        p_combined_fisher_values[genome_idx] = components["fisher"]
+        p_combined_harmonic_calibrated_values[genome_idx] = components[
+            "harmonic-mean-calibrated"
+        ]
+        p_combined_harmonic_values[genome_idx] = components["harmonic-mean"]
+        p_combined_bonferroni_values[genome_idx] = components["bonferroni-min"]
+        p_combined_values[genome_idx] = combine_presence_pvalues(
+            p_unique=float(p_unique_values[genome_idx]),
+            p_shared=float(p_shared_values[genome_idx]),
+            method=presence_combination_method,
+            unique_count=int(unique_counts[genome_idx]),
+            hmp_require_unique_evidence=hmp_require_unique_evidence,
+        )
 
     for genome_idx, genome_id in enumerate(genome_ids):
         matched_peptides = set(genome_matched_peptides.get(genome_id, set())).intersection(unit_observed_peptides)
@@ -679,13 +764,7 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
 
         p_shared_values[genome_idx] = _clip_pvalue(float(p_shared))
         p_unique_values[genome_idx] = _clip_pvalue(float(p_unique))
-        p_combined_values[genome_idx] = (
-            _clip_pvalue(
-                _unit_fisher_p_2(p1=p_shared_values[genome_idx], p2=p_unique_values[genome_idx])
-            )
-            if is_knockoff_target
-            else 1.0
-        )
+        _refresh_combined_pvalues(genome_idx, is_knockoff_target)
         null_mean_values[genome_idx] = float(mu)
         null_sd_values[genome_idx] = float(sd)
         null_p95_values[genome_idx] = float(p95)
@@ -766,14 +845,9 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
                     else 1.0
                 )
                 if is_knockoff_target:
-                    p_combined_values[int(genome_idx)] = _clip_pvalue(
-                        _unit_fisher_p_2(
-                            p1=float(p_shared_values[int(genome_idx)]),
-                            p2=float(p_unique_values[int(genome_idx)]),
-                        )
-                    )
+                    _refresh_combined_pvalues(int(genome_idx), True)
                 else:
-                    p_combined_values[int(genome_idx)] = 1.0
+                    _refresh_combined_pvalues(int(genome_idx), False)
 
             q_tmp = np.ones(n_genomes, dtype=float)
             if bool(np.any(target_mask_empirical)):
@@ -1214,9 +1288,7 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
                 sample_block_size=sample_block_size,
             )
             p_shared_values[genome_idx] = _clip_pvalue(float(p_shared))
-            p_combined_values[genome_idx] = _clip_pvalue(
-                _unit_fisher_p_2(p1=p_shared_values[genome_idx], p2=p_unique_values[genome_idx])
-            )
+            _refresh_combined_pvalues(genome_idx, True)
             null_mean_values[genome_idx] = float(mu)
             null_sd_values[genome_idx] = float(sd)
             null_p95_values[genome_idx] = float(p95)
@@ -1290,6 +1362,11 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
                     eligibility_details.iloc[genome_idx]["empirical_background_adequate"]
                 ),
                 "has_unique_evidence": bool(unique_stats["has_unique_evidence"]),
+                "presence_combination_method": presence_combination_method,
+                "hmp_require_unique_evidence": bool(hmp_require_unique_evidence),
+                "harmonic_calibration_factor": HMP_K2_EXACT_CALIBRATION,
+                "harmonic_calibration_component_count": HMP_CALIBRATION_COMPONENT_COUNT,
+                "harmonic_calibration_basis": HMP_CALIBRATION_BASIS,
                 "pvalue_unique": float(p_unique_values[genome_idx]),
                 "pvalue_unique_depth": float(unique_stats["p_unique_depth"]),
                 "unique_empirical_background_bin": str(unique_stats.get("unique_empirical_background_bin", "")),
@@ -1326,6 +1403,12 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
                     unique_stats.get("p_unique_empirical_background_excess", 1.0)
                 ),
                 "pvalue_shared": float(p_shared_values[genome_idx]),
+                "pvalue_combined_fisher": float(p_combined_fisher_values[genome_idx]),
+                "pvalue_combined_harmonic_calibrated": float(
+                    p_combined_harmonic_calibrated_values[genome_idx]
+                ),
+                "pvalue_combined_harmonic": float(p_combined_harmonic_values[genome_idx]),
+                "pvalue_combined_bonferroni": float(p_combined_bonferroni_values[genome_idx]),
                 "knockoff_target": bool(knockoff_target_mask[genome_idx]),
                 "pvalue": float(p_combined_values[genome_idx]),
                 "qvalue": float(qvals[genome_idx]),

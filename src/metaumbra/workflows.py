@@ -67,6 +67,8 @@ class ScoringConfig:
     unique_empirical_pvalue_method: str = "alpha-excess"
     unique_peptide_error_source: str = "global-alpha"
     unique_count_power: float = 1.0
+    presence_combination_method: str = "bonferroni-min"
+    hmp_require_unique_evidence: bool = True
     unique_empirical_background_threshold_quantile: float = 0.95
     theoretical_opportunity_cache_path: str = ""
     rebuild_theoretical_opportunity_cache: bool = False
@@ -131,6 +133,9 @@ class ParquetExtractionConfig:
 def migrate_legacy_scoring_config_payload(payload: dict[str, object]) -> dict[str, object]:
     """Translate legacy GUI settings into the unified scoring configuration."""
     migrated = dict(payload)
+    # Persisted configurations predating calibrated HMP retain their Fisher
+    # behavior rather than silently adopting the fresh-configuration default.
+    migrated.setdefault("presence_combination_method", "fisher")
 
     legacy_output = str(migrated.get("output_tsv_path") or "").strip()
     legacy_output_path = Path(legacy_output)
@@ -730,6 +735,8 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
             unique_empirical_pvalue_method=str(config.unique_empirical_pvalue_method),
             unique_peptide_error_source=str(config.unique_peptide_error_source),
             unique_count_power=float(config.unique_count_power),
+            presence_combination_method=str(config.presence_combination_method),
+            hmp_require_unique_evidence=bool(config.hmp_require_unique_evidence),
             theoretical_opportunity_cache_path=theoretical_cache_path or None,
             rebuild_theoretical_opportunity_cache=bool(config.rebuild_theoretical_opportunity_cache),
             num_workers_for_theoretical_opportunity=config.num_workers_for_theoretical_opportunity,

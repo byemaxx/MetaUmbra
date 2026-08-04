@@ -103,7 +103,7 @@ Default output files:
 
 Each scoring run records `artifacts/run_parameters.json`, `run.log`, `run_status.json`, and `run_summary.json`. Use `--export-diagnostics` for heavier audit tables under `artifacts/diagnostics/`.
 
-In the current implementation, peptide presence within an analysis unit is defined as the union of sample-level peptide presence across samples assigned to that unit. Unit-level p-values combine per-unit shared knockoff evidence (`pvalue_shared`) with the selected per-unit unique-evidence model (`pvalue_unique`) using Fisher's method, then apply BH correction separately within each analysis unit.
+In the current implementation, peptide presence within an analysis unit is defined as the union of sample-level peptide presence across samples assigned to that unit. Unit-level p-values combine per-unit shared knockoff evidence (`pvalue_shared`) with the selected per-unit unique-evidence model (`pvalue_unique`), then apply BH correction separately within each analysis unit. The default is `bonferroni-min`, `min(1, 2*min(pvalue_unique, pvalue_shared))`, with at least one observed panel-unique peptide required. Fisher, the uncalibrated raw HMP, the factor-2 K=2 calibrated HMP, and unique-only rules remain selectable sensitivity analyses.
 
 Key output columns include:
 
@@ -118,6 +118,10 @@ Key output columns include:
 | `has_unique_evidence` | Whether the genome has at least one observed unique peptide |
 | `pvalue_shared` | Shared-peptide knockoff p-value |
 | `pvalue_unique` | Unique-evidence p-value |
+| `pvalue_combined_fisher` | Fisher combination retained for sensitivity comparison |
+| `pvalue_combined_harmonic_calibrated` | Factor-2 K=2 calibrated two-component HMP sensitivity value |
+| `pvalue_combined_harmonic` | Equal-weight HMP with the configured unique-evidence gate |
+| `pvalue_combined_bonferroni` | Two-test Bonferroni minimum-p sensitivity value |
 | `pvalue` | Genome-level p-value |
 | `qvalue` | BH-adjusted genome-level q-value |
 | `presence_score` | Ranking score based on q-value |

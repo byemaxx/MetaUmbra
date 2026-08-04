@@ -2218,6 +2218,34 @@ class ScoringTab(QWidget):
         _set_compact_control_width(self.theoretical_opportunity_processes_spin, 160)
         self.unique_grid.addWidget(self.theoretical_opportunity_processes_label, 0, 4)
         self.unique_grid.addWidget(self.theoretical_opportunity_processes_spin, 0, 5)
+        self.presence_combination_method_combo = QComboBox()
+        self.presence_combination_method_combo.addItem(
+            "Bonferroni minimum-p", "bonferroni-min"
+        )
+        self.presence_combination_method_combo.addItem(
+            "Factor-2 harmonic mean (sensitivity)", "harmonic-mean-calibrated"
+        )
+        self.presence_combination_method_combo.addItem("Fisher (legacy sensitivity)", "fisher")
+        self.presence_combination_method_combo.addItem(
+            "Raw harmonic mean (uncalibrated sensitivity)", "harmonic-mean"
+        )
+        self.presence_combination_method_combo.addItem("Unique only", "unique-only")
+        _set_combo_to_data(
+            self.presence_combination_method_combo,
+            ScoringConfig().presence_combination_method,
+        )
+        self.presence_combination_method_combo.setToolTip(
+            "Bonferroni minimum-p is the default and requires at least one observed "
+            "unique peptide. Factor-2 HMP is retained as a sensitivity method."
+        )
+        _add_compact_field(
+            self.unique_grid,
+            2,
+            0,
+            "Presence p-value combination",
+            self.presence_combination_method_combo,
+            330,
+        )
         unique_layout.addLayout(self.unique_grid)
         unique_form = QFormLayout()
         self.theoretical_opportunity_cache_label = QLabel("Theoretical opportunity cache")
@@ -2879,6 +2907,10 @@ class ScoringTab(QWidget):
             unique_pvalue_mode=str(self.unique_pvalue_mode_combo.currentData() or "empirical-background"),
             unique_peptide_error_source=str(self.unique_peptide_error_source_combo.currentData() or "global-alpha"),
             unique_count_power=float(self.unique_count_power_spin.value()),
+            presence_combination_method=str(
+                self.presence_combination_method_combo.currentData()
+                or "bonferroni-min"
+            ),
             unique_empirical_background_threshold_quantile=float(
                 self.unique_empirical_background_threshold_quantile_spin.value()
             ),
@@ -2989,6 +3021,10 @@ class ScoringTab(QWidget):
         )
         _set_combo_to_data(self.unique_pvalue_mode_combo, str(config.unique_pvalue_mode))
         _set_combo_to_data(self.unique_peptide_error_source_combo, str(config.unique_peptide_error_source))
+        _set_combo_to_data(
+            self.presence_combination_method_combo,
+            str(config.presence_combination_method),
+        )
         self.unique_count_power_spin.setValue(float(config.unique_count_power))
         self.unique_empirical_background_threshold_quantile_spin.setValue(
             float(config.unique_empirical_background_threshold_quantile)

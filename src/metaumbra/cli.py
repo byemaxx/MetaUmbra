@@ -298,6 +298,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_argument(
         score_optional,
+        "--presence-combination-method",
+        choices=("bonferroni-min", "harmonic-mean-calibrated", "fisher", "harmonic-mean", "unique-only"),
+        default="bonferroni-min",
+        help=(
+            "Combine unique and shared component p-values. bonferroni-min is the default "
+            "two-component minimum-p merger without an independence assumption and requires "
+            "unique evidence; harmonic-mean-calibrated is twice the equal-weight K=2 HMP; "
+            "Fisher is the legacy independence-based rule."
+        ),
+    )
+    _add_argument(
+        score_optional,
+        "--allow-hmp-shared-only",
+        action="store_false",
+        dest="hmp_require_unique_evidence",
+        default=True,
+        help=(
+            "Allow harmonic-mean calls without a panel-unique peptide. By default, "
+            "HMP requires at least one unique peptide and treats shared evidence as supporting."
+        ),
+    )
+    _add_argument(
+        score_optional,
         "--unique-empirical-background-threshold-quantile",
         type=float,
         default=0.95,
@@ -586,6 +609,8 @@ def _run_score(args: argparse.Namespace) -> int:
         unique_empirical_pvalue_method=args.unique_empirical_pvalue_method,
         unique_peptide_error_source=args.unique_peptide_error_source,
         unique_count_power=args.unique_count_power,
+        presence_combination_method=args.presence_combination_method,
+        hmp_require_unique_evidence=args.hmp_require_unique_evidence,
         unique_empirical_background_threshold_quantile=args.unique_empirical_background_threshold_quantile,
         unit_mode=args.unit_mode,
         sample_id_col=args.sample_id_col,

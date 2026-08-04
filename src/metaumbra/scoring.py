@@ -16,7 +16,8 @@
 #    - For each genome, sample from these pools according to that genome's shared-stratum counts to get
 #      an empirical null for weighted_evidence_shared, yielding p_shared_knock.
 #    - Unique evidence p-value uses an adaptive peptide-depth null by default.
-#    - Combine with Fisher (2 p-values) => p_presence; BH => q_presence (per-genome existence q-value).
+#    - Combine unique and shared p-values with a configurable rule (Fisher by default)
+#      => p_presence; BH => q_presence (per-genome existence q-value).
 #
 # Outputs:
 # - Main result table: concise, publication-facing columns with standardized names.
@@ -65,6 +66,13 @@ from ._scoring.normalization import (
     DEFAULT_PEPTIDE_NORMALIZATION_POLICY,
     normalize_peptide_policy,
     normalize_peptide_sequence,
+)
+from ._scoring.ranking import (
+    DEFAULT_PRESENCE_COMBINATION_METHOD,
+    HMP_CALIBRATION_BASIS,
+    HMP_CALIBRATION_COMPONENT_COUNT,
+    HMP_K2_EXACT_CALIBRATION,
+    _normalize_presence_combination_method,
 )
 from ._scoring.theoretical import (
     _build_theoretical_opportunity_batch_worker,
@@ -329,6 +337,8 @@ class GenomePresenceScorer:
         self.unique_empirical_pvalue_method: str = DEFAULT_UNIQUE_EMPIRICAL_PVALUE_METHOD
         self.unique_peptide_error_source: str = DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE
         self.unique_count_power: float = DEFAULT_UNIQUE_COUNT_POWER
+        self.presence_combination_method: str = DEFAULT_PRESENCE_COMBINATION_METHOD
+        self.hmp_require_unique_evidence: bool = True
         self.unique_empirical_background_df: Optional[pd.DataFrame] = None
         self.unique_empirical_pvalue_by_genome: Dict[str, float] = {}
         self.unique_empirical_expected_by_genome: Dict[str, float] = {}
@@ -2144,6 +2154,8 @@ class GenomePresenceScorer:
             "unique_peptide_error_source": str(self.unique_peptide_error_source),
             "unique_count_power": float(self.unique_count_power),
             "unique_empirical_pvalue_method": str(self.unique_empirical_pvalue_method),
+            "presence_combination_method": str(self.presence_combination_method),
+            "hmp_require_unique_evidence": bool(self.hmp_require_unique_evidence),
             "lineage_map": lineage_map,
             "mode": mode,
             "knockoff_mc_iterations": int(K1),
@@ -2651,6 +2663,11 @@ class GenomePresenceScorer:
             "presence_rank",
             "qvalue",
             "pvalue",
+            "presence_combination_method",
+            "hmp_require_unique_evidence",
+            "harmonic_calibration_factor",
+            "harmonic_calibration_component_count",
+            "harmonic_calibration_basis",
             "pass_q_0_01",
             "pass_q_0_05",
             "num_peptides_unique",
@@ -2663,6 +2680,10 @@ class GenomePresenceScorer:
             "matched_peptide_count_shared",
             "pvalue_unique",
             "pvalue_shared",
+            "pvalue_combined_fisher",
+            "pvalue_combined_harmonic_calibrated",
+            "pvalue_combined_harmonic",
+            "pvalue_combined_bonferroni",
             "presence_score",
             "n_samples_in_unit",
         ]
@@ -2982,6 +3003,8 @@ class GenomePresenceScorer:
         unique_empirical_pvalue_method: str = DEFAULT_UNIQUE_EMPIRICAL_PVALUE_METHOD,
         unique_peptide_error_source: str = DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE,
         unique_count_power: float = DEFAULT_UNIQUE_COUNT_POWER,
+        presence_combination_method: str = DEFAULT_PRESENCE_COMBINATION_METHOD,
+        hmp_require_unique_evidence: bool = True,
         theoretical_opportunity_cache_path: Optional[str] = None,
         rebuild_theoretical_opportunity_cache: bool = False,
         num_workers_for_theoretical_opportunity: Optional[int] = None,
@@ -2997,6 +3020,9 @@ class GenomePresenceScorer:
         mode = _normalize_unique_pvalue_mode(unique_pvalue_mode)
         unique_empirical_pvalue_method = _normalize_unique_empirical_pvalue_method(
             unique_empirical_pvalue_method
+        )
+        presence_combination_method = _normalize_presence_combination_method(
+            presence_combination_method
         )
         unique_peptide_error_source = _normalize_unique_peptide_error_source(unique_peptide_error_source)
         unique_count_power = float(unique_count_power)
@@ -3020,6 +3046,13 @@ class GenomePresenceScorer:
         self.unique_empirical_pvalue_method = unique_empirical_pvalue_method
         self.unique_peptide_error_source = unique_peptide_error_source
         self.unique_count_power = float(unique_count_power)
+        self.presence_combination_method = presence_combination_method
+        self.hmp_require_unique_evidence = bool(hmp_require_unique_evidence)
+        self.run_stats["presence_combination_method"] = str(presence_combination_method)
+        self.run_stats["hmp_require_unique_evidence"] = bool(hmp_require_unique_evidence)
+        self.run_stats["harmonic_calibration_factor"] = HMP_K2_EXACT_CALIBRATION
+        self.run_stats["harmonic_calibration_component_count"] = HMP_CALIBRATION_COMPONENT_COUNT
+        self.run_stats["harmonic_calibration_basis"] = HMP_CALIBRATION_BASIS
         theoretical_opportunity_workers = (
             self.num_workers
             if num_workers_for_theoretical_opportunity is None

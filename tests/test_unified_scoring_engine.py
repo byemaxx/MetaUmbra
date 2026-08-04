@@ -144,6 +144,49 @@ def test_public_peptide_reader_adapts_to_all_samples_scoring(tmp_path):
     )
 
 
+def test_harmonic_mean_selection_exports_all_combined_pvalues(tmp_path):
+    peptide_table = tmp_path / "peptides.tsv"
+    pd.DataFrame({"Sequence": ["UNIQUEA", "UNIQUEB"]}).to_csv(
+        peptide_table, sep="\t", index=False
+    )
+    pd.DataFrame({"Sequence": ["UNIQUEA"]}).to_csv(tmp_path / "g1.tsv", sep="\t", index=False)
+    pd.DataFrame({"Sequence": ["UNIQUEB"]}).to_csv(tmp_path / "g2.tsv", sep="\t", index=False)
+
+    scorer = GenomePresenceScorer(num_workers=1)
+    scorer.knockoff_mc_iterations = 50
+    scorer.knockoff_stage2_mc_iterations = None
+    scorer.read_peptide_file(
+        peptide_table_path=str(peptide_table),
+        peptide_seq_col="Sequence",
+        peptide_score_col=None,
+        peptide_decoy_flag_col=None,
+    )
+    result = scorer.analyze_genomes(
+        genome_digest_dirs=[str(tmp_path)],
+        output_tsv_path=str(tmp_path / "unit_genome_results.tsv"),
+        all_matched_peptides=[
+            ("g1", {"UNIQUEA"}, 1),
+            ("g2", {"UNIQUEB"}, 1),
+        ],
+        compute_coverage=False,
+        presence_combination_method="harmonic-mean",
+        hmp_require_unique_evidence=True,
+        return_full_table=True,
+    )
+
+    assert {
+        "pvalue_combined_fisher",
+        "pvalue_combined_harmonic_calibrated",
+        "pvalue_combined_harmonic",
+        "pvalue_combined_bonferroni",
+    }.issubset(result.columns)
+    assert result["presence_combination_method"].eq("harmonic-mean").all()
+    assert result["hmp_require_unique_evidence"].eq(True).all()
+    assert result["pvalue"].tolist() == pytest.approx(
+        result["pvalue_combined_harmonic"].tolist()
+    )
+
+
 def test_knockoff_top_n_targets_limits_unit_worker_inference(tmp_path, monkeypatch):
     peptide_table = tmp_path / "peptides.tsv"
     pd.DataFrame({"Sequence": ["UNIQUEA", "UNIQUEB", "UNIQUEC", "SHARED"]}).to_csv(
