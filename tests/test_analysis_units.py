@@ -143,6 +143,7 @@ def test_all_samples_accepts_peptide_only_table(tmp_path):
         sample_id_col="Run",
         peptide_seq_col="Sequence",
         peptide_decoy_flag_col=None,
+        peptide_normalization_policy="exact",
     )
 
     assert scorer.unit_sample_ids == [GLOBAL_UNIT_ID]
@@ -204,6 +205,7 @@ def test_metadata_included_flag_excludes_samples_from_scoring(tmp_path):
         intensity_col="Intensity",
         peptide_error_col="Q.Value",
         metadata_table_path=str(metadata_path),
+        peptide_normalization_policy="exact",
     )
 
     assert scorer.unit_sample_ids == ["s1"]

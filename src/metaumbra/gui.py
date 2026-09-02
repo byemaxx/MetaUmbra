@@ -14,6 +14,8 @@ from pathlib import Path
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from metaumbra import __version__
+    from metaumbra._scoring.ranking import DEFAULT_PRESENCE_COMBINATION_METHOD
+    from metaumbra._scoring.stats import DEFAULT_UNIQUE_PVALUE_MODE
     from metaumbra.workflows import (
         DigestConfig,
         ParquetExtractionConfig,
@@ -26,6 +28,8 @@ if __package__ in {None, ""}:
     )
 else:
     from . import __version__
+    from ._scoring.ranking import DEFAULT_PRESENCE_COMBINATION_METHOD
+    from ._scoring.stats import DEFAULT_UNIQUE_PVALUE_MODE
     from .workflows import (
         DigestConfig,
         ParquetExtractionConfig,
@@ -2006,6 +2010,15 @@ class ScoringTab(QWidget):
         self.decoy_flag_value_edit = _create_editable_combo("+", "Decoy flag value")
         self.decoy_flag_value_edit.addItems(["+", "decoy", "1", "True", "FALSE", "T", "F"])
         self.decoy_flag_value_edit.setEditText("+")
+        self.peptide_normalization_policy_combo = QComboBox()
+        self.peptide_normalization_policy_combo.addItem(
+            "I/L equivalent (recommended)", "il-equivalent"
+        )
+        self.peptide_normalization_policy_combo.addItem("Exact residues", "exact")
+        self.peptide_normalization_policy_combo.setToolTip(
+            "I/L-equivalent matching treats isoleucine and leucine as indistinguishable. "
+            "Q/K and AD/W are never collapsed."
+        )
         self.peptide_error_cutoff_edit.setToolTip("Filters input peptide rows by the selected error/FDR column.")
         self.peptide_error_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
         self.peptide_decoy_flag_col_edit.setSizePolicy(QSIZE_EXPANDING, QSIZE_PREFERRED)
@@ -2018,6 +2031,14 @@ class ScoringTab(QWidget):
         )
         self.decoy_flag_value_label = _add_compact_field(
             columns_grid, 0, 3, "Decoy flag value", self.decoy_flag_value_edit, 90
+        )
+        _add_compact_field(
+            columns_grid,
+            1,
+            0,
+            "Peptide matching",
+            self.peptide_normalization_policy_combo,
+            220,
         )
         columns_layout = QVBoxLayout(columns_box)
         columns_layout.addLayout(columns_grid)
@@ -2116,13 +2137,15 @@ class ScoringTab(QWidget):
         unique_box = QGroupBox("Unique Evidence Settings")
         unique_box.setProperty("subtle", True)
         unique_box.setToolTip(
-            "Unique p-value strength is controlled by unique p-value mode. Alpha controls apply only to alpha-upper-bound."
+            "Unique p-value strength is controlled by unique p-value mode. Auto selection uses only structural eligibility."
         )
         unique_layout = QVBoxLayout(unique_box)
         self.unique_pvalue_mode_combo = QComboBox()
+        self.unique_pvalue_mode_combo.addItem("Auto", "auto")
         self.unique_pvalue_mode_combo.addItem("Empirical background", "empirical-background")
         self.unique_pvalue_mode_combo.addItem("Alpha upper bound", "alpha-upper-bound")
         self.unique_pvalue_mode_combo.addItem("Hypergeometric opportunity", "hypergeometric-opportunity")
+        _set_combo_to_data(self.unique_pvalue_mode_combo, ScoringConfig().unique_pvalue_mode)
         self.unique_pvalue_mode_combo.setMinimumWidth(260)
         _set_compact_control_width(self.unique_pvalue_mode_combo, 260)
         self.unique_peptide_error_source_combo = QComboBox()
@@ -2147,10 +2170,11 @@ class ScoringTab(QWidget):
         )
         self.rebuild_theoretical_opportunity_cache_checkbox = QCheckBox("Rebuild theoretical opportunity cache")
         self.single_peptide_error_rate_upper_bound_edit.setToolTip(
-            "Global alpha used by alpha-upper-bound mode when unique peptide error source is Global alpha."
+            "Per-peptide error upper bound for alpha-upper-bound mode. Its product interpretation requires "
+            "defensible per-peptide bounds, a multiplicative dependence assumption, and no omitted homologous explanation."
         )
         self.unique_pvalue_mode_combo.setToolTip(
-            "Empirical background estimates a sample-specific weak-genome unique peptide threshold and accumulates only excess unique evidence."
+            "Auto uses empirical background only when the structural panel-unique-opportunity eligibility rule is met; otherwise it uses alpha upper bound."
         )
         self.unique_peptide_error_source_combo.setToolTip(
             "Choose epsilon_i for alpha-upper-bound mode."
@@ -2164,10 +2188,10 @@ class ScoringTab(QWidget):
         theoretical_cache_row, self.theoretical_opportunity_cache_edit = _make_path_row(
             "Browse", self._browse_theoretical_opportunity_cache, accept_mode="file"
         )
-        unique_grid = _create_compact_grid()
-        _add_compact_field(unique_grid, 0, 0, "Unique p-value mode", self.unique_pvalue_mode_combo, 260)
+        self.unique_grid = _create_compact_grid()
+        _add_compact_field(self.unique_grid, 0, 0, "Unique p-value mode", self.unique_pvalue_mode_combo, 260)
         self.unique_peptide_error_source_label = _add_compact_field(
-            unique_grid,
+            self.unique_grid,
             0,
             1,
             "Unique peptide error source",
@@ -2177,13 +2201,13 @@ class ScoringTab(QWidget):
         self.unique_alpha_label = QLabel("Unique evidence alpha")
         self.unique_alpha_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
         _set_compact_control_width(self.single_peptide_error_rate_upper_bound_edit, 130)
-        unique_grid.addWidget(self.unique_alpha_label, 0, 4)
-        unique_grid.addWidget(self.single_peptide_error_rate_upper_bound_edit, 0, 5)
+        self.unique_grid.addWidget(self.unique_alpha_label, 0, 4)
+        self.unique_grid.addWidget(self.single_peptide_error_rate_upper_bound_edit, 0, 5)
         self.unique_count_power_label = QLabel("Unique count power")
         self.unique_count_power_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
         _set_compact_control_width(self.unique_count_power_spin, 110)
-        unique_grid.addWidget(self.unique_count_power_label, 1, 0)
-        unique_grid.addWidget(self.unique_count_power_spin, 1, 1)
+        self.unique_grid.addWidget(self.unique_count_power_label, 1, 0)
+        self.unique_grid.addWidget(self.unique_count_power_spin, 1, 1)
         self.unique_empirical_background_threshold_quantile_label = QLabel(
             "Empirical background threshold quantile"
         )
@@ -2191,14 +2215,45 @@ class ScoringTab(QWidget):
             QT_ALIGN_LEFT | QT_ALIGN_VCENTER
         )
         _set_compact_control_width(self.unique_empirical_background_threshold_quantile_spin, 110)
-        unique_grid.addWidget(self.unique_empirical_background_threshold_quantile_label, 1, 0)
-        unique_grid.addWidget(self.unique_empirical_background_threshold_quantile_spin, 1, 1)
+        self.unique_grid.addWidget(self.unique_empirical_background_threshold_quantile_label, 1, 2)
+        self.unique_grid.addWidget(self.unique_empirical_background_threshold_quantile_spin, 1, 3)
         self.theoretical_opportunity_processes_label = QLabel("Opportunity processes")
         self.theoretical_opportunity_processes_label.setAlignment(QT_ALIGN_LEFT | QT_ALIGN_VCENTER)
         _set_compact_control_width(self.theoretical_opportunity_processes_spin, 160)
-        unique_grid.addWidget(self.theoretical_opportunity_processes_label, 0, 4)
-        unique_grid.addWidget(self.theoretical_opportunity_processes_spin, 0, 5)
-        unique_layout.addLayout(unique_grid)
+        self.unique_grid.addWidget(self.theoretical_opportunity_processes_label, 0, 4)
+        self.unique_grid.addWidget(self.theoretical_opportunity_processes_spin, 0, 5)
+        self.presence_combination_method_combo = QComboBox()
+        self.presence_combination_method_combo.addItem(
+            "Simes/closed-testing (primary)", "simes-closed"
+        )
+        self.presence_combination_method_combo.addItem(
+            "Bonferroni minimum-p", "bonferroni-min"
+        )
+        self.presence_combination_method_combo.addItem(
+            "Factor-2 harmonic mean (sensitivity)", "harmonic-mean-calibrated"
+        )
+        self.presence_combination_method_combo.addItem("Fisher (legacy sensitivity)", "fisher")
+        self.presence_combination_method_combo.addItem(
+            "Raw harmonic mean (uncalibrated sensitivity)", "harmonic-mean"
+        )
+        self.presence_combination_method_combo.addItem("Unique only", "unique-only")
+        _set_combo_to_data(
+            self.presence_combination_method_combo,
+            ScoringConfig().presence_combination_method,
+        )
+        self.presence_combination_method_combo.setToolTip(
+            "Simes/closed-testing is the default and requires at least one observed "
+            "unique peptide. Shared evidence can corroborate but cannot supersede unique evidence."
+        )
+        _add_compact_field(
+            self.unique_grid,
+            2,
+            0,
+            "Presence p-value combination",
+            self.presence_combination_method_combo,
+            330,
+        )
+        unique_layout.addLayout(self.unique_grid)
         unique_form = QFormLayout()
         self.theoretical_opportunity_cache_label = QLabel("Theoretical opportunity cache")
         unique_form.addRow(self.theoretical_opportunity_cache_label, theoretical_cache_row)
@@ -2747,10 +2802,10 @@ class ScoringTab(QWidget):
             self._last_browse_dir = _remember_dialog_directory(path)
 
     def _sync_unique_mode_visibility(self) -> None:
-        mode = str(self.unique_pvalue_mode_combo.currentData() or "empirical-background")
+        mode = str(self.unique_pvalue_mode_combo.currentData() or DEFAULT_UNIQUE_PVALUE_MODE)
         error_source = str(self.unique_peptide_error_source_combo.currentData() or "global-alpha")
-        show_empirical_background = mode == "empirical-background"
-        show_alpha_mode = mode == "alpha-upper-bound"
+        show_empirical_background = mode in {"empirical-background", "auto"}
+        show_alpha_mode = mode in {"alpha-upper-bound", "auto"}
         show_alpha = show_alpha_mode and error_source == "global-alpha"
         show_effective_count = show_alpha_mode
         self.unique_peptide_error_source_label.setVisible(show_alpha_mode)
@@ -2848,13 +2903,21 @@ class ScoringTab(QWidget):
             peptide_error_cutoff=_parse_required_float(
                 self.peptide_error_cutoff_edit.text(), "Peptide error cutoff"
             ),
+            peptide_normalization_policy=str(
+                self.peptide_normalization_policy_combo.currentData()
+                or "il-equivalent"
+            ),
             single_peptide_error_rate_upper_bound=_parse_required_float(
                 self.single_peptide_error_rate_upper_bound_edit.text(),
                 "Unique evidence alpha",
             ),
-            unique_pvalue_mode=str(self.unique_pvalue_mode_combo.currentData() or "empirical-background"),
+            unique_pvalue_mode=str(self.unique_pvalue_mode_combo.currentData() or DEFAULT_UNIQUE_PVALUE_MODE),
             unique_peptide_error_source=str(self.unique_peptide_error_source_combo.currentData() or "global-alpha"),
             unique_count_power=float(self.unique_count_power_spin.value()),
+            presence_combination_method=str(
+                self.presence_combination_method_combo.currentData()
+                or DEFAULT_PRESENCE_COMBINATION_METHOD
+            ),
             unique_empirical_background_threshold_quantile=float(
                 self.unique_empirical_background_threshold_quantile_spin.value()
             ),
@@ -2956,11 +3019,19 @@ class ScoringTab(QWidget):
         self.sample_id_col_edit.setEditText(config.sample_id_col)
         self.intensity_col_edit.setEditText(config.intensity_col)
         self.peptide_error_cutoff_edit.setText(str(config.peptide_error_cutoff))
+        _set_combo_to_data(
+            self.peptide_normalization_policy_combo,
+            str(config.peptide_normalization_policy),
+        )
         self.single_peptide_error_rate_upper_bound_edit.setText(
             str(config.single_peptide_error_rate_upper_bound)
         )
         _set_combo_to_data(self.unique_pvalue_mode_combo, str(config.unique_pvalue_mode))
         _set_combo_to_data(self.unique_peptide_error_source_combo, str(config.unique_peptide_error_source))
+        _set_combo_to_data(
+            self.presence_combination_method_combo,
+            str(config.presence_combination_method),
+        )
         self.unique_count_power_spin.setValue(float(config.unique_count_power))
         self.unique_empirical_background_threshold_quantile_spin.setValue(
             float(config.unique_empirical_background_threshold_quantile)
@@ -3937,4 +4008,3 @@ def main() -> None:
 if __name__ == "__main__":
     mp.freeze_support()
     main()
-

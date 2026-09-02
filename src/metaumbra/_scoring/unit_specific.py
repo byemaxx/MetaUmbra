@@ -14,10 +14,29 @@ import pandas as pd
 
 from .empirical import (
     DEFAULT_UNIQUE_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE,
+    DEFAULT_UNIQUE_EMPIRICAL_PVALUE_METHOD,
     _compute_empirical_background_stats_for_table,
+    _evaluate_empirical_background_eligibility,
+    _evaluate_empirical_background_suitability,
+    _normalize_unique_empirical_pvalue_method,
 )
 from .knockoff import shared_knockoff_mc
-from .ranking import bh_qvalues, fisher_p_2, qvalues_to_presence_scores
+from .ranking import (
+    DEFAULT_PRESENCE_COMBINATION_METHOD,
+    _normalize_presence_combination_method,
+    bh_qvalues,
+    bonferroni_min_p_2,
+    calibrated_harmonic_mean_p_2,
+    HMP_CALIBRATION_BASIS,
+    HMP_CALIBRATION_COMPONENT_COUNT,
+    HMP_K2_EXACT_CALIBRATION,
+    combine_presence_pvalues,
+    fisher_p_2,
+    harmonic_mean_p_2,
+    qvalues_to_presence_scores,
+    simes_closed_p_2,
+    simes_intersection_p_2,
+)
 from .stats import (
     DEFAULT_UNIQUE_COUNT_POWER,
     DEFAULT_UNIQUE_PEPTIDE_ERROR_SOURCE,
@@ -49,7 +68,9 @@ UNIT_EMPIRICAL_BACKGROUND_OUTPUT_COLUMNS = (
     "unique_empirical_background_size",
     "unique_empirical_background_threshold",
     "unique_empirical_excess_count",
+    "p_unique_empirical_formal",
     "p_unique_empirical_tail",
+    "unique_alpha_excess_index",
 )
 UNIT_EMPIRICAL_BACKGROUND_INTERNAL_COLUMNS = (
     "unit_empirical_background_iteration_trace",
@@ -172,6 +193,53 @@ def _unit_fisher_p_2(p1: float, p2: float) -> float:
     return fisher_p_2(p1=p1, p2=p2)
 
 
+def _unit_combination_pvalues(
+    p_unique: float,
+    p_shared: float,
+    unique_count: int,
+    *,
+    hmp_require_unique_evidence: bool,
+) -> Dict[str, float]:
+    """Return every supported component-combination p-value for one genome."""
+    return {
+        "simes-intersection": _clip_pvalue(
+            simes_intersection_p_2(p_unique=p_unique, p_shared=p_shared)
+        ),
+        "simes-closed": _clip_pvalue(
+            simes_closed_p_2(
+                p_unique=p_unique,
+                p_shared=p_shared,
+                num_peptides_unique=unique_count,
+            )
+        ),
+        "harmonic-mean-calibrated": _clip_pvalue(
+            calibrated_harmonic_mean_p_2(
+                p_unique=p_unique,
+                p_shared=p_shared,
+                num_peptides_unique=unique_count,
+            )
+        ),
+        "fisher": _clip_pvalue(_unit_fisher_p_2(p1=p_unique, p2=p_shared)),
+        "harmonic-mean": _clip_pvalue(
+            harmonic_mean_p_2(
+                p_unique=p_unique,
+                p_shared=p_shared,
+                require_unique_evidence=hmp_require_unique_evidence,
+                unique_count=unique_count,
+            )
+        ),
+        "unique-only": _clip_pvalue(p_unique),
+        "bonferroni-min": _clip_pvalue(
+            bonferroni_min_p_2(
+                p_unique,
+                p_shared,
+                require_unique_evidence=True,
+                unique_count=unique_count,
+            )
+        ),
+    }
+
+
 def _unit_bh_qvalues(pvals: np.ndarray) -> np.ndarray:
     return bh_qvalues(pvals)
 
@@ -281,15 +349,31 @@ def _unit_unique_pvalue_stats_for_genome(
         "unique_empirical_background_size": 0,
         "unique_empirical_background_threshold": 0.0,
         "unique_empirical_excess_count": 0.0,
+        "unique_excess_count": 0.0,
         "p_unique_empirical_tail": 1.0,
+        "empirical_tail_percentile": 0.0,
+        "empirical_background_size": 0,
+        "minimum_attainable_empirical_p": 1.0,
+        "p_unique_alpha_upper_bound": (
+            _clip_pvalue(p_unique) if mode == "alpha-upper-bound" else 1.0
+        ),
     }
 
 
-def _unit_empirical_unique_stats_from_row(row: pd.Series, mode: str = "empirical-background") -> dict:
+def _unit_empirical_unique_stats_from_row(
+    row: pd.Series,
+    mode: str = "empirical-background",
+    pvalue_method: str = DEFAULT_UNIQUE_EMPIRICAL_PVALUE_METHOD,
+) -> dict:
+    pvalue_method = _normalize_unique_empirical_pvalue_method(pvalue_method)
     U = int(row.get("num_peptides_unique", 0))
     expected = float(row.get("expected_unique_null", 0.0))
     excess = float(row.get("unique_empirical_excess_count", 0.0))
-    p_unique = _clip_pvalue(float(row.get("p_unique_empirical_background_excess", 1.0)))
+    p_tail = _clip_pvalue(float(row.get("p_unique_empirical_tail", 1.0)))
+    alpha_index = _clip_pvalue(
+        float(row.get("unique_alpha_excess_index", row.get("p_unique_empirical_background_excess", 1.0)))
+    )
+    p_unique = p_tail if pvalue_method == "empirical-tail" else alpha_index
     return {
         "p_unique": p_unique,
         "p_unique_depth": p_unique,
@@ -301,13 +385,30 @@ def _unit_empirical_unique_stats_from_row(row: pd.Series, mode: str = "empirical
         "unique_peptide_error_source": "",
         "has_unique_evidence": bool(U > 0),
         "theoretical_unique_peptides": pd.NA,
-        "unique_effective_count": float(excess),
-        "unique_pvalue_count_model": "background-excess",
+        "unique_effective_count": float(U if pvalue_method == "empirical-tail" else excess),
+        "unique_pvalue_count_model": (
+            "empirical-upper-tail" if pvalue_method == "empirical-tail" else "background-excess"
+        ),
         "unique_empirical_background_bin": str(row.get("unique_empirical_background_bin", "")),
         "unique_empirical_background_size": int(row.get("unique_empirical_background_size", 0)),
         "unique_empirical_background_threshold": float(row.get("unique_empirical_background_threshold", 0.0)),
         "unique_empirical_excess_count": float(excess),
-        "p_unique_empirical_tail": _clip_pvalue(float(row.get("p_unique_empirical_tail", 1.0))),
+        "p_unique_empirical_formal": p_unique,
+        "p_unique_empirical_tail": p_tail,
+        "unique_alpha_excess_index": alpha_index,
+        "unique_empirical_q95_threshold": float(
+            row.get("unique_empirical_q95_threshold", row.get("unique_empirical_background_threshold", 0.0))
+        ),
+        "p_unique_empirical_background_excess": alpha_index,
+        "empirical_tail_percentile": float(row.get("empirical_tail_percentile", 0.0)),
+        "empirical_background_size": int(
+            row.get("empirical_background_size", row.get("unique_empirical_background_size", 0))
+        ),
+        "minimum_attainable_empirical_p": float(
+            row.get("minimum_attainable_empirical_p", 1.0)
+        ),
+        "unique_excess_count": float(row.get("unique_excess_count", excess)),
+        "p_unique_alpha_upper_bound": 1.0,
     }
 
 
@@ -369,6 +470,10 @@ def _unit_shared_metrics_for_genome(
         "num_peptides_matched": int(total_matched),
         "num_peptides_unique": int(unique_count),
         "total_peptide_count": int(total_theoretical),
+        # Filled from the corrected theoretical opportunity map by the unit
+        # worker.  Keeping the explicit field prevents accidental reuse of
+        # total theoretical peptide count as an empirical stratum variable.
+        "theoretical_panel_unique_peptide_opportunity": 0,
         "peptide_match_ratio": float(total_matched) / float(max(total_theoretical, 1)),
         "average_peptide_score": float(np.mean(peptide_scores)) if peptide_scores else 0.0,
         "effective_peptide_count": float(effective_peptide_count),
@@ -448,9 +553,17 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
     peptide_score: Dict[str, float] = context["peptide_score"]  # type: ignore[assignment]
     genome_total_theoretical_peptides: Dict[str, int] = context["genome_total_theoretical_peptides"]  # type: ignore[assignment]
     genome_theoretical_unique_peptides: Dict[str, int] = context["genome_theoretical_unique_peptides"]  # type: ignore[assignment]
+    theoretical_opportunity_diagnostics_available = bool(
+        context.get("theoretical_opportunity_diagnostics_available", False)
+    )
     peptide_error_upper_by_peptide: Dict[str, float] = context["peptide_error_upper_by_peptide"]  # type: ignore[assignment]
     lineage_map: Dict[str, object] = context["lineage_map"]  # type: ignore[assignment]
-    mode = str(context["mode"])
+    requested_mode = str(context["mode"])
+    mode = requested_mode
+    presence_combination_method = _normalize_presence_combination_method(
+        str(context.get("presence_combination_method", DEFAULT_PRESENCE_COMBINATION_METHOD))
+    )
+    hmp_require_unique_evidence = bool(context.get("hmp_require_unique_evidence", True))
     K1 = int(context["knockoff_mc_iterations"])
     K2_raw = context.get("knockoff_stage2_mc_iterations")
     K2 = int(K2_raw) if K2_raw is not None else None
@@ -485,6 +598,9 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
     unit_empirical_threshold_quantile = float(
         context.get("unit_empirical_background_threshold_quantile", UNIT_EMPIRICAL_BACKGROUND_THRESHOLD_QUANTILE)
     )
+    unit_empirical_pvalue_method = _normalize_unique_empirical_pvalue_method(
+        str(context.get("unique_empirical_pvalue_method", DEFAULT_UNIQUE_EMPIRICAL_PVALUE_METHOD))
+    )
     knockoff_top_n_raw = context.get("knockoff_top_n_targets")
     knockoff_top_n_targets = int(knockoff_top_n_raw) if knockoff_top_n_raw is not None else None
     total_theoretical_unique_peptides_all_genomes = int(context["total_theoretical_unique_peptides_all_genomes"])
@@ -505,10 +621,17 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
     unit_metrics_by_genome: Dict[str, dict] = {}
     unit_matched_peptides_by_genome: Dict[str, Set[str]] = {}
     unit_unique_stats_by_genome: Dict[str, dict] = {}
+    unit_hypergeom_stats_by_genome: Dict[str, dict] = {}
 
     p_shared_values = np.ones(n_genomes, dtype=float)
     p_unique_values = np.ones(n_genomes, dtype=float)
     p_combined_values = np.ones(n_genomes, dtype=float)
+    p_simes_intersection_values = np.ones(n_genomes, dtype=float)
+    p_simes_closed_values = np.ones(n_genomes, dtype=float)
+    p_combined_fisher_values = np.ones(n_genomes, dtype=float)
+    p_combined_harmonic_calibrated_values = np.ones(n_genomes, dtype=float)
+    p_combined_harmonic_values = np.ones(n_genomes, dtype=float)
+    p_combined_bonferroni_values = np.ones(n_genomes, dtype=float)
     unique_counts = np.zeros(n_genomes, dtype=int)
     null_mean_values = np.zeros(n_genomes, dtype=float)
     null_sd_values = np.zeros(n_genomes, dtype=float)
@@ -516,6 +639,38 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
     null_p99_values = np.zeros(n_genomes, dtype=float)
     z_shared_values = np.zeros(n_genomes, dtype=float)
     unit_empirical_calibration: Dict[str, object] = {}
+
+    def _refresh_combined_pvalues(genome_idx: int, is_knockoff_target: bool) -> None:
+        if not is_knockoff_target:
+            p_combined_values[genome_idx] = 1.0
+            p_simes_intersection_values[genome_idx] = 1.0
+            p_simes_closed_values[genome_idx] = 1.0
+            p_combined_fisher_values[genome_idx] = 1.0
+            p_combined_harmonic_calibrated_values[genome_idx] = 1.0
+            p_combined_harmonic_values[genome_idx] = 1.0
+            p_combined_bonferroni_values[genome_idx] = 1.0
+            return
+        components = _unit_combination_pvalues(
+            p_unique=float(p_unique_values[genome_idx]),
+            p_shared=float(p_shared_values[genome_idx]),
+            unique_count=int(unique_counts[genome_idx]),
+            hmp_require_unique_evidence=hmp_require_unique_evidence,
+        )
+        p_simes_intersection_values[genome_idx] = components["simes-intersection"]
+        p_simes_closed_values[genome_idx] = components["simes-closed"]
+        p_combined_fisher_values[genome_idx] = components["fisher"]
+        p_combined_harmonic_calibrated_values[genome_idx] = components[
+            "harmonic-mean-calibrated"
+        ]
+        p_combined_harmonic_values[genome_idx] = components["harmonic-mean"]
+        p_combined_bonferroni_values[genome_idx] = components["bonferroni-min"]
+        p_combined_values[genome_idx] = combine_presence_pvalues(
+            p_unique=float(p_unique_values[genome_idx]),
+            p_shared=float(p_shared_values[genome_idx]),
+            method=presence_combination_method,
+            unique_count=int(unique_counts[genome_idx]),
+            hmp_require_unique_evidence=hmp_require_unique_evidence,
+        )
 
     for genome_idx, genome_id in enumerate(genome_ids):
         matched_peptides = set(genome_matched_peptides.get(genome_id, set())).intersection(unit_observed_peptides)
@@ -531,6 +686,9 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
         )
         unit_matched_peptides_by_genome[genome_id] = matched_peptides
         unit_metrics_by_genome[genome_id] = metrics
+        metrics["theoretical_panel_unique_peptide_opportunity"] = int(
+            genome_theoretical_unique_peptides.get(genome_id, 0)
+        )
         unit_shared_strata_by_genome[genome_id] = metrics["shared_stratum_counts"]
         unique_counts[genome_idx] = int(metrics["num_peptides_unique"])
 
@@ -549,16 +707,33 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
     rng_stage1 = np.random.default_rng(stage_children[0])
     rng_stage2 = np.random.default_rng(stage_children[1])
 
+    theoretical_opportunity_counts = [
+        int(unit_metrics_by_genome[genome_id]["theoretical_panel_unique_peptide_opportunity"])
+        for genome_id in genome_ids
+    ]
+    eligibility_details, eligibility_summary = _evaluate_empirical_background_eligibility(
+        theoretical_opportunity_counts,
+        threshold_quantile=unit_empirical_threshold_quantile,
+    )
+    if requested_mode == "auto":
+        mode = (
+            "empirical-background"
+            if bool(eligibility_summary["eligible"])
+            else "alpha-upper-bound"
+        )
+    initial_unique_mode = mode
     for genome_idx, genome_id in enumerate(genome_ids):
         metrics = unit_metrics_by_genome[genome_id]
-        if mode == "empirical-background":
+        if initial_unique_mode == "empirical-background":
             unique_stats = _unit_empirical_unique_stats_from_row(
                 pd.Series(
                     {
                         "num_peptides_unique": int(metrics["num_peptides_unique"]),
                         "p_unique_empirical_background_excess": 1.0,
+                        "p_unique_empirical_tail": 1.0,
                     }
-                )
+                ),
+                pvalue_method=unit_empirical_pvalue_method,
             )
         else:
             unique_stats = _unit_unique_pvalue_stats_for_genome(
@@ -566,7 +741,7 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
                 matched_peptides=unit_matched_peptides_by_genome[genome_id],
                 observed_unique=int(metrics["num_peptides_unique"]),
                 observed_unique_pool_size=observed_unique_pool_size,
-                mode=mode,
+                mode=initial_unique_mode,
                 peptide_deg=peptide_deg,
                 genome_theoretical_unique_peptides=genome_theoretical_unique_peptides,
                 total_theoretical_unique_peptides_all_genomes=total_theoretical_unique_peptides_all_genomes,
@@ -576,6 +751,20 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
                 unique_count_power=unique_count_power,
             )
         unit_unique_stats_by_genome[genome_id] = unique_stats
+        unit_hypergeom_stats_by_genome[genome_id] = _unit_unique_pvalue_stats_for_genome(
+            gid=genome_id,
+            matched_peptides=unit_matched_peptides_by_genome[genome_id],
+            observed_unique=int(metrics["num_peptides_unique"]),
+            observed_unique_pool_size=observed_unique_pool_size,
+            mode="hypergeometric-opportunity",
+            peptide_deg=peptide_deg,
+            genome_theoretical_unique_peptides=genome_theoretical_unique_peptides,
+            total_theoretical_unique_peptides_all_genomes=total_theoretical_unique_peptides_all_genomes,
+            single_peptide_error_rate_upper_bound=single_peptide_error_rate_upper_bound,
+            peptide_error_upper_by_peptide=peptide_error_upper_by_peptide,
+            unique_peptide_error_source=unique_peptide_error_source,
+            unique_count_power=unique_count_power,
+        )
 
         is_knockoff_target = bool(knockoff_target_mask[genome_idx])
         p_unique = float(unique_stats["p_unique"]) if is_knockoff_target else 1.0
@@ -594,13 +783,7 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
 
         p_shared_values[genome_idx] = _clip_pvalue(float(p_shared))
         p_unique_values[genome_idx] = _clip_pvalue(float(p_unique))
-        p_combined_values[genome_idx] = (
-            _clip_pvalue(
-                _unit_fisher_p_2(p1=p_shared_values[genome_idx], p2=p_unique_values[genome_idx])
-            )
-            if is_knockoff_target
-            else 1.0
-        )
+        _refresh_combined_pvalues(genome_idx, is_knockoff_target)
         null_mean_values[genome_idx] = float(mu)
         null_sd_values[genome_idx] = float(sd)
         null_p95_values[genome_idx] = float(p95)
@@ -611,6 +794,18 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
             else 0.0
         )
 
+    target_mask_empirical = matched_counts >= 1
+    active_genomes = int(np.sum(target_mask_empirical))
+    last_empirical_df = pd.DataFrame()
+    last_empirical_meta: Dict[str, object] = {}
+    suitability = {
+        "suitable": True,
+        "reason": "empirical-background not evaluated",
+        "cap_reached": False,
+        "update_above_cap": False,
+        "converged": True,
+        "adequate_bin_fraction": 1.0,
+    }
     if mode == "empirical-background":
         unit_metric_df = pd.DataFrame(
             [
@@ -619,6 +814,10 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
                     "_genomes_with_any_match": bool(matched_counts[genome_idx] >= 1),
                     "num_peptides_unique": int(unit_metrics_by_genome[genome_id]["num_peptides_unique"]),
                     "total_peptide_count": int(unit_metrics_by_genome[genome_id]["total_peptide_count"]),
+                    "theoretical_total_peptide_count": int(unit_metrics_by_genome[genome_id]["total_peptide_count"]),
+                    "theoretical_panel_unique_peptide_opportunity": int(
+                        unit_metrics_by_genome[genome_id]["theoretical_panel_unique_peptide_opportunity"]
+                    ),
                     "unique_weighted_evidence": float(unit_metrics_by_genome[genome_id]["unique_weighted_evidence"]),
                     "weighted_evidence": float(unit_metrics_by_genome[genome_id]["weighted_evidence"]),
                 }
@@ -634,22 +833,29 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
         max_iterations = int(max(1, unit_empirical_max_iterations))
         candidate_q = float(np.clip(unit_empirical_candidate_q, 0.0, 1.0))
         threshold_quantile = float(np.clip(unit_empirical_threshold_quantile, 0.0, 1.0))
-        n_bins = 8
-        if active_genomes < UNIT_EMPIRICAL_BACKGROUND_SMALL_UNIT_MIN_ACTIVE_GENOMES:
-            exclude_fraction = 0.0
-            n_bins = 1
+        n_bins = int(max(1, eligibility_summary.get("effective_bins", 1)))
+        if n_bins == 1:
             small_unit_warning = (
-                "active matched genomes < "
-                f"{UNIT_EMPIRICAL_BACKGROUND_SMALL_UNIT_MIN_ACTIVE_GENOMES}; "
-                "using top_exclude_fraction=0.0 and n_bins=1"
+                "the structural opportunity partition has one bin; the empirical-background "
+                "calculation is not theoretical-reference-size stratified"
             )
         iteration_trace: List[dict] = []
+        last_empirical_df = unit_metric_df.copy()
+        last_q_tmp = np.ones(n_genomes, dtype=float)
+        initial_empirical_meta: Dict[str, object] = {}
+        initial_exclude_fraction = float(exclude_fraction)
 
         def _apply_unit_empirical_stats(stats_df: pd.DataFrame) -> float:
+            nonlocal last_q_tmp, last_empirical_df
+            last_empirical_df = stats_df.copy()
             stats_ordered = stats_df.reset_index(drop=True)
             for genome_idx, row in stats_ordered.iterrows():
                 genome_id = genome_ids[int(genome_idx)]
-                unique_stats = _unit_empirical_unique_stats_from_row(row, mode=mode)
+                unique_stats = _unit_empirical_unique_stats_from_row(
+                    row,
+                    mode=mode,
+                    pvalue_method=unit_empirical_pvalue_method,
+                )
                 unit_unique_stats_by_genome[genome_id] = unique_stats
                 is_knockoff_target = bool(knockoff_target_mask[int(genome_idx)])
                 p_unique_values[int(genome_idx)] = (
@@ -658,33 +864,65 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
                     else 1.0
                 )
                 if is_knockoff_target:
-                    p_combined_values[int(genome_idx)] = _clip_pvalue(
-                        _unit_fisher_p_2(
-                            p1=float(p_shared_values[int(genome_idx)]),
-                            p2=float(p_unique_values[int(genome_idx)]),
-                        )
-                    )
+                    _refresh_combined_pvalues(int(genome_idx), True)
                 else:
-                    p_combined_values[int(genome_idx)] = 1.0
+                    _refresh_combined_pvalues(int(genome_idx), False)
 
             q_tmp = np.ones(n_genomes, dtype=float)
             if bool(np.any(target_mask_empirical)):
                 q_tmp[target_mask_empirical] = _unit_bh_qvalues(p_combined_values[target_mask_empirical])
+                last_q_tmp = q_tmp
                 return float(np.sum(q_tmp[target_mask_empirical] <= candidate_q)) / float(
                     max(int(np.sum(target_mask_empirical)), 1)
                 )
+            last_q_tmp = q_tmp
             return 0.0
 
-        if bool(np.any(target_mask_empirical)) and not small_unit_warning:
+        def _candidate_diagnostics_by_bin(stats_df: pd.DataFrame) -> pd.DataFrame:
+            ordered = stats_df.reset_index(drop=True).copy()
+            if ordered.empty:
+                return pd.DataFrame(
+                    columns=[
+                        "unique_empirical_background_bin",
+                        "candidate_genome_count",
+                        "candidate_fraction_used_for_update",
+                    ]
+                )
+            ordered["_active"] = target_mask_empirical[: len(ordered)]
+            ordered["_candidate"] = (
+                last_q_tmp[: len(ordered)] <= candidate_q
+            ) & ordered["_active"].to_numpy(dtype=bool)
+            active_rows = ordered.loc[ordered["_active"]].copy()
+            rows = []
+            for bin_id, group in active_rows.groupby(
+                "unique_empirical_background_bin", sort=True
+            ):
+                candidate_count = int(group["_candidate"].sum())
+                active_count = int(len(group))
+                rows.append(
+                    {
+                        "unique_empirical_background_bin": str(bin_id),
+                        "candidate_genome_count": candidate_count,
+                        "candidate_fraction_used_for_update": float(candidate_count)
+                        / float(max(active_count, 1)),
+                    }
+                )
+            return pd.DataFrame(rows)
+
+        if bool(np.any(target_mask_empirical)):
             for _ in range(max_iterations):
-                empirical_df, _ = _compute_empirical_background_stats_for_table(
+                empirical_df, empirical_meta = _compute_empirical_background_stats_for_table(
                     unit_metric_df,
                     alpha=single_peptide_error_rate_upper_bound,
                     top_exclude_fraction=exclude_fraction,
                     threshold_quantile=threshold_quantile,
                     n_bins=n_bins,
                     min_bin_size=50,
+                    pvalue_method=unit_empirical_pvalue_method,
                 )
+                if not initial_empirical_meta:
+                    initial_empirical_meta = dict(empirical_meta)
+                last_empirical_meta = empirical_meta
                 candidate_fraction = _apply_unit_empirical_stats(empirical_df)
                 new_exclude_fraction = float(np.clip(candidate_fraction, min_fraction, max_fraction))
                 iteration_trace.append(
@@ -700,34 +938,352 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
                     break
                 exclude_fraction = new_exclude_fraction
 
-        empirical_df, _ = _compute_empirical_background_stats_for_table(
+        empirical_df, empirical_meta = _compute_empirical_background_stats_for_table(
             unit_metric_df,
             alpha=single_peptide_error_rate_upper_bound,
             top_exclude_fraction=exclude_fraction,
             threshold_quantile=threshold_quantile,
             n_bins=n_bins,
             min_bin_size=50,
+            pvalue_method=unit_empirical_pvalue_method,
         )
-        _apply_unit_empirical_stats(empirical_df)
-        if small_unit_warning:
-            iteration_trace.append(
-                {
-                    "iteration": 1,
-                    "exclude_fraction": 0.0,
-                    "candidate_fraction": None,
-                    "new_exclude_fraction": 0.0,
-                    "warning": small_unit_warning,
-                }
+        last_empirical_meta = empirical_meta
+        final_candidate_fraction = _apply_unit_empirical_stats(empirical_df)
+        if iteration_trace:
+            iteration_trace[-1]["final_candidate_fraction"] = float(
+                final_candidate_fraction
             )
+
+        final_bin_diagnostics = empirical_meta.get(
+            "unique_empirical_background_bin_diagnostics", pd.DataFrame()
+        )
+        if isinstance(final_bin_diagnostics, pd.DataFrame):
+            final_bin_diagnostics = final_bin_diagnostics.copy()
+        else:
+            final_bin_diagnostics = pd.DataFrame()
+        initial_bin_diagnostics = initial_empirical_meta.get(
+            "unique_empirical_background_bin_diagnostics", pd.DataFrame()
+        )
+        if isinstance(initial_bin_diagnostics, pd.DataFrame) and not initial_bin_diagnostics.empty:
+            initial_sizes = initial_bin_diagnostics[
+                ["unique_empirical_background_bin", "background_genome_count"]
+            ].rename(columns={"background_genome_count": "initial_background_size"})
+            final_bin_diagnostics = final_bin_diagnostics.merge(
+                initial_sizes,
+                on="unique_empirical_background_bin",
+                how="left",
+                validate="one_to_one",
+            )
+        else:
+            final_bin_diagnostics["initial_background_size"] = pd.NA
+        final_bin_diagnostics["initial_background_size"] = pd.to_numeric(
+            final_bin_diagnostics["initial_background_size"], errors="coerce"
+        )
+        final_bin_diagnostics = final_bin_diagnostics.rename(
+            columns={"background_genome_count": "final_background_size"}
+        )
+        final_bin_diagnostics["initial_background_size"] = final_bin_diagnostics[
+            "initial_background_size"
+        ].fillna(final_bin_diagnostics["final_background_size"]).astype(int)
+        final_bin_diagnostics = final_bin_diagnostics.merge(
+            _candidate_diagnostics_by_bin(empirical_df),
+            on="unique_empirical_background_bin",
+            how="left",
+            validate="one_to_one",
+        )
+        final_bin_diagnostics["candidate_genome_count"] = pd.to_numeric(
+            final_bin_diagnostics.get("candidate_genome_count", 0), errors="coerce"
+        ).fillna(0).astype(int)
+        final_bin_diagnostics["candidate_fraction_used_for_update"] = pd.to_numeric(
+            final_bin_diagnostics.get("candidate_fraction_used_for_update", 0.0),
+            errors="coerce",
+        ).fillna(0.0)
+        converged = bool(
+            iteration_trace
+            and abs(
+                float(iteration_trace[-1].get("new_exclude_fraction", 0.0))
+                - float(iteration_trace[-1].get("exclude_fraction", 0.0))
+            )
+            < 0.01
+        )
+        cap_reached = bool(exclude_fraction >= max_fraction - 1e-12)
+        final_bin_diagnostics["initial_exclusion_fraction"] = float(
+            initial_exclude_fraction
+        )
+        final_bin_diagnostics["final_exclusion_fraction"] = float(exclude_fraction)
+        final_bin_diagnostics["exclusion_fraction_cap"] = float(max_fraction)
+        final_bin_diagnostics["exclusion_cap_reached"] = cap_reached
+        final_bin_diagnostics["next_requested_exclusion_fraction"] = (
+            final_bin_diagnostics["candidate_fraction_used_for_update"]
+        )
+        final_bin_diagnostics["iteration_count"] = int(len(iteration_trace))
+        final_bin_diagnostics["converged"] = converged
+        final_bin_diagnostics["empirical_background_cap_pressure"] = (
+            cap_reached
+            & (
+                (
+                    final_bin_diagnostics["next_requested_exclusion_fraction"]
+                    > max_fraction + 1e-12
+                )
+                | (not converged)
+            )
+        )
+        final_bin_diagnostics["empirical_background_suitable"] = ~final_bin_diagnostics[
+            "empirical_background_cap_pressure"
+        ].astype(bool)
+        empirical_meta["unique_empirical_background_bin_diagnostics"] = final_bin_diagnostics
+        last_empirical_meta = empirical_meta
+        suitability = _evaluate_empirical_background_suitability(
+            iteration_trace,
+            final_exclude_fraction=exclude_fraction,
+            max_exclude_fraction=max_fraction,
+            min_adequate_fraction=float(
+                eligibility_summary.get("min_adequate_fraction", 0.90)
+            ),
+            final_bin_diagnostics=final_bin_diagnostics,
+        )
         unit_empirical_calibration = {
             "analysis_unit_id": unit_id,
+            "initial_background_size": int(
+                initial_empirical_meta.get("unique_empirical_background_size", 0)
+            ),
+            "final_background_size": int(
+                empirical_meta.get("unique_empirical_background_size", 0)
+            ),
+            "initial_exclusion_fraction": float(initial_exclude_fraction),
+            "final_exclusion_fraction": float(exclude_fraction),
+            "exclusion_fraction_cap": float(max_fraction),
+            "exclusion_cap_reached": bool(suitability["cap_reached"]),
+            "next_requested_exclusion_fraction": float(
+                suitability["next_requested_exclusion_fraction"]
+            ),
+            "candidate_fraction_used_for_update": float(final_candidate_fraction),
+            "iteration_count": int(len(iteration_trace)),
+            "converged": bool(suitability["converged"]),
+            "background_unique_count_q50": float(
+                empirical_meta.get("background_unique_count_q50", 0.0)
+            ),
+            "background_unique_count_q90": float(
+                empirical_meta.get("background_unique_count_q90", 0.0)
+            ),
+            "background_unique_count_q95": float(
+                empirical_meta.get("background_unique_count_q95", 0.0)
+            ),
+            "background_unique_count_q99": float(
+                empirical_meta.get("background_unique_count_q99", 0.0)
+            ),
+            "minimum_empirical_p_resolution": float(
+                empirical_meta.get("minimum_empirical_p_resolution", 1.0)
+            ),
             "unit_empirical_background_iteration_trace": json.dumps(iteration_trace, separators=(",", ":")),
             "unit_empirical_background_threshold_quantile": float(threshold_quantile),
             "unit_empirical_background_final_exclude_fraction": float(exclude_fraction),
             "unit_empirical_background_iterations": int(len(iteration_trace)),
             "unit_empirical_background_active_genomes": int(active_genomes),
             "unit_empirical_background_warning": small_unit_warning,
+            "unit_empirical_background_pvalue_method": unit_empirical_pvalue_method,
+            "unit_empirical_background_suitability": bool(suitability["suitable"]),
+            "unit_empirical_background_suitability_reason": str(suitability["reason"]),
+            "unit_empirical_background_cap_reached": bool(suitability["cap_reached"]),
+            "unit_empirical_background_update_above_cap": bool(suitability["update_above_cap"]),
+            "unit_empirical_background_converged": bool(suitability["converged"]),
+            "unit_empirical_background_next_requested_exclusion_fraction": float(
+                suitability["next_requested_exclusion_fraction"]
+            ),
+            "unit_empirical_background_affected_candidate_fraction": float(
+                suitability["affected_candidate_fraction"]
+            ),
+            "unit_empirical_background_adequate_bin_fraction": float(
+                suitability["adequate_bin_fraction"]
+            ),
         }
+
+    if mode == "alpha-upper-bound" and theoretical_opportunity_diagnostics_available:
+        diagnostic_metric_df = pd.DataFrame(
+            [
+                {
+                    "genome_id": genome_id,
+                    "_genomes_with_any_match": bool(matched_counts[genome_idx] >= 1),
+                    "num_peptides_unique": int(
+                        unit_metrics_by_genome[genome_id]["num_peptides_unique"]
+                    ),
+                    "theoretical_panel_unique_peptide_opportunity": int(
+                        unit_metrics_by_genome[genome_id][
+                            "theoretical_panel_unique_peptide_opportunity"
+                        ]
+                    ),
+                    "unique_weighted_evidence": float(
+                        unit_metrics_by_genome[genome_id]["unique_weighted_evidence"]
+                    ),
+                    "weighted_evidence": float(
+                        unit_metrics_by_genome[genome_id]["weighted_evidence"]
+                    ),
+                }
+                for genome_idx, genome_id in enumerate(genome_ids)
+            ]
+        )
+        diagnostic_target_mask = diagnostic_metric_df[
+            "_genomes_with_any_match"
+        ].astype(bool).to_numpy(dtype=bool)
+        diagnostic_qvalues = np.ones(n_genomes, dtype=float)
+        if bool(np.any(diagnostic_target_mask)):
+            diagnostic_qvalues[diagnostic_target_mask] = _unit_bh_qvalues(
+                p_combined_values[diagnostic_target_mask]
+            )
+        candidate_fraction = float(
+            np.sum(diagnostic_qvalues[diagnostic_target_mask] <= unit_empirical_candidate_q)
+        ) / float(max(int(np.sum(diagnostic_target_mask)), 1))
+        diagnostic_exclude_fraction = float(
+            np.clip(
+                candidate_fraction,
+                unit_empirical_min_exclude_fraction,
+                unit_empirical_max_exclude_fraction,
+            )
+        )
+        diagnostic_df, diagnostic_meta = _compute_empirical_background_stats_for_table(
+            diagnostic_metric_df,
+            alpha=single_peptide_error_rate_upper_bound,
+            top_exclude_fraction=diagnostic_exclude_fraction,
+            threshold_quantile=unit_empirical_threshold_quantile,
+            n_bins=int(max(1, eligibility_summary.get("effective_bins", 1))),
+            min_bin_size=50,
+            pvalue_method="empirical-tail",
+        )
+        last_empirical_df = diagnostic_df
+        last_empirical_meta = diagnostic_meta
+        diagnostic_keys = (
+            "unique_empirical_background_bin",
+            "unique_empirical_background_size",
+            "unique_empirical_background_threshold",
+            "unique_empirical_excess_count",
+            "unique_excess_count",
+            "p_unique_empirical_tail",
+            "unique_alpha_excess_index",
+            "unique_empirical_q95_threshold",
+            "p_unique_empirical_background_excess",
+            "empirical_tail_percentile",
+            "empirical_background_size",
+            "minimum_attainable_empirical_p",
+        )
+        for genome_idx, row in diagnostic_df.reset_index(drop=True).iterrows():
+            if genome_idx >= len(genome_ids):
+                break
+            unique_stats = unit_unique_stats_by_genome[genome_ids[int(genome_idx)]]
+            for key in diagnostic_keys:
+                if key in row.index:
+                    unique_stats[key] = row[key]
+        unit_empirical_calibration = {
+            "analysis_unit_id": unit_id,
+            "diagnostic_only": True,
+            "formal_unique_mode": "alpha-upper-bound",
+            "final_background_size": int(
+                diagnostic_meta.get("unique_empirical_background_size", 0)
+            ),
+            "final_exclusion_fraction": diagnostic_exclude_fraction,
+            "candidate_fraction_used_for_update": candidate_fraction,
+            "background_unique_count_q50": float(
+                diagnostic_meta.get("background_unique_count_q50", 0.0)
+            ),
+            "background_unique_count_q90": float(
+                diagnostic_meta.get("background_unique_count_q90", 0.0)
+            ),
+            "background_unique_count_q95": float(
+                diagnostic_meta.get("background_unique_count_q95", 0.0)
+            ),
+            "background_unique_count_q99": float(
+                diagnostic_meta.get("background_unique_count_q99", 0.0)
+            ),
+            "minimum_empirical_p_resolution": float(
+                diagnostic_meta.get("minimum_empirical_p_resolution", 1.0)
+            ),
+            "unit_empirical_background_pvalue_method": "diagnostic-empirical-tail",
+        }
+
+    unique_mode_resolution_reason = "explicit unique p-value mode"
+    if requested_mode == "auto":
+        if not bool(eligibility_summary["eligible"]):
+            unique_mode_resolution_reason = (
+                "auto fallback to alpha-upper-bound: "
+                + str(eligibility_summary["reason"])
+            )
+        else:
+            unique_mode_resolution_reason = (
+                "auto selected empirical-background: structural eligibility satisfied"
+            )
+
+    if requested_mode == "auto":
+        if not unit_empirical_calibration:
+            unit_empirical_calibration = {
+                "analysis_unit_id": unit_id,
+                "initial_background_size": 0,
+                "final_background_size": 0,
+                "initial_exclusion_fraction": pd.NA,
+                "final_exclusion_fraction": pd.NA,
+                "exclusion_fraction_cap": pd.NA,
+                "exclusion_cap_reached": False,
+                "next_requested_exclusion_fraction": pd.NA,
+                "candidate_fraction_used_for_update": pd.NA,
+                "iteration_count": 0,
+                "converged": pd.NA,
+                "background_unique_count_q50": pd.NA,
+                "background_unique_count_q90": pd.NA,
+                "background_unique_count_q95": pd.NA,
+                "background_unique_count_q99": pd.NA,
+                "minimum_empirical_p_resolution": pd.NA,
+                "unit_empirical_background_iteration_trace": "[]",
+                "unit_empirical_background_threshold_quantile": pd.NA,
+                "unit_empirical_background_final_exclude_fraction": pd.NA,
+                "unit_empirical_background_iterations": 0,
+                "unit_empirical_background_active_genomes": int(active_genomes),
+                "unit_empirical_background_warning": "",
+            }
+        unit_empirical_calibration.update(
+            {
+                "unique_pvalue_mode_requested": requested_mode,
+                "unique_pvalue_mode_resolved": mode,
+                "unique_mode_resolution_reason": unique_mode_resolution_reason,
+                "unique_empirical_pvalue_method": unit_empirical_pvalue_method,
+                "unit_auto_eligibility_rule": "structural-comparable-background-v1",
+                "unit_auto_eligibility_decision": bool(eligibility_summary["eligible"]),
+                "unit_auto_eligibility_reason": str(eligibility_summary["reason"]),
+                "unit_auto_candidate_count": int(eligibility_summary["candidate_count"]),
+                "unit_auto_effective_opportunity_bins": int(eligibility_summary["effective_bins"]),
+                "unit_auto_min_comparable_background": int(
+                    eligibility_summary["min_comparable_background"]
+                ),
+                "unit_auto_min_expected_upper_tail": float(
+                    eligibility_summary["min_expected_upper_tail"]
+                ),
+                "unit_auto_min_adequate_fraction": float(
+                    eligibility_summary["min_adequate_fraction"]
+                ),
+                "unit_auto_adequate_candidate_count": int(
+                    eligibility_summary["adequate_candidate_count"]
+                ),
+                "unit_auto_adequate_candidate_fraction": float(
+                    eligibility_summary["adequate_candidate_fraction"]
+                ),
+                "unit_auto_min_comparable_observed": int(
+                    eligibility_summary.get("min_comparable_observed", 0)
+                ),
+                "unit_auto_median_comparable_observed": float(
+                    eligibility_summary.get("median_comparable_observed", 0.0)
+                ),
+                "unit_auto_max_comparable_observed": int(
+                    eligibility_summary.get("max_comparable_observed", 0)
+                ),
+                "unit_auto_empirical_suitability": bool(suitability.get("suitable", True)),
+                "unit_auto_empirical_suitability_reason": str(suitability.get("reason", "")),
+                "unit_auto_empirical_cap_reached": bool(suitability.get("cap_reached", False)),
+                "unit_auto_empirical_update_above_cap": bool(
+                    suitability.get("update_above_cap", False)
+                ),
+                "unit_auto_empirical_converged": bool(suitability.get("converged", True)),
+                "unit_auto_empirical_adequate_bin_fraction": float(
+                    suitability.get("adequate_bin_fraction", 1.0)
+                ),
+            }
+        )
 
     if K2 is not None and ranges:
         candidate_mask = knockoff_target_mask & np.asarray(
@@ -751,9 +1307,7 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
                 sample_block_size=sample_block_size,
             )
             p_shared_values[genome_idx] = _clip_pvalue(float(p_shared))
-            p_combined_values[genome_idx] = _clip_pvalue(
-                _unit_fisher_p_2(p1=p_shared_values[genome_idx], p2=p_unique_values[genome_idx])
-            )
+            _refresh_combined_pvalues(genome_idx, True)
             null_mean_values[genome_idx] = float(mu)
             null_sd_values[genome_idx] = float(sd)
             null_p95_values[genome_idx] = float(p95)
@@ -798,7 +1352,40 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
                 "unique_depth_fold": float(unique_stats["unique_depth_fold"]),
                 "unique_depth_null_model": str(unique_stats["unique_depth_null_model"]),
                 "unique_pvalue_count_model": str(unique_stats["unique_pvalue_count_model"]),
+                "unique_pvalue_mode_requested": requested_mode,
+                "unique_pvalue_mode_resolved": mode,
+                "unique_mode_resolution_reason": unique_mode_resolution_reason,
+                "theoretical_total_peptide_count": int(metrics["total_peptide_count"]),
+                "theoretical_panel_unique_peptide_opportunity": int(
+                    metrics["theoretical_panel_unique_peptide_opportunity"]
+                ),
+                "theoretical_opportunity_diagnostics_available": bool(
+                    theoretical_opportunity_diagnostics_available
+                ),
+                "observed_panel_unique_peptide_count": int(metrics["num_peptides_unique"]),
+                "unique_empirical_opportunity_source": (
+                    "theoretical_panel_unique_peptide_opportunity"
+                    if theoretical_opportunity_diagnostics_available
+                    else "unavailable"
+                ),
+                "p_unique_hypergeometric": float(
+                    unit_hypergeom_stats_by_genome[genome_id]["p_unique"]
+                ),
+                "empirical_background_comparable_count": int(
+                    eligibility_details.iloc[genome_idx]["comparable_background_count"]
+                ),
+                "empirical_background_expected_upper_tail_count": float(
+                    eligibility_details.iloc[genome_idx]["expected_upper_tail_count"]
+                ),
+                "empirical_background_candidate_adequate": bool(
+                    eligibility_details.iloc[genome_idx]["empirical_background_adequate"]
+                ),
                 "has_unique_evidence": bool(unique_stats["has_unique_evidence"]),
+                "presence_combination_method": presence_combination_method,
+                "hmp_require_unique_evidence": bool(hmp_require_unique_evidence),
+                "harmonic_calibration_factor": HMP_K2_EXACT_CALIBRATION,
+                "harmonic_calibration_component_count": HMP_CALIBRATION_COMPONENT_COUNT,
+                "harmonic_calibration_basis": HMP_CALIBRATION_BASIS,
                 "pvalue_unique": float(p_unique_values[genome_idx]),
                 "pvalue_unique_depth": float(unique_stats["p_unique_depth"]),
                 "unique_empirical_background_bin": str(unique_stats.get("unique_empirical_background_bin", "")),
@@ -807,8 +1394,42 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
                     unique_stats.get("unique_empirical_background_threshold", 0.0)
                 ),
                 "unique_empirical_excess_count": float(unique_stats.get("unique_empirical_excess_count", 0.0)),
+                "unique_excess_count": float(unique_stats.get("unique_excess_count", 0.0)),
                 "p_unique_empirical_tail": float(unique_stats.get("p_unique_empirical_tail", 1.0)),
+                "empirical_tail_percentile": float(
+                    unique_stats.get("empirical_tail_percentile", 0.0)
+                ),
+                "empirical_background_size": int(
+                    unique_stats.get("empirical_background_size", 0)
+                ),
+                "minimum_attainable_empirical_p": float(
+                    unique_stats.get("minimum_attainable_empirical_p", 1.0)
+                ),
+                "p_unique_alpha_upper_bound": float(
+                    unique_stats.get("p_unique_alpha_upper_bound", 1.0)
+                ),
+                "p_unique_empirical_formal": float(
+                    unique_stats.get("p_unique_empirical_formal", unique_stats.get("p_unique", 1.0))
+                ),
+                "unique_alpha_excess_index": float(unique_stats.get("unique_alpha_excess_index", 1.0)),
+                "unique_empirical_q95_threshold": float(
+                    unique_stats.get(
+                        "unique_empirical_q95_threshold",
+                        unique_stats.get("unique_empirical_background_threshold", 0.0),
+                    )
+                ),
+                "p_unique_empirical_background_excess": float(
+                    unique_stats.get("p_unique_empirical_background_excess", 1.0)
+                ),
                 "pvalue_shared": float(p_shared_values[genome_idx]),
+                "pvalue_simes_intersection": float(p_simes_intersection_values[genome_idx]),
+                "pvalue_simes_closed": float(p_simes_closed_values[genome_idx]),
+                "pvalue_combined_fisher": float(p_combined_fisher_values[genome_idx]),
+                "pvalue_combined_harmonic_calibrated": float(
+                    p_combined_harmonic_calibrated_values[genome_idx]
+                ),
+                "pvalue_combined_harmonic": float(p_combined_harmonic_values[genome_idx]),
+                "pvalue_combined_bonferroni": float(p_combined_bonferroni_values[genome_idx]),
                 "knockoff_target": bool(knockoff_target_mask[genome_idx]),
                 "pvalue": float(p_combined_values[genome_idx]),
                 "qvalue": float(qvals[genome_idx]),
@@ -827,10 +1448,46 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
             }
         )
 
+    bin_diagnostics = last_empirical_meta.get(
+        "unique_empirical_background_bin_diagnostics", pd.DataFrame()
+    )
+    if isinstance(bin_diagnostics, pd.DataFrame) and not bin_diagnostics.empty:
+        bin_diagnostics = bin_diagnostics.copy()
+        bin_diagnostics.insert(0, "analysis_unit_id", unit_id)
+    else:
+        bin_diagnostics = pd.DataFrame(
+            columns=[
+                "analysis_unit_id",
+                "unique_empirical_background_bin",
+                "active_genome_count",
+                "candidate_genome_count",
+                "initial_background_size",
+                "final_background_size",
+                "initial_exclusion_fraction",
+                "final_exclusion_fraction",
+                "exclusion_fraction_cap",
+                "exclusion_cap_reached",
+                "next_requested_exclusion_fraction",
+                "candidate_fraction_used_for_update",
+                "iteration_count",
+                "converged",
+                "background_unique_count_q50",
+                "background_unique_count_q90",
+                "background_unique_count_q95",
+                "background_unique_count_q99",
+                "minimum_empirical_p_resolution",
+                "min_observed_unique",
+                "max_observed_unique",
+                "empirical_background_cap_pressure",
+                "empirical_background_suitable",
+            ]
+        )
+
     return {
         "unit_idx": int(unit_idx),
         "analysis_unit_id": unit_id,
         "rows": rows,
         "knockoff_target_genomes": int(np.sum(knockoff_target_mask)),
         "unit_empirical_background_calibration": unit_empirical_calibration,
+        "unit_empirical_background_bin_diagnostics": bin_diagnostics,
     }

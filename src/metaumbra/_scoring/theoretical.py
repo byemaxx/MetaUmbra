@@ -8,18 +8,34 @@ from typing import Dict, FrozenSet, List, Optional, Set, Tuple, Union
 
 import pandas as pd
 
+from .normalization import (
+    DEFAULT_PEPTIDE_NORMALIZATION_POLICY,
+    normalize_peptide_collection,
+    normalize_peptide_policy,
+)
+
 
 _OBS_PEPTIDES_WORKER: Union[Set[str], FrozenSet[str]] = set()
+_PEPTIDE_NORMALIZATION_POLICY_WORKER = DEFAULT_PEPTIDE_NORMALIZATION_POLICY
 _AA_ONLY_PATTERN = r"^[ACDEFGHIKLMNPQRSTVWYBXZJUO]+$"
 
 
-def _init_genome_batch_worker(obs_peptides: Union[Set[str], FrozenSet[str]]) -> None:
+def _init_genome_batch_worker(
+    obs_peptides: Union[Set[str], FrozenSet[str]],
+    peptide_normalization_policy: str = DEFAULT_PEPTIDE_NORMALIZATION_POLICY,
+) -> None:
     """ProcessPool initializer: set read-only observed peptide universe once per worker."""
-    global _OBS_PEPTIDES_WORKER
+    global _OBS_PEPTIDES_WORKER, _PEPTIDE_NORMALIZATION_POLICY_WORKER
     _OBS_PEPTIDES_WORKER = obs_peptides
+    _PEPTIDE_NORMALIZATION_POLICY_WORKER = normalize_peptide_policy(
+        peptide_normalization_policy
+    )
 
 
-def _read_unique_peptides_from_digest(genome_peptides_path: Union[str, os.PathLike]) -> Set[str]:
+def _read_unique_peptides_from_digest(
+    genome_peptides_path: Union[str, os.PathLike],
+    peptide_normalization_policy: str = DEFAULT_PEPTIDE_NORMALIZATION_POLICY,
+) -> Set[str]:
     """Read unique theoretical peptides from a digest TSV."""
     genome_peptides_path = str(genome_peptides_path)
     fallback_to_first_col = False
@@ -71,7 +87,10 @@ def _read_unique_peptides_from_digest(genome_peptides_path: Union[str, os.PathLi
                     )
                 fallback_sanity_checked = True
 
-        chunk_unique = set(col_series[col_series != ""].values.tolist())
+        chunk_unique = normalize_peptide_collection(
+            col_series[col_series != ""].values.tolist(),
+            peptide_normalization_policy,
+        )
         if chunk_unique:
             seen_theoretical.update(chunk_unique)
 
@@ -91,6 +110,7 @@ def _build_theoretical_opportunity_batch_worker(
     file_paths: List[Union[str, os.PathLike]],
     shard_count: int,
     temp_dir: str,
+    peptide_normalization_policy: str = DEFAULT_PEPTIDE_NORMALIZATION_POLICY,
 ) -> Tuple[Dict[str, int], Dict[int, str]]:
     """Read digest TSV files and write peptide/genome pairs into local shard files."""
     genome_total_theoretical_peptides: Dict[str, int] = {}
@@ -101,7 +121,10 @@ def _build_theoretical_opportunity_batch_worker(
         for genome_peptides_path in file_paths:
             genome_peptides_path = str(genome_peptides_path)
             genome_id = Path(genome_peptides_path).stem
-            peptides = _read_unique_peptides_from_digest(genome_peptides_path)
+            peptides = _read_unique_peptides_from_digest(
+                genome_peptides_path,
+                peptide_normalization_policy=peptide_normalization_policy,
+            )
             genome_total_theoretical_peptides[genome_id] = int(len(peptides))
 
             for peptide in peptides:
@@ -172,7 +195,10 @@ def _process_genome_batch_worker(file_paths: List[Union[str, os.PathLike]]) -> L
         genome_peptides_path = str(genome_peptides_path)
         genome_id = Path(genome_peptides_path).stem
         try:
-            seen_theoretical = _read_unique_peptides_from_digest(genome_peptides_path)
+            seen_theoretical = _read_unique_peptides_from_digest(
+                genome_peptides_path,
+                peptide_normalization_policy=_PEPTIDE_NORMALIZATION_POLICY_WORKER,
+            )
             matched_peptides = set(seen_theoretical).intersection(_OBS_PEPTIDES_WORKER)
             results.append((genome_id, matched_peptides, len(seen_theoretical), None))
         except Exception as e:

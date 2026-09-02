@@ -3,7 +3,11 @@ import json
 import pandas as pd
 import pytest
 
-from metaumbra.cli import DEFAULT_PARQUET_INPUT_COLUMNS, DEFAULT_PARQUET_OUTPUT_COLUMNS
+from metaumbra.cli import (
+    DEFAULT_PARQUET_INPUT_COLUMNS,
+    DEFAULT_PARQUET_OUTPUT_COLUMNS,
+    build_parser,
+)
 from metaumbra.scoring import GenomePresenceScorer
 from metaumbra.workflows import (
     ParquetExtractionConfig,
@@ -61,6 +65,45 @@ def test_default_parquet_extraction_preserves_required_scoring_columns(tmp_path)
     )
     assert scorer.unit_sample_ids == ["s1"]
     assert scorer.unit_sample_ids == direct_scorer.unit_sample_ids
+
+
+def test_production_defaults_match_the_k4_method():
+    assert ScoringConfig().unique_pvalue_mode == "auto"
+    assert ScoringConfig().unique_empirical_pvalue_method == "alpha-excess"
+    assert ScoringConfig().presence_combination_method == "simes-closed"
+    assert ScoringConfig().hmp_require_unique_evidence is True
+    parser = build_parser()
+    command = next(action for action in parser._actions if action.dest == "command")
+    score_parser = command.choices["score"]
+    method = next(
+        action
+        for action in score_parser._actions
+        if action.dest == "unique_empirical_pvalue_method"
+    )
+    assert method.default == "alpha-excess"
+    unique_mode = next(
+        action for action in score_parser._actions if action.dest == "unique_pvalue_mode"
+    )
+    assert unique_mode.default == "auto"
+    combination = next(
+        action
+        for action in score_parser._actions
+        if action.dest == "presence_combination_method"
+    )
+    assert combination.default == "simes-closed"
+
+
+def test_legacy_scoring_configuration_preserves_fisher_combination():
+    migrated = migrate_legacy_scoring_config_payload({"unit_specific": True})
+    assert migrated["presence_combination_method"] == "fisher"
+    explicit = migrate_legacy_scoring_config_payload(
+        {"presence_combination_method": "harmonic-mean-calibrated"}
+    )
+    assert explicit["presence_combination_method"] == "harmonic-mean-calibrated"
+    legacy_k3 = migrate_legacy_scoring_config_payload(
+        {"presence_combination_method": "bonferroni-min"}
+    )
+    assert legacy_k3["presence_combination_method"] == "bonferroni-min"
 
 
 def test_failed_directory_run_writes_status_to_results_artifacts(tmp_path):
@@ -237,6 +280,165 @@ def test_all_samples_workflow_accepts_peptide_only_input(tmp_path):
     assert mapping[["sample_id", "analysis_unit_id"]].values.tolist() == [
         ["__global__", "__global__"]
     ]
+
+
+def _write_digest(digest_dir, genome_id, peptides):
+    pd.DataFrame({"Peptide": peptides}).to_csv(
+        digest_dir / f"{genome_id}.tsv", sep="\t", index=False
+    )
+
+
+def _run_auto_mode(tmp_path, digest_peptides, observed_peptides):
+    peptide_path = tmp_path / "peptides.tsv"
+    pd.DataFrame(
+        {
+            "Sequence": observed_peptides,
+            "Evidence": [1.0] * len(observed_peptides),
+            "Q.Value": [0.01] * len(observed_peptides),
+        }
+    ).to_csv(peptide_path, sep="\t", index=False)
+    digest_dir = tmp_path / "digests"
+    digest_dir.mkdir()
+    for genome_id, peptides in digest_peptides.items():
+        _write_digest(digest_dir, genome_id, peptides)
+    results_dir = tmp_path / "results"
+    run_scoring_workflow(
+        ScoringConfig(
+            peptide_table_path=str(peptide_path),
+            genome_digest_dirs=[str(digest_dir)],
+            output_tsv_path=str(results_dir),
+            unique_pvalue_mode="auto",
+            presence_combination_method="fisher",
+            num_workers=1,
+            knockoff_mc_iterations=20,
+            knockoff_stage2_mc_iterations=None,
+            compute_coverage=False,
+            export_diagnostics=True,
+        )
+    )
+    return results_dir
+
+
+def test_scoring_workflow_records_custom_degeneracy_bin_edges(tmp_path):
+    peptide_path = tmp_path / "peptides.tsv"
+    pd.DataFrame(
+        {
+            "Sequence": ["SHARED", "UNIQUEA"],
+            "Evidence": [1.0, 1.0],
+            "Q.Value": [0.01, 0.01],
+        }
+    ).to_csv(peptide_path, sep="\t", index=False)
+    digest_dir = tmp_path / "digests"
+    digest_dir.mkdir()
+    _write_digest(digest_dir, "g1", ["SHARED", "UNIQUEA"])
+    _write_digest(digest_dir, "g2", ["SHARED"])
+    results_dir = tmp_path / "results"
+
+    run_scoring_workflow(
+        ScoringConfig(
+            peptide_table_path=str(peptide_path),
+            genome_digest_dirs=[str(digest_dir)],
+            output_tsv_path=str(results_dir),
+            degeneracy_bin_edges=[1, 3, 10],
+            num_workers=1,
+            knockoff_mc_iterations=20,
+            knockoff_stage2_mc_iterations=None,
+            compute_coverage=False,
+        )
+    )
+
+    parameters = json.loads(
+        (results_dir / "artifacts" / "run_parameters.json").read_text(encoding="utf-8")
+    )
+    summary = json.loads(
+        (results_dir / "artifacts" / "run_summary.json").read_text(encoding="utf-8")
+    )
+    assert parameters["config"]["degeneracy_bin_edges"] == [1, 3, 10]
+    assert parameters["config"]["unique_empirical_pvalue_method"] == "alpha-excess"
+    assert summary["degeneracy_bin_edges"] == [1, 3, 10]
+
+
+@pytest.mark.parametrize("edges", [[], [0, 5], [1, 1, 5], [5, 1]])
+def test_scoring_workflow_rejects_invalid_degeneracy_bin_edges(tmp_path, edges):
+    with pytest.raises(ValueError, match="strictly increasing"):
+        run_scoring_workflow(
+            ScoringConfig(
+                peptide_table_path=str(tmp_path / "peptides.tsv"),
+                genome_digest_dirs=[str(tmp_path / "digests")],
+                output_tsv_path=str(tmp_path / "results"),
+                degeneracy_bin_edges=edges,
+            )
+        )
+
+
+def test_auto_mode_falls_back_to_alpha_upper_bound_for_structurally_inadequate_background(tmp_path):
+    digest_peptides = {
+        f"g{index}": [f"G{index}A", f"G{index}B", f"G{index}C"]
+        for index in range(5)
+    }
+    observed_peptides = [peptide for peptides in digest_peptides.values() for peptide in peptides]
+    results_dir = _run_auto_mode(tmp_path, digest_peptides, observed_peptides)
+
+    result = pd.read_csv(
+        results_dir / "artifacts" / "diagnostics" / "full_internal_metrics.tsv",
+        sep="\t",
+    )
+    calibration = pd.read_csv(
+        results_dir / "artifacts" / "diagnostics" / "unit_empirical_background_calibration.tsv",
+        sep="\t",
+    )
+    assert set(result["unique_pvalue_mode_requested"]) == {"auto"}
+    assert set(result["unique_pvalue_mode_resolved"]) == {"alpha-upper-bound"}
+    assert not bool(calibration.loc[0, "unit_auto_eligibility_decision"])
+    assert calibration.loc[0, "unit_auto_candidate_count"] == 5
+    assert calibration.loc[0, "unit_auto_max_comparable_observed"] == 4
+    assert "comparable backgrounds" in calibration.loc[0, "unit_auto_eligibility_reason"]
+
+
+def test_auto_mode_does_not_use_observed_sparsity_to_override_small_panel_ineligibility(tmp_path):
+    digest_peptides = {"target": ["COMMON", "T1", "T2", "T3"]}
+    digest_peptides.update({f"background_{index}": ["COMMON"] for index in range(6)})
+    results_dir = _run_auto_mode(
+        tmp_path,
+        digest_peptides,
+        ["COMMON", "T1", "T2", "T3"],
+    )
+
+    result = pd.read_csv(
+        results_dir / "artifacts" / "diagnostics" / "full_internal_metrics.tsv",
+        sep="\t",
+    )
+    calibration = pd.read_csv(
+        results_dir / "artifacts" / "diagnostics" / "unit_empirical_background_calibration.tsv",
+        sep="\t",
+    )
+    assert set(result["unique_pvalue_mode_requested"]) == {"auto"}
+    assert set(result["unique_pvalue_mode_resolved"]) == {"alpha-upper-bound"}
+    assert not bool(calibration.loc[0, "unit_auto_eligibility_decision"])
+    assert calibration.loc[0, "unit_auto_candidate_count"] == 7
+
+
+def test_auto_mode_keeps_structurally_eligible_empirical_mode_when_diagnostics_flag_cap_pressure(tmp_path):
+    digest_peptides = {"target": ["COMMON", "T1", "T2", "T3"]}
+    digest_peptides.update({f"background_{index:03d}": ["COMMON"] for index in range(100)})
+    results_dir = _run_auto_mode(
+        tmp_path,
+        digest_peptides,
+        ["COMMON", "T1", "T2", "T3"],
+    )
+    result = pd.read_csv(
+        results_dir / "artifacts" / "diagnostics" / "full_internal_metrics.tsv",
+        sep="\t",
+    )
+    calibration = pd.read_csv(
+        results_dir / "artifacts" / "diagnostics" / "unit_empirical_background_calibration.tsv",
+        sep="\t",
+    )
+    assert set(result["unique_pvalue_mode_resolved"]) == {"empirical-background"}
+    assert bool(calibration.loc[0, "unit_auto_eligibility_decision"])
+    assert calibration.loc[0, "unit_auto_min_comparable_observed"] == 100
+    assert bool(calibration.loc[0, "unit_auto_empirical_cap_reached"])
+    assert not bool(calibration.loc[0, "unit_auto_empirical_suitability"])
 
 
 @pytest.mark.parametrize(

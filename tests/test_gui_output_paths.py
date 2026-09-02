@@ -23,6 +23,34 @@ class _MappingHost:
     ]
 
 
+def _grid_position(grid, widget):
+    for index in range(grid.count()):
+        item = grid.itemAt(index)
+        if item is not None and item.widget() is widget:
+            return grid.getItemPosition(index)
+    raise AssertionError("Widget is not in the grid")
+
+
+def test_gui_unique_pvalue_default_matches_production_and_auto_controls_do_not_overlap():
+    app = QApplication.instance() or QApplication([])
+    tab = ScoringTab()
+
+    assert tab.unique_pvalue_mode_combo.currentData() == "auto"
+    assert tab.build_config(require_required_fields=False).unique_pvalue_mode == "auto"
+
+    tab.unique_pvalue_mode_combo.setCurrentIndex(
+        tab.unique_pvalue_mode_combo.findData("auto")
+    )
+    app.processEvents()
+
+    assert not tab.unique_count_power_label.isHidden()
+    assert not tab.unique_empirical_background_threshold_quantile_label.isHidden()
+    assert _grid_position(tab.unique_grid, tab.unique_count_power_label) != _grid_position(
+        tab.unique_grid,
+        tab.unique_empirical_background_threshold_quantile_label,
+    )
+
+
 def test_gui_mapping_is_materialized_inside_results_artifacts(tmp_path):
     results_dir = tmp_path / "results"
     config = ScoringConfig(

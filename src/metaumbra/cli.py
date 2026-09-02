@@ -10,6 +10,8 @@ from typing import Any
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from metaumbra import __version__
+    from metaumbra._scoring.ranking import DEFAULT_PRESENCE_COMBINATION_METHOD
+    from metaumbra._scoring.stats import DEFAULT_UNIQUE_PVALUE_MODE
     from metaumbra.workflows import (
         DigestConfig,
         ParquetExtractionConfig,
@@ -20,6 +22,8 @@ if __package__ in {None, ""}:
     )
 else:
     from . import __version__
+    from ._scoring.ranking import DEFAULT_PRESENCE_COMBINATION_METHOD
+    from ._scoring.stats import DEFAULT_UNIQUE_PVALUE_MODE
     from .workflows import (
         DigestConfig,
         ParquetExtractionConfig,
@@ -240,22 +244,39 @@ def build_parser() -> argparse.ArgumentParser:
         "--single-peptide-error-rate-upper-bound",
         type=float,
         default=0.05,
-        help="Alpha upper bound for one unique evidence unit in alpha^(U_raw^power).",
+        help=(
+            "Per-peptide error upper bound used by alpha-upper-bound mode. Its product interpretation "
+            "requires defensible per-peptide bounds, a multiplicative dependence assumption, and no "
+            "unmodeled homologous explanation outside the reference panel."
+        ),
     )
     _add_argument(
         score_optional,
         "--unique-pvalue-mode",
         choices=(
+            "auto",
             "empirical-background",
             "hypergeometric-opportunity",
             "alpha-upper-bound",
         ),
-        default="empirical-background",
+        default=DEFAULT_UNIQUE_PVALUE_MODE,
         help=(
-            "Unique evidence p-value mode. 'empirical-background' estimates a sample-specific weak-genome unique peptide "
-            "background threshold and accumulates only excess unique evidence. "
+            "Unique evidence p-value mode. 'auto' uses a theoretical panel-unique-opportunity structural "
+            "eligibility rule, otherwise it falls back to "
+            "alpha-upper-bound. 'empirical-background' forces the empirical method. "
             "'hypergeometric-opportunity' uses the observed genome-unique peptide pool and genome-specific theoretical "
             "unique peptide opportunity. 'alpha-upper-bound' uses alpha^(U_raw^power)."
+        ),
+    )
+    _add_argument(
+        score_optional,
+        "--unique-empirical-pvalue-method",
+        choices=("empirical-tail", "alpha-excess"),
+        default="alpha-excess",
+        help=(
+            "Formal empirical-background unique p-value method. The default alpha-excess preserves the "
+            "established production calculation. empirical-tail is an experimental diagnostic/sensitivity option "
+            "and is not recommended for large multiple-testing panels because finite backgrounds limit p-value resolution."
         ),
     )
     _add_argument(
@@ -277,6 +298,29 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Power exponent for alpha-upper-bound effective unique evidence count: U_eff = U_raw^power. "
             "Lower values are more conservative; 1.0 recovers the raw unique count."
+        ),
+    )
+    _add_argument(
+        score_optional,
+        "--presence-combination-method",
+        choices=("simes-closed", "bonferroni-min", "harmonic-mean-calibrated", "fisher", "harmonic-mean", "unique-only"),
+        default=DEFAULT_PRESENCE_COMBINATION_METHOD,
+        help=(
+            "Combine unique and shared component p-values. simes-closed is the default "
+            "two-component Simes/closed-testing integration and requires unique evidence; "
+            "bonferroni-min and harmonic-mean-calibrated are retained sensitivity methods; "
+            "Fisher is the legacy independence-based rule."
+        ),
+    )
+    _add_argument(
+        score_optional,
+        "--allow-hmp-shared-only",
+        action="store_false",
+        dest="hmp_require_unique_evidence",
+        default=True,
+        help=(
+            "Allow harmonic-mean calls without a panel-unique peptide. By default, "
+            "HMP requires at least one unique peptide and treats shared evidence as supporting."
         ),
     )
     _add_argument(
@@ -315,6 +359,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.0,
         help="Within-sample intensity quantile cutoff for unit-specific peptide presence.",
+    )
+    _add_argument(
+        score_optional,
+        "--peptide-normalization-policy",
+        choices=["il-equivalent", "exact"],
+        default="il-equivalent",
+        help=(
+            "Peptide sequence matching policy. il-equivalent maps I and L to the same "
+            "symbol; exact preserves every residue."
+        ),
     )
     _add_argument(
         score_optional,
@@ -553,10 +607,14 @@ def _run_score(args: argparse.Namespace) -> int:
         peptide_score_col=args.peptide_score_col,
         peptide_error_col=args.peptide_error_col,
         peptide_error_cutoff=args.peptide_error_cutoff,
+        peptide_normalization_policy=args.peptide_normalization_policy,
         single_peptide_error_rate_upper_bound=args.single_peptide_error_rate_upper_bound,
         unique_pvalue_mode=args.unique_pvalue_mode,
+        unique_empirical_pvalue_method=args.unique_empirical_pvalue_method,
         unique_peptide_error_source=args.unique_peptide_error_source,
         unique_count_power=args.unique_count_power,
+        presence_combination_method=args.presence_combination_method,
+        hmp_require_unique_evidence=args.hmp_require_unique_evidence,
         unique_empirical_background_threshold_quantile=args.unique_empirical_background_threshold_quantile,
         unit_mode=args.unit_mode,
         sample_id_col=args.sample_id_col,
@@ -622,4 +680,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-

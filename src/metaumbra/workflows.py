@@ -16,6 +16,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
+from ._scoring.ranking import DEFAULT_PRESENCE_COMBINATION_METHOD
+from ._scoring.stats import DEFAULT_UNIQUE_PVALUE_MODE
+
 
 LogCallback = Callable[[str], None]
 
@@ -61,10 +64,14 @@ class ScoringConfig:
     peptide_score_col: str = "Evidence"
     peptide_error_col: str = "Q.Value"
     peptide_error_cutoff: float = 0.05
+    peptide_normalization_policy: str = "il-equivalent"
     single_peptide_error_rate_upper_bound: float = 0.05
-    unique_pvalue_mode: str = "empirical-background"
+    unique_pvalue_mode: str = DEFAULT_UNIQUE_PVALUE_MODE
+    unique_empirical_pvalue_method: str = "alpha-excess"
     unique_peptide_error_source: str = "global-alpha"
     unique_count_power: float = 1.0
+    presence_combination_method: str = DEFAULT_PRESENCE_COMBINATION_METHOD
+    hmp_require_unique_evidence: bool = True
     unique_empirical_background_threshold_quantile: float = 0.95
     theoretical_opportunity_cache_path: str = ""
     rebuild_theoretical_opportunity_cache: bool = False
@@ -87,6 +94,7 @@ class ScoringConfig:
     knockoff_stage2_p_exist_ranges: list[list[float]] = field(
         default_factory=lambda: [[0.01, 0.05]]
     )
+    degeneracy_bin_edges: list[int] = field(default_factory=lambda: [1, 5, 20, 100, 500])
     knockoff_random_seed: int = 1
     knockoff_top_n_targets: Optional[int] = None
     matched_peptides_cache_path: str = ""
@@ -128,6 +136,9 @@ class ParquetExtractionConfig:
 def migrate_legacy_scoring_config_payload(payload: dict[str, object]) -> dict[str, object]:
     """Translate legacy GUI settings into the unified scoring configuration."""
     migrated = dict(payload)
+    # Persisted configurations predating calibrated HMP retain their Fisher
+    # behavior rather than silently adopting the fresh-configuration default.
+    migrated.setdefault("presence_combination_method", "fisher")
 
     legacy_output = str(migrated.get("output_tsv_path") or "").strip()
     legacy_output_path = Path(legacy_output)
@@ -331,11 +342,9 @@ def _clean_scoring_artifacts_for_new_run(artifact_dir: Path, config: ScoringConf
         and not str(config.matched_peptides_cache_path or "").strip()
     ):
         known_files.add("matched_peptides.pkl")
-    if (
-        str(config.unique_pvalue_mode).strip().lower() != "hypergeometric-opportunity"
-        and not str(config.theoretical_opportunity_cache_path or "").strip()
-    ):
-        known_files.add("theoretical_opportunity_cache.pkl")
+    # The corrected theoretical opportunity cache is shared by empirical,
+    # auto, and hypergeometric modes and is removed only when explicitly
+    # rebuilt or when its provenance validation rejects it.
 
     cleanup_paths = [artifact_dir / name for name in known_files]
     cleanup_paths.extend(artifact_dir.glob("top*_peptide_contrib.tsv"))
@@ -644,6 +653,15 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
         for bounds in config.knockoff_stage2_p_exist_ranges
         if isinstance(bounds, (list, tuple)) and len(bounds) == 2
     ]
+    degeneracy_bin_edges = [int(edge) for edge in config.degeneracy_bin_edges]
+    if (
+        not degeneracy_bin_edges
+        or any(edge < 1 for edge in degeneracy_bin_edges)
+        or degeneracy_bin_edges != sorted(set(degeneracy_bin_edges))
+    ):
+        raise ValueError(
+            "Degeneracy bin edges must be a strictly increasing list of positive integers."
+        )
 
     cache_path = _normalize_output_path(config.matched_peptides_cache_path)
     theoretical_cache_path = _normalize_output_path(config.theoretical_opportunity_cache_path)
@@ -659,6 +677,7 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
         calc.knockoff_mc_iterations = int(config.knockoff_mc_iterations)
         calc.knockoff_stage2_mc_iterations = config.knockoff_stage2_mc_iterations
         calc.knockoff_stage2_p_exist_ranges = normalized_ranges
+        calc.degeneracy_bin_edges = degeneracy_bin_edges
         calc.knockoff_random_seed = int(config.knockoff_random_seed)
         calc.knockoff_top_n_targets = config.knockoff_top_n_targets
 
@@ -684,13 +703,15 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
             metadata_sample_id_col=config.metadata_sample_id_col,
             metadata_analysis_unit_col=config.metadata_analysis_unit_col,
             peptide_table_sep="\t",
+            peptide_normalization_policy=config.peptide_normalization_policy,
         )
 
         unique_empirical_background_threshold_quantile = float(
             config.unique_empirical_background_threshold_quantile
         )
         if (
-            str(config.unique_pvalue_mode).strip().lower() == "empirical-background"
+            str(config.unique_pvalue_mode).strip().lower()
+            in {"empirical-background", "auto"}
             and not (0.90 <= unique_empirical_background_threshold_quantile <= 0.99)
         ):
             raise ValueError(
@@ -714,8 +735,11 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
             export_peptide_contrib_topN=int(config.export_peptide_contrib_topN),
             use_cache_if_exists=bool(config.use_cache_if_exists),
             unique_pvalue_mode=str(config.unique_pvalue_mode),
+            unique_empirical_pvalue_method=str(config.unique_empirical_pvalue_method),
             unique_peptide_error_source=str(config.unique_peptide_error_source),
             unique_count_power=float(config.unique_count_power),
+            presence_combination_method=str(config.presence_combination_method),
+            hmp_require_unique_evidence=bool(config.hmp_require_unique_evidence),
             theoretical_opportunity_cache_path=theoretical_cache_path or None,
             rebuild_theoretical_opportunity_cache=bool(config.rebuild_theoretical_opportunity_cache),
             num_workers_for_theoretical_opportunity=config.num_workers_for_theoretical_opportunity,
@@ -886,4 +910,3 @@ if __name__ == "__main__":
     else:
         from .cli import main as cli_main
     raise SystemExit(cli_main(sys.argv[1:]))
-

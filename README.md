@@ -83,6 +83,10 @@ Optional inputs include peptide scores, peptide-level error values, decoy flags,
 
 All scoring uses one analysis-unit workflow. Select `--unit-mode all-samples`, `per-sample`, or `metadata`; each option builds a sample-to-unit assignment and invokes the same per-unit p/q-value engine. The cohort-wide `all-samples` mode uses a moderately more permissive empirical-background calibration profile, recorded in the run summary, so pooled strong signals do not inflate their own null background.
 
+The default unique-evidence mode is `auto`. Before observed genome significance is evaluated, it partitions candidates by theoretical peptide opportunity and checks whether at least 90% have at least 100 comparable background genomes and at least five expected observations above the configured background quantile. If structurally eligible, it uses `empirical-background`; otherwise the entire panel uses `alpha-upper-bound`. Model selection never uses pilot p-values, pilot q-values, benchmark labels, recovery, or additional-call counts. The decision variables and reason are recorded in `artifacts/diagnostics/unit_empirical_background_calibration.tsv`.
+
+Peptide matching uses `--peptide-normalization-policy il-equivalent` by default. Isoleucine and leucine are both mapped to `J` before observed/theoretical deduplication, matching, degeneracy counting, and unique/shared classification. Use `exact` for a residue-exact sensitivity analysis. Q/K and AD/W are not collapsed. Matched-peptide and theoretical-opportunity caches record the normalization policy and reject incompatible or legacy cache schemas.
+
 ## Output
 
 The requested `--output` is a unified results directory.
@@ -99,7 +103,7 @@ Default output files:
 
 Each scoring run records `artifacts/run_parameters.json`, `run.log`, `run_status.json`, and `run_summary.json`. Use `--export-diagnostics` for heavier audit tables under `artifacts/diagnostics/`.
 
-In the current implementation, peptide presence within an analysis unit is defined as the union of sample-level peptide presence across samples assigned to that unit. Unit-level p-values combine per-unit shared knockoff evidence (`pvalue_shared`) with the selected per-unit unique-evidence model (`pvalue_unique`) using Fisher's method, then apply BH correction separately within each analysis unit.
+In the current implementation, peptide presence within an analysis unit is defined as the union of sample-level peptide presence across samples assigned to that unit. Only genomes with at least one matched observed peptide enter that unit's BH family. Active genomes with no unique peptide remain in this family but receive `pvalue_simes_closed = pvalue = 1`; shared evidence can corroborate unique evidence but cannot establish presence alone. For other active genomes, the default Simes/closed-testing p-value is `max(pvalue_unique, min(1, 2*min(pvalue_unique, pvalue_shared), max(pvalue_unique, pvalue_shared)))`. BH is then applied separately within each analysis unit. Bonferroni, calibrated/raw HMP, Fisher, and unique-only remain selectable sensitivity analyses.
 
 Key output columns include:
 
@@ -114,8 +118,14 @@ Key output columns include:
 | `has_unique_evidence` | Whether the genome has at least one observed unique peptide |
 | `pvalue_shared` | Shared-peptide knockoff p-value |
 | `pvalue_unique` | Unique-evidence p-value |
-| `pvalue` | Genome-level p-value |
-| `qvalue` | BH-adjusted genome-level q-value |
+| `pvalue_simes_intersection` | Two-component Simes intersection p-value |
+| `pvalue_simes_closed` | Unique-evidence closed-test p-value; 1 with zero observed unique peptides |
+| `pvalue_combined_fisher` | Fisher combination retained for sensitivity comparison |
+| `pvalue_combined_harmonic_calibrated` | Factor-2 K=2 calibrated two-component HMP sensitivity value |
+| `pvalue_combined_harmonic` | Equal-weight HMP with the configured unique-evidence gate |
+| `pvalue_combined_bonferroni` | Two-test Bonferroni minimum-p sensitivity value |
+| `pvalue` | Selected genome-level p-value; by default `pvalue_simes_closed` |
+| `qvalue` | BH-adjusted genome-level q-value within active genomes of the analysis unit |
 | `presence_score` | Ranking score based on q-value |
 
 ## Citation
