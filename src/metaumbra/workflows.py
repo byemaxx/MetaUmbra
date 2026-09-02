@@ -67,7 +67,7 @@ class ScoringConfig:
     unique_empirical_pvalue_method: str = "alpha-excess"
     unique_peptide_error_source: str = "global-alpha"
     unique_count_power: float = 1.0
-    presence_combination_method: str = "bonferroni-min"
+    presence_combination_method: str = "simes-closed"
     hmp_require_unique_evidence: bool = True
     unique_empirical_background_threshold_quantile: float = 0.95
     theoretical_opportunity_cache_path: str = ""
@@ -94,6 +94,10 @@ class ScoringConfig:
     degeneracy_bin_edges: list[int] = field(default_factory=lambda: [1, 5, 20, 100, 500])
     knockoff_random_seed: int = 1
     knockoff_top_n_targets: Optional[int] = None
+    experimental_joint_null_enabled: bool = False
+    experimental_joint_null_iterations: int = 500
+    experimental_joint_null_validation_iterations: int = 500
+    experimental_joint_null_exact_shared_count_cutoff: int = 64
     matched_peptides_cache_path: str = ""
     save_matched_peptides_cache: bool = False
     use_cache_if_exists: bool = False
@@ -677,6 +681,14 @@ def _run_scoring_workflow_uncaught(config: ScoringConfig, log_callback: Optional
         calc.degeneracy_bin_edges = degeneracy_bin_edges
         calc.knockoff_random_seed = int(config.knockoff_random_seed)
         calc.knockoff_top_n_targets = config.knockoff_top_n_targets
+        calc.experimental_joint_null_enabled = bool(config.experimental_joint_null_enabled)
+        calc.experimental_joint_null_iterations = int(config.experimental_joint_null_iterations)
+        calc.experimental_joint_null_validation_iterations = int(
+            config.experimental_joint_null_validation_iterations
+        )
+        calc.experimental_joint_null_exact_shared_count_cutoff = int(
+            config.experimental_joint_null_exact_shared_count_cutoff
+        )
 
         calc.read_analysis_unit_peptide_file(
             peptide_table_path=peptide_table_path,

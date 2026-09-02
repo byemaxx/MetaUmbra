@@ -69,7 +69,7 @@ def test_default_parquet_extraction_preserves_required_scoring_columns(tmp_path)
 
 def test_production_empirical_method_defaults_to_alpha_excess():
     assert ScoringConfig().unique_empirical_pvalue_method == "alpha-excess"
-    assert ScoringConfig().presence_combination_method == "bonferroni-min"
+    assert ScoringConfig().presence_combination_method == "simes-closed"
     assert ScoringConfig().hmp_require_unique_evidence is True
     parser = build_parser()
     command = next(action for action in parser._actions if action.dest == "command")
@@ -85,7 +85,7 @@ def test_production_empirical_method_defaults_to_alpha_excess():
         for action in score_parser._actions
         if action.dest == "presence_combination_method"
     )
-    assert combination.default == "bonferroni-min"
+    assert combination.default == "simes-closed"
 
 
 def test_legacy_scoring_configuration_preserves_fisher_combination():
@@ -95,6 +95,10 @@ def test_legacy_scoring_configuration_preserves_fisher_combination():
         {"presence_combination_method": "harmonic-mean-calibrated"}
     )
     assert explicit["presence_combination_method"] == "harmonic-mean-calibrated"
+    legacy_k3 = migrate_legacy_scoring_config_payload(
+        {"presence_combination_method": "bonferroni-min"}
+    )
+    assert legacy_k3["presence_combination_method"] == "bonferroni-min"
 
 
 def test_failed_directory_run_writes_status_to_results_artifacts(tmp_path):

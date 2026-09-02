@@ -299,12 +299,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_argument(
         score_optional,
         "--presence-combination-method",
-        choices=("bonferroni-min", "harmonic-mean-calibrated", "fisher", "harmonic-mean", "unique-only"),
-        default="bonferroni-min",
+        choices=("simes-closed", "bonferroni-min", "harmonic-mean-calibrated", "fisher", "harmonic-mean", "unique-only"),
+        default="simes-closed",
         help=(
-            "Combine unique and shared component p-values. bonferroni-min is the default "
-            "two-component minimum-p merger without an independence assumption and requires "
-            "unique evidence; harmonic-mean-calibrated is twice the equal-weight K=2 HMP; "
+            "Combine unique and shared component p-values. simes-closed is the default "
+            "two-component Simes/closed-testing integration and requires unique evidence; "
+            "bonferroni-min and harmonic-mean-calibrated are retained sensitivity methods; "
             "Fisher is the legacy independence-based rule."
         ),
     )

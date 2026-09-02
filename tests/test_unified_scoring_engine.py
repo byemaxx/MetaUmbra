@@ -176,6 +176,8 @@ def test_harmonic_mean_selection_exports_all_combined_pvalues(tmp_path):
 
     assert {
         "pvalue_combined_fisher",
+        "pvalue_simes_intersection",
+        "pvalue_simes_closed",
         "pvalue_combined_harmonic_calibrated",
         "pvalue_combined_harmonic",
         "pvalue_combined_bonferroni",

@@ -2220,6 +2220,9 @@ class ScoringTab(QWidget):
         self.unique_grid.addWidget(self.theoretical_opportunity_processes_spin, 0, 5)
         self.presence_combination_method_combo = QComboBox()
         self.presence_combination_method_combo.addItem(
+            "Simes/closed-testing (primary)", "simes-closed"
+        )
+        self.presence_combination_method_combo.addItem(
             "Bonferroni minimum-p", "bonferroni-min"
         )
         self.presence_combination_method_combo.addItem(
@@ -2235,8 +2238,8 @@ class ScoringTab(QWidget):
             ScoringConfig().presence_combination_method,
         )
         self.presence_combination_method_combo.setToolTip(
-            "Bonferroni minimum-p is the default and requires at least one observed "
-            "unique peptide. Factor-2 HMP is retained as a sensitivity method."
+            "Simes/closed-testing is the default and requires at least one observed "
+            "unique peptide. Shared evidence can corroborate but cannot supersede unique evidence."
         )
         _add_compact_field(
             self.unique_grid,

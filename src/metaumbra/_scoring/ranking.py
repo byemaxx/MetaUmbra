@@ -6,14 +6,14 @@ import numpy as np
 HMP_K2_EXACT_CALIBRATION = 2.0
 HMP_CALIBRATION_COMPONENT_COUNT = 2
 HMP_CALIBRATION_BASIS = "exact_k2_arbitrary_dependence"
-DEFAULT_PRESENCE_COMBINATION_METHOD = "bonferroni-min"
+DEFAULT_PRESENCE_COMBINATION_METHOD = "simes-closed"
 PRESENCE_COMBINATION_METHODS = (
+    "simes-closed",
     "bonferroni-min",
     "harmonic-mean-calibrated",
     "fisher",
     "harmonic-mean",
     "unique-only",
-    "bonferroni-min",
 )
 
 
@@ -21,6 +21,8 @@ def _normalize_presence_combination_method(method: str | None) -> str:
     """Normalize a configured two-component presence p-value combiner."""
     normalized = str(method or DEFAULT_PRESENCE_COMBINATION_METHOD).strip().lower()
     aliases = {
+        "simes_closed": "simes-closed",
+        "simes": "simes-closed",
         "harmonic_mean_calibrated": "harmonic-mean-calibrated",
         "calibrated-hmp": "harmonic-mean-calibrated",
         "calibrated_hmp": "harmonic-mean-calibrated",
@@ -108,6 +110,40 @@ def bonferroni_min_p_2(
     return float(min(1.0, 2.0 * min(p_unique, p_shared)))
 
 
+def simes_intersection_p_2(p_unique: float, p_shared: float) -> float:
+    """Return the two-component Simes intersection-test p-value.
+
+    This is the established two-p-value Simes form
+    ``min(1, 2*min(p_unique, p_shared), max(p_unique, p_shared))``.  It is
+    exported separately from the genome-level closed-testing value because an
+    intersection result alone does not impose MetaUmbra's unique-evidence
+    requirement.
+    """
+    p_unique = float(min(max(p_unique, 1e-300), 1.0))
+    p_shared = float(min(max(p_shared, 1e-300), 1.0))
+    return float(min(1.0, 2.0 * min(p_unique, p_shared), max(p_unique, p_shared)))
+
+
+def simes_closed_p_2(
+    p_unique: float,
+    p_shared: float,
+    *,
+    num_peptides_unique: int,
+) -> float:
+    """Return the unique-hypothesis closed-testing p-value for two components.
+
+    Genome-specific support requires an observed unique peptide.  Conditional
+    on that gate, closed testing of the unique component against the Simes
+    intersection reduces to ``min(1, 2*p_unique, max(p_unique, p_shared))``.
+    The result is never smaller than the unique-component p-value.
+    """
+    if int(num_peptides_unique) <= 0:
+        return 1.0
+    p_unique = float(min(max(p_unique, 1e-300), 1.0))
+    p_shared = float(min(max(p_shared, 1e-300), 1.0))
+    return float(min(1.0, 2.0 * p_unique, max(p_unique, p_shared)))
+
+
 def combine_presence_pvalues(
     p_unique: float,
     p_shared: float,
@@ -118,6 +154,12 @@ def combine_presence_pvalues(
 ) -> float:
     """Combine component p-values using one configured presence rule."""
     normalized = _normalize_presence_combination_method(method)
+    if normalized == "simes-closed":
+        return simes_closed_p_2(
+            p_unique,
+            p_shared,
+            num_peptides_unique=0 if unique_count is None else unique_count,
+        )
     if normalized == "fisher":
         return fisher_p_2(p_unique, p_shared)
     if normalized == "harmonic-mean-calibrated":
