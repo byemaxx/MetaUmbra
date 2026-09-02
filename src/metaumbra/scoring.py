@@ -391,13 +391,6 @@ class GenomePresenceScorer:
         # Optional speed knob: compute knockoff only for top-N TARGET genomes by rank, set others p=1
         self.knockoff_top_n_targets: Optional[int] = None
 
-        # Experimental pilot only; disabled by default and never selected by the
-        # production presence-combination setting.
-        self.experimental_joint_null_enabled: bool = False
-        self.experimental_joint_null_iterations: int = 500
-        self.experimental_joint_null_validation_iterations: int = 500
-        self.experimental_joint_null_exact_shared_count_cutoff: int = 64
-
         # Internal caches for knockoff
         self.peptide_degeneracy: Optional[Dict[str, int]] = None
         self.knockoff_pools_weighted_contrib: Optional[Dict[Union[int, Tuple[int, int]], np.ndarray]] = None
@@ -2173,18 +2166,6 @@ class GenomePresenceScorer:
                 if self.knockoff_top_n_targets is not None
                 else None
             ),
-            "experimental_joint_null_enabled": bool(
-                self.experimental_joint_null_enabled
-            ),
-            "experimental_joint_null_iterations": int(
-                self.experimental_joint_null_iterations
-            ),
-            "experimental_joint_null_validation_iterations": int(
-                self.experimental_joint_null_validation_iterations
-            ),
-            "experimental_joint_null_exact_shared_count_cutoff": int(
-                self.experimental_joint_null_exact_shared_count_cutoff
-            ),
             "unit_empirical_background_initial_exclude_fraction": empirical_calibration["initial_exclude_fraction"],
             "unit_empirical_background_min_exclude_fraction": empirical_calibration["min_exclude_fraction"],
             "unit_empirical_background_max_exclude_fraction": empirical_calibration["max_exclude_fraction"],
@@ -3074,29 +3055,6 @@ class GenomePresenceScorer:
         self.run_stats["harmonic_calibration_factor"] = HMP_K2_EXACT_CALIBRATION
         self.run_stats["harmonic_calibration_component_count"] = HMP_CALIBRATION_COMPONENT_COUNT
         self.run_stats["harmonic_calibration_basis"] = HMP_CALIBRATION_BASIS
-        self.run_stats["experimental_joint_null_enabled"] = bool(
-            self.experimental_joint_null_enabled
-        )
-        if self.experimental_joint_null_enabled:
-            if int(self.experimental_joint_null_iterations) < 1:
-                raise ValueError("experimental_joint_null_iterations must be positive.")
-            if int(self.experimental_joint_null_validation_iterations) < 1:
-                raise ValueError(
-                    "experimental_joint_null_validation_iterations must be positive."
-                )
-            if int(self.experimental_joint_null_exact_shared_count_cutoff) < 0:
-                raise ValueError(
-                    "experimental_joint_null_exact_shared_count_cutoff must be non-negative."
-                )
-            self.run_stats["experimental_joint_null_iterations"] = int(
-                self.experimental_joint_null_iterations
-            )
-            self.run_stats["experimental_joint_null_validation_iterations"] = int(
-                self.experimental_joint_null_validation_iterations
-            )
-            self.run_stats["experimental_joint_null_exact_shared_count_cutoff"] = int(
-                self.experimental_joint_null_exact_shared_count_cutoff
-            )
         theoretical_opportunity_workers = (
             self.num_workers
             if num_workers_for_theoretical_opportunity is None
@@ -3457,7 +3415,7 @@ class GenomePresenceScorer:
             "hypergeometric-opportunity",
             "empirical-background",
             "auto",
-        } or bool(self.experimental_joint_null_enabled)
+        }
         optional_alpha_opportunity = bool(
             mode == "alpha-upper-bound"
             and theoretical_cache_path

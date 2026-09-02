@@ -7,6 +7,7 @@ from metaumbra.scoring import GenomePresenceScorer
 from metaumbra._scoring.unit_specific import (
     _empirical_background_calibration_for_unit_mode,
 )
+from metaumbra._scoring.ranking import bh_qvalues
 
 
 def test_all_samples_uses_moderately_permissive_empirical_background_profile():
@@ -187,6 +188,55 @@ def test_harmonic_mean_selection_exports_all_combined_pvalues(tmp_path):
     assert result["pvalue"].tolist() == pytest.approx(
         result["pvalue_combined_harmonic"].tolist()
     )
+
+
+def test_default_simes_bh_uses_all_and_only_matched_genomes(tmp_path, monkeypatch):
+    peptide_table = tmp_path / "peptides.tsv"
+    pd.DataFrame({"Sequence": ["G1ONLY", "G2ONLY", "SHARED"]}).to_csv(
+        peptide_table, sep="\t", index=False
+    )
+    scorer = GenomePresenceScorer(num_workers=1)
+    scorer.knockoff_mc_iterations = 10
+    scorer.knockoff_stage2_mc_iterations = None
+    scorer.read_peptide_file(
+        peptide_table_path=str(peptide_table),
+        peptide_seq_col="Sequence",
+        peptide_score_col=None,
+        peptide_decoy_flag_col=None,
+    )
+
+    monkeypatch.setattr(
+        "metaumbra._scoring.unit_specific.shared_knockoff_mc",
+        lambda **kwargs: (1.0, 0.0, 0.0, 0.0, 0.0),
+    )
+    result = scorer.analyze_genomes(
+        genome_digest_dirs=[str(tmp_path)],
+        output_tsv_path=str(tmp_path / "unit_genome_results.tsv"),
+        all_matched_peptides=[
+            ("g1", {"G1ONLY", "SHARED"}, 2),
+            ("g2", {"G2ONLY", "SHARED"}, 2),
+            ("g3", {"SHARED"}, 1),
+            ("g4", {"NO_MATCH"}, 1),
+        ],
+        compute_coverage=False,
+        unique_pvalue_mode="alpha-upper-bound",
+        return_full_table=True,
+    ).set_index("genome_id")
+
+    active = result.loc[["g1", "g2", "g3"]]
+    assert active["num_peptides_matched"].ge(1).all()
+    assert result.at["g4", "num_peptides_matched"] == 0
+    assert active["pvalue"].tolist() == pytest.approx(
+        active["pvalue_simes_closed"].tolist()
+    )
+    assert result.at["g3", "num_peptides_unique"] == 0
+    assert result.at["g3", "pvalue_simes_closed"] == 1.0
+    assert result.at["g3", "pvalue"] == 1.0
+    assert active["qvalue"].tolist() == pytest.approx(bh_qvalues(active["pvalue"].to_numpy()))
+    assert result.at["g1", "qvalue"] > result.at["g1", "pvalue"]
+    assert result.at["g4", "qvalue"] == 1.0
+    assert result.at["g4", "presence_score"] == 0.0
+    assert not bool(result.at["g4", "pass_q_0_05"])
 
 
 def test_knockoff_top_n_targets_limits_unit_worker_inference(tmp_path, monkeypatch):

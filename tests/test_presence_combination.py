@@ -94,6 +94,21 @@ def test_simes_closed_formula_and_zero_unique_gate():
     assert simes_closed_p_2(1.0, 1e-10, num_peptides_unique=0) == 1.0
 
 
+@pytest.mark.parametrize(
+    ("p_unique", "p_shared", "expected"),
+    [
+        (1e-300, 1.0, 2e-300),
+        (0.999999, 0.999998, 0.999999),
+        (0.2, 0.8, 0.4),
+        (0.8, 0.2, 0.8),
+        (0.3, 0.3, 0.3),
+    ],
+)
+def test_simes_closed_edge_cases(p_unique, p_shared, expected):
+    assert simes_closed_p_2(p_unique, p_shared, num_peptides_unique=1) == pytest.approx(expected)
+    assert simes_closed_p_2(p_unique, 1e-300, num_peptides_unique=0) == 1.0
+
+
 def test_simes_closed_properties():
     rng = np.random.default_rng(1)
     p_unique = rng.random(10_000)

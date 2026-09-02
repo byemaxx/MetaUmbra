@@ -35,8 +35,8 @@ def test_gui_unique_pvalue_default_matches_production_and_auto_controls_do_not_o
     app = QApplication.instance() or QApplication([])
     tab = ScoringTab()
 
-    assert tab.unique_pvalue_mode_combo.currentData() == "empirical-background"
-    assert tab.build_config(require_required_fields=False).unique_pvalue_mode == "empirical-background"
+    assert tab.unique_pvalue_mode_combo.currentData() == "auto"
+    assert tab.build_config(require_required_fields=False).unique_pvalue_mode == "auto"
 
     tab.unique_pvalue_mode_combo.setCurrentIndex(
         tab.unique_pvalue_mode_combo.findData("auto")

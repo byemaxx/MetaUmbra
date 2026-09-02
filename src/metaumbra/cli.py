@@ -10,6 +10,8 @@ from typing import Any
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from metaumbra import __version__
+    from metaumbra._scoring.ranking import DEFAULT_PRESENCE_COMBINATION_METHOD
+    from metaumbra._scoring.stats import DEFAULT_UNIQUE_PVALUE_MODE
     from metaumbra.workflows import (
         DigestConfig,
         ParquetExtractionConfig,
@@ -20,6 +22,8 @@ if __package__ in {None, ""}:
     )
 else:
     from . import __version__
+    from ._scoring.ranking import DEFAULT_PRESENCE_COMBINATION_METHOD
+    from ._scoring.stats import DEFAULT_UNIQUE_PVALUE_MODE
     from .workflows import (
         DigestConfig,
         ParquetExtractionConfig,
@@ -255,7 +259,7 @@ def build_parser() -> argparse.ArgumentParser:
             "hypergeometric-opportunity",
             "alpha-upper-bound",
         ),
-        default="empirical-background",
+        default=DEFAULT_UNIQUE_PVALUE_MODE,
         help=(
             "Unique evidence p-value mode. 'auto' uses a theoretical panel-unique-opportunity structural "
             "eligibility rule, otherwise it falls back to "
@@ -300,7 +304,7 @@ def build_parser() -> argparse.ArgumentParser:
         score_optional,
         "--presence-combination-method",
         choices=("simes-closed", "bonferroni-min", "harmonic-mean-calibrated", "fisher", "harmonic-mean", "unique-only"),
-        default="simes-closed",
+        default=DEFAULT_PRESENCE_COMBINATION_METHOD,
         help=(
             "Combine unique and shared component p-values. simes-closed is the default "
             "two-component Simes/closed-testing integration and requires unique evidence; "

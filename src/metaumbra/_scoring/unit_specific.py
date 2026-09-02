@@ -20,8 +20,9 @@ from .empirical import (
     _evaluate_empirical_background_suitability,
     _normalize_unique_empirical_pvalue_method,
 )
-from .knockoff import conditional_joint_null_fisher_mc, shared_knockoff_mc
+from .knockoff import shared_knockoff_mc
 from .ranking import (
+    DEFAULT_PRESENCE_COMBINATION_METHOD,
     _normalize_presence_combination_method,
     bh_qvalues,
     bonferroni_min_p_2,
@@ -79,44 +80,6 @@ UNIT_EMPIRICAL_BACKGROUND_INTERNAL_COLUMNS = (
     "unit_empirical_background_active_genomes",
     "unit_empirical_background_warning",
 )
-
-
-def _flatten_joint_null_brown_results(result: Dict[str, object]) -> Dict[str, object]:
-    """Flatten experimental Brown prefix diagnostics into TSV-safe columns."""
-    prefixes = result.get("brown_prefix_results", {})
-    if not isinstance(prefixes, dict):
-        return {}
-    output: Dict[str, object] = {}
-    numeric_fields = (
-        "null_fisher_mean",
-        "null_fisher_variance",
-        "brown_scale",
-        "brown_df",
-        "observed_shared_p",
-        "observed_fisher_statistic",
-        "validation_fraction_p_le_0_01",
-        "validation_fraction_p_le_0_05",
-        "validation_ks_uniform_statistic",
-        "validation_ks_uniform_pvalue",
-    )
-    for prefix_text, metrics in prefixes.items():
-        if not isinstance(metrics, dict):
-            continue
-        prefix = int(prefix_text)
-        stem = f"joint_null_brown_b{prefix}"
-        output[f"pvalue_combined_{stem}"] = float(
-            metrics.get("pvalue_brown", 1.0)
-        )
-        output[f"{stem}_estimable"] = bool(metrics.get("brown_estimable", False))
-        output[f"{stem}_calibration_iterations"] = int(
-            metrics.get("calibration_iterations", prefix)
-        )
-        output[f"{stem}_validation_iterations"] = int(
-            metrics.get("validation_iterations", 0)
-        )
-        for field in numeric_fields:
-            output[f"{stem}_{field}"] = float(metrics.get(field, np.nan))
-    return output
 
 
 def _empirical_background_calibration_for_unit_mode(unit_mode: str) -> Dict[str, object]:
@@ -598,7 +561,7 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
     requested_mode = str(context["mode"])
     mode = requested_mode
     presence_combination_method = _normalize_presence_combination_method(
-        str(context.get("presence_combination_method", "bonferroni-min"))
+        str(context.get("presence_combination_method", DEFAULT_PRESENCE_COMBINATION_METHOD))
     )
     hmp_require_unique_evidence = bool(context.get("hmp_require_unique_evidence", True))
     K1 = int(context["knockoff_mc_iterations"])
@@ -640,18 +603,6 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
     )
     knockoff_top_n_raw = context.get("knockoff_top_n_targets")
     knockoff_top_n_targets = int(knockoff_top_n_raw) if knockoff_top_n_raw is not None else None
-    experimental_joint_null_enabled = bool(
-        context.get("experimental_joint_null_enabled", False)
-    )
-    experimental_joint_null_iterations = int(
-        context.get("experimental_joint_null_iterations", 500)
-    )
-    experimental_joint_null_validation_iterations = int(
-        context.get("experimental_joint_null_validation_iterations", 500)
-    )
-    experimental_joint_null_exact_shared_count_cutoff = int(
-        context.get("experimental_joint_null_exact_shared_count_cutoff", 64)
-    )
     total_theoretical_unique_peptides_all_genomes = int(context["total_theoretical_unique_peptides_all_genomes"])
     n_samples = int(args["n_samples_in_unit"])
     use_length_strata = bool(context["use_length_strata"])
@@ -665,13 +616,6 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
         use_length_strata=use_length_strata,
         degeneracy_bin_edges=degeneracy_bin_edges,
         peptide_length_bin_edges=peptide_length_bin_edges,
-    )
-    unit_joint_shared_pool = (
-        np.concatenate(
-            [np.asarray(values, dtype=np.float64) for values in unit_pools.values()]
-        )
-        if unit_pools
-        else np.asarray([], dtype=np.float64)
     )
     unit_shared_strata_by_genome: Dict[str, Counter] = {}
     unit_metrics_by_genome: Dict[str, dict] = {}
@@ -694,8 +638,6 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
     null_p95_values = np.zeros(n_genomes, dtype=float)
     null_p99_values = np.zeros(n_genomes, dtype=float)
     z_shared_values = np.zeros(n_genomes, dtype=float)
-    experimental_joint_pvalues = np.ones(n_genomes, dtype=float)
-    experimental_joint_results: Dict[str, Dict[str, object]] = {}
     unit_empirical_calibration: Dict[str, object] = {}
 
     def _refresh_combined_pvalues(genome_idx: int, is_knockoff_target: bool) -> None:
@@ -837,32 +779,6 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
                 pools=unit_pools,
                 counts_by_genome=unit_shared_strata_by_genome,
                 sample_block_size=sample_block_size,
-            )
-
-        if experimental_joint_null_enabled and int(metrics["num_peptides_matched"]) >= 1:
-            joint_rng = np.random.default_rng(
-                np.random.SeedSequence(
-                    [int(knockoff_random_seed), int(unit_idx), int(genome_idx), 0x4A4E]
-                )
-            )
-            joint_result = conditional_joint_null_fisher_mc(
-                observed_unique_count=int(metrics["num_peptides_unique"]),
-                observed_shared_score=float(metrics["weighted_evidence_shared"]),
-                observed_matched_count=int(metrics["num_peptides_matched"]),
-                theoretical_total_peptides=int(metrics["total_peptide_count"]),
-                theoretical_unique_peptides=int(
-                    metrics["theoretical_panel_unique_peptide_opportunity"]
-                ),
-                iterations=experimental_joint_null_iterations,
-                validation_iterations=experimental_joint_null_validation_iterations,
-                rng=joint_rng,
-                shared_contribution_pool=unit_joint_shared_pool,
-                exact_shared_count_cutoff=experimental_joint_null_exact_shared_count_cutoff,
-                sample_block_size=sample_block_size,
-            )
-            experimental_joint_results[genome_id] = joint_result
-            experimental_joint_pvalues[genome_idx] = float(
-                joint_result["pvalue_joint_null_fisher"]
             )
 
         p_shared_values[genome_idx] = _clip_pvalue(float(p_shared))
@@ -1403,14 +1319,9 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
             )
 
     qvals = np.ones(n_genomes, dtype=float)
-    experimental_joint_qvalues = np.ones(n_genomes, dtype=float)
     target_mask = matched_counts >= 1
     if bool(np.any(target_mask)):
         qvals[target_mask] = _unit_bh_qvalues(p_combined_values[target_mask])
-        if experimental_joint_null_enabled:
-            experimental_joint_qvalues[target_mask] = _unit_bh_qvalues(
-                experimental_joint_pvalues[target_mask]
-            )
     presence_scores = qvalues_to_presence_scores(qvals)
     rank_order = np.lexsort((np.asarray(genome_ids, dtype=object), -matched_counts, -unique_counts, qvals))
     ranks = np.empty(n_genomes, dtype=int)
@@ -1534,130 +1445,6 @@ def _compute_unit_specific_single_unit_worker(args: Dict[str, object]) -> Dict[s
                 "n_samples_in_unit": int(n_samples),
                 "unit_presence_rule": "union",
                 "unit_shared_mode": "per-unit",
-                **(
-                    {
-                        "experimental_joint_null_enabled": True,
-                        "joint_null_model": str(
-                            experimental_joint_results.get(genome_id, {}).get(
-                                "null_model", "conditional-opportunity-compound-v0"
-                            )
-                        ),
-                        "pvalue_joint_null_unique_component": float(
-                            experimental_joint_results.get(genome_id, {}).get(
-                                "pvalue_unique_component", 1.0
-                            )
-                        ),
-                        "pvalue_joint_null_shared_component": float(
-                            experimental_joint_results.get(genome_id, {}).get(
-                                "pvalue_shared_component", 1.0
-                            )
-                        ),
-                        "joint_null_fisher_statistic": float(
-                            experimental_joint_results.get(genome_id, {}).get(
-                                "fisher_statistic_observed", 0.0
-                            )
-                        ),
-                        "pvalue_combined_joint_null_fisher": float(
-                            experimental_joint_pvalues[genome_idx]
-                        ),
-                        "qvalue_combined_joint_null_fisher": float(
-                            experimental_joint_qvalues[genome_idx]
-                        ),
-                        "joint_null_iterations": int(
-                            experimental_joint_results.get(genome_id, {}).get(
-                                "iterations", experimental_joint_null_iterations
-                            )
-                        ),
-                        "joint_null_validation_iterations": int(
-                            experimental_joint_results.get(genome_id, {}).get(
-                                "validation_iterations",
-                                experimental_joint_null_validation_iterations,
-                            )
-                        ),
-                        "joint_null_minimum_attainable_p": float(
-                            experimental_joint_results.get(genome_id, {}).get(
-                                "minimum_attainable_p",
-                                1.0 / (1.0 + float(experimental_joint_null_iterations)),
-                            )
-                        ),
-                        "joint_null_conditional_matched_count": int(
-                            experimental_joint_results.get(genome_id, {}).get(
-                                "conditional_matched_count", 0
-                            )
-                        ),
-                        "joint_null_null_unique_mean": float(
-                            experimental_joint_results.get(genome_id, {}).get(
-                                "null_unique_mean", 0.0
-                            )
-                        ),
-                        "joint_null_null_shared_mean": float(
-                            experimental_joint_results.get(genome_id, {}).get(
-                                "null_shared_mean", 0.0
-                            )
-                        ),
-                        "joint_null_null_shared_p95": float(
-                            experimental_joint_results.get(genome_id, {}).get(
-                                "null_shared_p95", 0.0
-                            )
-                        ),
-                        "joint_null_statistic_spearman": float(
-                            experimental_joint_results.get(genome_id, {}).get(
-                                "null_statistic_spearman", np.nan
-                            )
-                        ),
-                        "joint_null_component_spearman": float(
-                            experimental_joint_results.get(genome_id, {}).get(
-                                "null_component_spearman", np.nan
-                            )
-                        ),
-                        "joint_null_dependence_estimable": bool(
-                            experimental_joint_results.get(genome_id, {}).get(
-                                "dependence_estimable", False
-                            )
-                        ),
-                        "joint_null_validation_fraction_p_le_0_01": float(
-                            experimental_joint_results.get(genome_id, {}).get(
-                                "validation_fraction_p_le_0_01", np.nan
-                            )
-                        ),
-                        "joint_null_validation_fraction_p_le_0_05": float(
-                            experimental_joint_results.get(genome_id, {}).get(
-                                "validation_fraction_p_le_0_05", np.nan
-                            )
-                        ),
-                        "joint_null_validation_ks_uniform_statistic": float(
-                            experimental_joint_results.get(genome_id, {}).get(
-                                "validation_ks_uniform_statistic", np.nan
-                            )
-                        ),
-                        "joint_null_validation_ks_uniform_pvalue": float(
-                            experimental_joint_results.get(genome_id, {}).get(
-                                "validation_ks_uniform_pvalue", np.nan
-                            )
-                        ),
-                        "joint_null_gamma_approximation_fraction": float(
-                            experimental_joint_results.get(genome_id, {}).get(
-                                "gamma_approximation_fraction", 0.0
-                            )
-                        ),
-                        "joint_null_exact_shared_count_cutoff": int(
-                            experimental_joint_results.get(genome_id, {}).get(
-                                "exact_shared_count_cutoff",
-                                experimental_joint_null_exact_shared_count_cutoff,
-                            )
-                        ),
-                        "joint_null_gate_applied": bool(
-                            experimental_joint_results.get(genome_id, {}).get(
-                                "gate_applied", int(metrics["num_peptides_unique"]) <= 0
-                            )
-                        ),
-                        **_flatten_joint_null_brown_results(
-                            experimental_joint_results.get(genome_id, {})
-                        ),
-                    }
-                    if experimental_joint_null_enabled
-                    else {}
-                ),
             }
         )
 

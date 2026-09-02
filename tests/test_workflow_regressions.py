@@ -67,7 +67,8 @@ def test_default_parquet_extraction_preserves_required_scoring_columns(tmp_path)
     assert scorer.unit_sample_ids == direct_scorer.unit_sample_ids
 
 
-def test_production_empirical_method_defaults_to_alpha_excess():
+def test_production_defaults_match_the_k4_method():
+    assert ScoringConfig().unique_pvalue_mode == "auto"
     assert ScoringConfig().unique_empirical_pvalue_method == "alpha-excess"
     assert ScoringConfig().presence_combination_method == "simes-closed"
     assert ScoringConfig().hmp_require_unique_evidence is True
@@ -80,6 +81,10 @@ def test_production_empirical_method_defaults_to_alpha_excess():
         if action.dest == "unique_empirical_pvalue_method"
     )
     assert method.default == "alpha-excess"
+    unique_mode = next(
+        action for action in score_parser._actions if action.dest == "unique_pvalue_mode"
+    )
+    assert unique_mode.default == "auto"
     combination = next(
         action
         for action in score_parser._actions

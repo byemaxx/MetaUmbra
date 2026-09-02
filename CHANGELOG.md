@@ -4,6 +4,7 @@
 
 ### Added
 
+- Finalized production inference: I/L-equivalent matching, structural `auto` unique-evidence selection, zero-unique-gated Simes/closed testing, and BH within each analysis unit over genomes with at least one matched observed peptide. Bonferroni, HMP, Fisher, and unique-only remain sensitivity methods.
 - Replaced the outcome-dependent alpha-pilot `auto` rule with a structural empirical-background eligibility check based only on theoretical peptide opportunity, comparable-background count, expected upper-tail count, empirical-bin size, and the adequate-candidate fraction.
 - Added per-unit diagnostics recording the requested/resolved unique-evidence modes and every structural eligibility variable.
 - Added consistent `il-equivalent` peptide normalization across observed and theoretical deduplication, matching, degeneracy, and unique/shared classification, with `exact` available as a sensitivity mode.

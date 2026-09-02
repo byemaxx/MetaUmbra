@@ -14,6 +14,8 @@ from pathlib import Path
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from metaumbra import __version__
+    from metaumbra._scoring.ranking import DEFAULT_PRESENCE_COMBINATION_METHOD
+    from metaumbra._scoring.stats import DEFAULT_UNIQUE_PVALUE_MODE
     from metaumbra.workflows import (
         DigestConfig,
         ParquetExtractionConfig,
@@ -26,6 +28,8 @@ if __package__ in {None, ""}:
     )
 else:
     from . import __version__
+    from ._scoring.ranking import DEFAULT_PRESENCE_COMBINATION_METHOD
+    from ._scoring.stats import DEFAULT_UNIQUE_PVALUE_MODE
     from .workflows import (
         DigestConfig,
         ParquetExtractionConfig,
@@ -2798,7 +2802,7 @@ class ScoringTab(QWidget):
             self._last_browse_dir = _remember_dialog_directory(path)
 
     def _sync_unique_mode_visibility(self) -> None:
-        mode = str(self.unique_pvalue_mode_combo.currentData() or "empirical-background")
+        mode = str(self.unique_pvalue_mode_combo.currentData() or DEFAULT_UNIQUE_PVALUE_MODE)
         error_source = str(self.unique_peptide_error_source_combo.currentData() or "global-alpha")
         show_empirical_background = mode in {"empirical-background", "auto"}
         show_alpha_mode = mode in {"alpha-upper-bound", "auto"}
@@ -2907,12 +2911,12 @@ class ScoringTab(QWidget):
                 self.single_peptide_error_rate_upper_bound_edit.text(),
                 "Unique evidence alpha",
             ),
-            unique_pvalue_mode=str(self.unique_pvalue_mode_combo.currentData() or "empirical-background"),
+            unique_pvalue_mode=str(self.unique_pvalue_mode_combo.currentData() or DEFAULT_UNIQUE_PVALUE_MODE),
             unique_peptide_error_source=str(self.unique_peptide_error_source_combo.currentData() or "global-alpha"),
             unique_count_power=float(self.unique_count_power_spin.value()),
             presence_combination_method=str(
                 self.presence_combination_method_combo.currentData()
-                or "bonferroni-min"
+                or DEFAULT_PRESENCE_COMBINATION_METHOD
             ),
             unique_empirical_background_threshold_quantile=float(
                 self.unique_empirical_background_threshold_quantile_spin.value()
